@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block page_title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+    <div class="bg-white rounded-lg shadow p-6">
+        <h3 class="text-gray-500 text-sm font-medium">Total Teams</h3>
+        <p class="text-3xl font-bold text-gray-900 mt-2">{{ team_count }}</p>
+    </div>
+
+    <div class="bg-white rounded-lg shadow p-6">
+        <h3 class="text-gray-500 text-sm font-medium">Total Players</h3>
+        <p class="text-3xl font-bold text-gray-900 mt-2">{{ player_count }}</p>
+    </div>
+
+    <div class="bg-white rounded-lg shadow p-6">
+        <h3 class="text-gray-500 text-sm font-medium">Total Points</h3>
+        <p class="text-3xl font-bold text-gray-900 mt-2">{{ "%.1f"|format(total_points) }}</p>
+    </div>
+</div>
+
+<div class="mt-6 bg-white rounded-lg shadow p-6">
+    <h2 class="text-xl font-bold text-gray-900 mb-4">Welcome to Pigskin Mastermind</h2>
+    <p class="text-gray-600">Get started by creating your first team or importing from ESPN.</p>
+</div>
+{% endblock %}

@@ -1,7 +1,11 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session
 import os
+
+from pigskin_mastermind.api.database import get_db, engine
+from pigskin_mastermind.models.database import DBTeam, DBPlayer, Base
 
 app = FastAPI(
     title="Pigskin Mastermind",
@@ -24,8 +28,28 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 # Setup Jinja2 templates
 templates = Jinja2Templates(directory=TEMPLATE_DIR)
 
+# Create tables on startup
+Base.metadata.create_all(bind=engine)
+
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy"}
+
+
+@app.get("/")
+async def dashboard(request: Request, db: Session = Depends(get_db)):
+    """Dashboard page"""
+    team_count = db.query(DBTeam).count()
+    player_count = db.query(DBPlayer).count()
+    total_points = sum(t.total_points for t in db.query(DBTeam).all())
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {
+            "request": request,
+            "team_count": team_count,
+            "player_count": player_count,
+            "total_points": total_points,
+        }
+    )
