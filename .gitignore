@@ -48,3 +48,4 @@ data/
 *.db
 *.sqlite
 config/local_*.json
+pigskin_mastermind.db
