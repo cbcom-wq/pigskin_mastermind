@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+
+{% block page_title %}Teams{% endblock %}
+
+{% block content %}
+<div class="flex justify-between items-center mb-6">
+    <h2 class="text-2xl font-bold text-gray-900">My Teams</h2>
+    <button
+        hx-get="/teams/new"
+        hx-target="#team-form-modal"
+        class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
+    >
+        + New Team
+    </button>
+</div>
+
+<div id="team-form-modal"></div>
+
+<div id="teams-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+    {% if teams %}
+        {% for team in teams %}
+        <div class="bg-white rounded-lg shadow hover:shadow-lg transition-shadow p-6">
+            <h3 class="text-xl font-bold text-gray-900">{{ team.name }}</h3>
+            <p class="text-gray-600 text-sm mt-1">Owner: {{ team.owner }}</p>
+            <div class="mt-4 flex justify-between items-center">
+                <div class="text-sm text-gray-600">
+                    <span class="font-medium">{{ team.wins }}-{{ team.losses }}-{{ team.ties }}</span>
+                </div>
+                <div class="text-sm text-gray-600">
+                    <span class="font-medium">{{ "%.1f"|format(team.total_points) }}</span> pts
+                </div>
+            </div>
+            <div class="mt-4 flex gap-2">
+                <a href="/teams/{{ team.id }}" class="flex-1 text-center bg-blue-50 hover:bg-blue-100 text-blue-700 px-3 py-2 rounded text-sm">
+                    View
+                </a>
+                <button
+                    hx-delete="/teams/{{ team.id }}"
+                    hx-target="closest div"
+                    hx-swap="outerHTML"
+                    hx-confirm="Delete {{ team.name }}?"
+                    class="bg-red-50 hover:bg-red-100 text-red-700 px-3 py-2 rounded text-sm"
+                >
+                    Delete
+                </button>
+            </div>
+        </div>
+        {% endfor %}
+    {% else %}
+        <div class="col-span-3 text-center py-12">
+            <p class="text-gray-500">No teams yet. Create your first team to get started!</p>
+        </div>
+    {% endif %}
+</div>
+{% endblock %}

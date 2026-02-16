@@ -31,6 +31,10 @@ templates = Jinja2Templates(directory=TEMPLATE_DIR)
 # Create tables on startup
 Base.metadata.create_all(bind=engine)
 
+# Register routers
+from pigskin_mastermind.api.routes.teams import router as teams_router
+app.include_router(teams_router)
+
 
 @app.get("/health")
 async def health_check():
