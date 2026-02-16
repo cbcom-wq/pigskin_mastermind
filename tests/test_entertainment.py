@@ -1,7 +1,9 @@
 """Tests for entertainment features."""
 
 import pytest
-from pigskin_mastermind.entertainment import TeamNameGenerator, LeagueEntertainment, MatchupPredictor
+from pigskin_mastermind.entertainment import (
+    TeamNameGenerator, LeagueEntertainment, MatchupPredictor, SeasonVisualization
+)
 from pigskin_mastermind.models.team import Team
 from pigskin_mastermind.models.player import Player
 
@@ -80,3 +82,14 @@ def test_weekly_awards():
     assert awards['highest_scorer']['team'] == "Team 1"
     assert awards['lowest_scorer']['team'] == "Team 2"
     assert awards['best_record']['team'] == "Team 1"
+
+
+def test_season_visualization_urls():
+    """Test season visualization URL generation."""
+    team_id = 123
+    
+    viz_url = SeasonVisualization.get_visualization_url(team_id)
+    api_url = SeasonVisualization.get_api_data_url(team_id)
+    
+    assert viz_url == "/visualizations/season-animation/123"
+    assert api_url == "/visualizations/api/season-data/123"
