@@ -168,9 +168,9 @@ def test_get_season_data_no_weekly_stats(viz_service, mock_db, sample_team):
 
 
 def test_get_season_data_with_stats(viz_service, mock_db, sample_team, sample_players, sample_weekly_stats):
-    """Test getting season data with weekly stats."""
-    # This is a complex integration that's better tested with actual DB
-    # For now, just verify the method exists and can be called
+    """Test that get_season_data method exists and is callable."""
+    # Note: Complex integration with multiple database queries is better tested 
+    # with actual database in integration tests. This test verifies the method interface.
     assert hasattr(viz_service, 'get_season_data')
     assert callable(viz_service.get_season_data)
 
@@ -262,15 +262,3 @@ def test_generate_animation_frames_empty_weeks(viz_service, mock_db):
     
     assert frames == []
 
-
-def test_season_visualization_integration(viz_service):
-    """Test that visualization service methods are callable."""
-    # This is a basic integration test to ensure methods exist
-    assert hasattr(viz_service, 'get_season_data')
-    assert hasattr(viz_service, 'generate_static_visualization')
-    assert hasattr(viz_service, 'generate_animation_frames')
-    assert hasattr(viz_service, 'get_season_summary')
-    assert callable(viz_service.get_season_data)
-    assert callable(viz_service.generate_static_visualization)
-    assert callable(viz_service.generate_animation_frames)
-    assert callable(viz_service.get_season_summary)
