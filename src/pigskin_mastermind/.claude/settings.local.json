@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(pip install:*)",
+      "Bash(D:/git/pigskin_mastermind/tests/unit/test_database_models.py:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(D:/git/pigskin_mastermind/src/pigskin_mastermind/models/database.py:*)",
+      "Bash(pip show:*)",
+      "Bash(D:/git/pigskin_mastermind/tests/unit/test_api_database.py:*)",
+      "Bash(D:/git/pigskin_mastermind/src/pigskin_mastermind/api/database.py:*)",
+      "Bash(alembic init:*)",
+      "Bash(alembic revision:*)",
+      "Bash(alembic upgrade:*)",
+      "Bash(python:*)",
+      "Bash(D:/git/pigskin_mastermind/tests/integration/test_api_main.py:*)",
+      "Bash(D:/git/pigskin_mastermind/src/pigskin_mastermind/api/main.py:*)",
+      "Bash(D:/git/pigskin_mastermind/src/pigskin_mastermind/templates/components/_sidebar.html:*)"
+    ]
+  }
+}

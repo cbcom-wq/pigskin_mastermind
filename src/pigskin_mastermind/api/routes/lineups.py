@@ -1,5 +1,9 @@
-from fastapi import APIRouter, Depends, Request, HTTPException
+"""Lineup optimizer routes."""
+
+from fastapi import APIRouter, Depends, Request, HTTPException, Query
 from sqlalchemy.orm import Session
+from typing import Optional
+
 from pigskin_mastermind.api.database import get_db
 from pigskin_mastermind.models.database import DBTeam, DBPlayer
 from pigskin_mastermind.models.player import Player
@@ -35,29 +39,41 @@ def _db_team_to_domain(db_team, db_players):
 
 
 @router.get("")
-async def lineup_page(request: Request, db: Session = Depends(get_db)):
-    """Lineup optimizer page"""
+async def lineup_page(
+    request: Request,
+    team: Optional[int] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """Lineup optimizer page."""
     from pigskin_mastermind.api.main import templates
-    teams = db.query(DBTeam).all()
+    teams = db.query(DBTeam).order_by(DBTeam.name).all()
     return templates.TemplateResponse(
         "lineups/optimizer.html",
-        {"request": request, "teams": teams}
+        {"request": request, "teams": teams, "selected_team_id": team}
     )
 
 
-@router.post("/{team_id}/optimize")
+@router.post("/{team_db_id}/optimize")
 async def optimize_lineup(
     request: Request,
-    team_id: int,
+    team_db_id: int,
     db: Session = Depends(get_db)
 ):
-    """Optimize lineup for a team"""
+    """Optimize lineup for a team, returns HTML fragment."""
     from pigskin_mastermind.api.main import templates
-    db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    db_team = db.query(DBTeam).filter(DBTeam.id == team_db_id).first()
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found")
 
-    db_players = db.query(DBPlayer).filter(DBPlayer.team_id == team_id).all()
+    db_players = db.query(DBPlayer).filter(DBPlayer.team_id == team_db_id).all()
+    if not db_players:
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(
+            '<div class="bg-white rounded-xl shadow-sm border-2 border-dashed border-slate-300 p-12 text-center">'
+            '  <p class="text-sm text-slate-500">This team has no players. Import from ESPN or add players via CLI.</p>'
+            '</div>'
+        )
+
     team = _db_team_to_domain(db_team, db_players)
 
     optimizer = LineupOptimizer()

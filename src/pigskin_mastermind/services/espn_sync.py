@@ -59,7 +59,13 @@ class ESPNSyncService:
             self.db.add(db_team)
 
         db_team.name = espn_team.team_name
-        db_team.owner = espn_team.owner
+        # Get owner name(s) from the owners list
+        owners = getattr(espn_team, 'owners', [])
+        if owners and isinstance(owners[0], dict):
+            owner_info = owners[0]
+            db_team.owner = owner_info.get('displayName') or f"{owner_info.get('firstName', '')} {owner_info.get('lastName', '')}".strip() or 'Unknown'
+        else:
+            db_team.owner = 'Unknown'
         db_team.wins = espn_team.wins
         db_team.losses = espn_team.losses
         db_team.ties = getattr(espn_team, 'ties', 0)

@@ -1,0 +1,43 @@
+<!-- Player Search Modal (Ctrl+K) -->
+<div id="player-search-modal" class="hidden fixed inset-0 z-[55]">
+    <div class="modal-backdrop absolute inset-0" onclick="this.parentElement.classList.add('hidden')"></div>
+    <div class="relative max-w-2xl mx-auto mt-[15vh]">
+        <div class="bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden">
+            <!-- Search Input -->
+            <div class="flex items-center gap-3 px-4 py-3 border-b border-slate-200">
+                <svg class="w-5 h-5 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                </svg>
+                <input
+                    id="player-search-input"
+                    type="text"
+                    placeholder="Search players by name, position, or team…"
+                    class="flex-1 text-sm text-slate-800 placeholder-slate-400 outline-none bg-transparent"
+                    hx-get="/api/players/search"
+                    hx-trigger="keyup changed delay:300ms"
+                    hx-target="#search-results"
+                    hx-swap="innerHTML"
+                    hx-indicator="#search-spinner"
+                    name="q"
+                    autocomplete="off"
+                >
+                <div id="search-spinner" class="htmx-indicator">
+                    <svg class="animate-spin h-4 w-4 text-pigskin-500" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                </div>
+                <kbd class="hidden sm:inline-flex items-center px-1.5 py-0.5 text-xs text-slate-400 bg-slate-100 border border-slate-200 rounded">Esc</kbd>
+            </div>
+            <!-- Results -->
+            <div id="search-results" class="max-h-[50vh] overflow-y-auto">
+                <div class="px-4 py-8 text-center text-sm text-slate-400">
+                    <svg class="w-8 h-8 mx-auto mb-2 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                    </svg>
+                    Type to search your roster players
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

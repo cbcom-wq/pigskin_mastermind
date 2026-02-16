@@ -1,50 +1,79 @@
-<div class="bg-white rounded-lg shadow p-6">
-    <h3 class="text-xl font-bold text-gray-900 mb-4">Trade Analysis</h3>
-
-    <div class="grid grid-cols-2 gap-6 mb-6">
-        <div>
-            <h4 class="text-sm font-semibold text-gray-700 mb-2">You Give</h4>
-            <ul class="space-y-2">
-                {% for player in result.gives %}
-                <li class="p-2 bg-red-50 rounded text-sm">{{ player }}</li>
-                {% endfor %}
-            </ul>
-            <p class="mt-2 text-sm text-gray-600">
-                Value: <span class="font-semibold">{{ "%.1f"|format(result.gives_value) }} pts</span>
-            </p>
-        </div>
-
-        <div>
-            <h4 class="text-sm font-semibold text-gray-700 mb-2">You Receive</h4>
-            <ul class="space-y-2">
-                {% for player in result.receives %}
-                <li class="p-2 bg-green-50 rounded text-sm">{{ player }}</li>
-                {% endfor %}
-            </ul>
-            <p class="mt-2 text-sm text-gray-600">
-                Value: <span class="font-semibold">{{ "%.1f"|format(result.receives_value) }} pts</span>
-            </p>
+<!-- Trade Analysis Result Fragment -->
+<div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+    <!-- Recommendation Banner -->
+    <div class="px-6 py-4
+        {% if result.recommendation == 'Accept' %}bg-gradient-to-r from-field-500 to-field-600
+        {% elif result.recommendation == 'Reject' %}bg-gradient-to-r from-red-500 to-red-600
+        {% else %}bg-gradient-to-r from-pigskin-400 to-pigskin-500{% endif %}">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+                <p class="text-xs text-white/80 font-medium uppercase tracking-wider">Recommendation</p>
+                <p class="text-2xl font-bold text-white">{{ result.recommendation }}</p>
+            </div>
+            <div class="bg-white/20 backdrop-blur rounded-lg px-4 py-2 text-center">
+                <p class="text-xs text-white/80">Net Gain</p>
+                <p class="text-xl font-bold text-white">{{ "%+.1f"|format(result.net_gain) }} pts</p>
+            </div>
         </div>
     </div>
 
-    <div class="border-t pt-4">
-        <div class="flex items-center justify-between">
+    <div class="p-6">
+        <!-- Trade Comparison -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-6 mb-6">
+            <!-- You Give -->
             <div>
-                <p class="text-sm text-gray-600">Net Gain</p>
-                <p class="text-2xl font-bold {% if result.net_gain > 0 %}text-green-600{% elif result.net_gain < 0 %}text-red-600{% else %}text-gray-600{% endif %}">
-                    {{ "%+.1f"|format(result.net_gain) }} pts
+                <h4 class="text-xs font-bold text-red-500 uppercase tracking-wider mb-3 flex items-center gap-1">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 11l5-5m0 0l5 5m-5-5v12"/>
+                    </svg>
+                    You Give
+                </h4>
+                <div class="space-y-2">
+                    {% for player in result.gives %}
+                    <div class="px-3 py-2 bg-red-50 rounded-lg text-sm font-medium text-slate-700">{{ player }}</div>
+                    {% endfor %}
+                </div>
+                <p class="mt-2 text-xs text-slate-500">
+                    Total Value: <span class="font-bold text-red-600">{{ "%.1f"|format(result.gives_value) }} pts</span>
                 </p>
             </div>
 
-            <div class="text-right">
-                <p class="text-sm text-gray-600">Recommendation</p>
-                <span class="inline-block px-4 py-2 rounded-full text-sm font-semibold
-                    {% if result.recommendation == 'Accept' %}bg-green-100 text-green-800
-                    {% elif result.recommendation == 'Reject' %}bg-red-100 text-red-800
-                    {% else %}bg-yellow-100 text-yellow-800{% endif %}">
-                    {{ result.recommendation }}
-                </span>
+            <!-- You Receive -->
+            <div>
+                <h4 class="text-xs font-bold text-field-600 uppercase tracking-wider mb-3 flex items-center gap-1">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 13l-5 5m0 0l-5-5m5 5V6"/>
+                    </svg>
+                    You Receive
+                </h4>
+                <div class="space-y-2">
+                    {% for player in result.receives %}
+                    <div class="px-3 py-2 bg-field-50 rounded-lg text-sm font-medium text-slate-700">{{ player }}</div>
+                    {% endfor %}
+                </div>
+                <p class="mt-2 text-xs text-slate-500">
+                    Total Value: <span class="font-bold text-field-600">{{ "%.1f"|format(result.receives_value) }} pts</span>
+                </p>
             </div>
         </div>
+
+        <!-- Position Impact -->
+        {% if result.positions_lost or result.positions_gained %}
+        <div class="border-t border-slate-200 pt-4">
+            <h4 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Position Impact</h4>
+            <div class="flex flex-wrap gap-2">
+                {% for pos, count in result.positions_lost.items() %}
+                <span class="inline-flex items-center gap-1 px-2 py-1 bg-red-50 text-red-700 rounded-full text-xs font-semibold">
+                    -{{ count }} {{ pos }}
+                </span>
+                {% endfor %}
+                {% for pos, count in result.positions_gained.items() %}
+                <span class="inline-flex items-center gap-1 px-2 py-1 bg-field-50 text-field-700 rounded-full text-xs font-semibold">
+                    +{{ count }} {{ pos }}
+                </span>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
     </div>
 </div>

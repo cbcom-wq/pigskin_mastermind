@@ -1,7 +1,11 @@
+"""Trade analyzer routes."""
+
 from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List
+
 from pigskin_mastermind.api.database import get_db
 from pigskin_mastermind.models.database import DBTeam, DBPlayer
 from pigskin_mastermind.models.player import Player
@@ -19,13 +23,56 @@ class TradeRequest(BaseModel):
 
 @router.get("")
 async def trade_page(request: Request, db: Session = Depends(get_db)):
-    """Trade analyzer page"""
+    """Trade analyzer page."""
     from pigskin_mastermind.api.main import templates
-    teams = db.query(DBTeam).all()
+    teams = db.query(DBTeam).order_by(DBTeam.name).all()
     return templates.TemplateResponse(
         "trades/analyzer.html",
         {"request": request, "teams": teams}
     )
+
+
+@router.get("/team-players")
+async def team_players_for_trade(
+    request: Request,
+    team_id: int,
+    db: Session = Depends(get_db)
+):
+    """Return HTML fragment with a team's players for the Give column."""
+    if not team_id:
+        return HTMLResponse(
+            '<p class="text-sm text-slate-400 text-center py-8">Select a team above to see your players</p>'
+        )
+
+    players = db.query(DBPlayer).filter(
+        DBPlayer.team_id == team_id
+    ).order_by(DBPlayer.position, DBPlayer.projected_points.desc()).all()
+
+    if not players:
+        return HTMLResponse(
+            '<p class="text-sm text-slate-400 text-center py-8">No players on this team</p>'
+        )
+
+    html_parts = []
+    for p in players:
+        html_parts.append(
+            f'<div class="flex items-center justify-between p-2 rounded-lg hover:bg-slate-50 transition-colors">'
+            f'  <div class="flex items-center gap-2">'
+            f'    <span class="inline-flex items-center justify-center w-9 h-5 rounded text-[10px] font-bold badge-{p.position.lower()}">{p.position}</span>'
+            f'    <div>'
+            f'      <p class="text-sm font-medium text-slate-700">{p.name}</p>'
+            f'      <p class="text-xs text-slate-400">{p.nfl_team} &middot; {p.projected_points:.1f} pts</p>'
+            f'    </div>'
+            f'  </div>'
+            f'  <button type="button"'
+            f'    onclick="toggleGivePlayer({p.id}, \'{p.name}\', \'{p.position}\', {p.projected_points:.1f})"'
+            f'    data-player-give="{p.id}"'
+            f'    class="px-2 py-1 text-xs font-medium rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors">'
+            f'    Select'
+            f'  </button>'
+            f'</div>'
+        )
+    return HTMLResponse("\n".join(html_parts))
 
 
 @router.post("/analyze")
@@ -34,8 +81,9 @@ async def analyze_trade(
     trade: TradeRequest,
     db: Session = Depends(get_db)
 ):
-    """Analyze a trade"""
+    """Analyze a trade and return HTML result fragment."""
     from pigskin_mastermind.api.main import templates
+
     db_team = db.query(DBTeam).filter(DBTeam.id == trade.team_id).first()
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found")

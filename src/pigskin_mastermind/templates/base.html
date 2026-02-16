@@ -1,35 +1,249 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="h-full">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Pigskin Mastermind{% endblock %}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        field: {
+                            50:  '#f0fdf0',
+                            100: '#dcfce7',
+                            200: '#bbf7d0',
+                            300: '#6ee7a0',
+                            400: '#4ade80',
+                            500: '#22c55e',
+                            600: '#16a34a',
+                            700: '#15803d',
+                            800: '#166534',
+                            900: '#14532d',
+                            950: '#052e16',
+                        },
+                        pigskin: {
+                            50:  '#fdf8f0',
+                            100: '#f9eddc',
+                            200: '#f2d5b0',
+                            300: '#e8b87a',
+                            400: '#dd9642',
+                            500: '#d47a1e',
+                            600: '#c46316',
+                            700: '#a34c14',
+                            800: '#853d17',
+                            900: '#6d3316',
+                        },
+                    },
+                    fontFamily: {
+                        display: ['"Segoe UI"', 'Roboto', 'sans-serif'],
+                    },
+                },
+            },
+        }
+    </script>
+    <style>
+        /* Football field yard-line pattern */
+        .field-pattern {
+            background-color: #166534;
+            background-image:
+                repeating-linear-gradient(
+                    90deg,
+                    transparent,
+                    transparent calc(100% / 10 - 1px),
+                    rgba(255,255,255,0.08) calc(100% / 10 - 1px),
+                    rgba(255,255,255,0.08) calc(100% / 10)
+                );
+        }
+
+        /* Sidebar active link */
+        .nav-link.active {
+            background: rgba(255,255,255,0.15);
+            border-left: 3px solid #dd9642;
+        }
+
+        /* Toast animation */
+        @keyframes toast-in {
+            from { transform: translateX(100%); opacity: 0; }
+            to   { transform: translateX(0);    opacity: 1; }
+        }
+        @keyframes toast-out {
+            from { transform: translateX(0);    opacity: 1; }
+            to   { transform: translateX(100%); opacity: 0; }
+        }
+        .toast-enter { animation: toast-in 0.3s ease-out forwards; }
+        .toast-exit  { animation: toast-out 0.3s ease-in forwards; }
+
+        /* HTMX loading indicator */
+        .htmx-indicator { display: none; }
+        .htmx-request .htmx-indicator,
+        .htmx-request.htmx-indicator { display: inline-flex; }
+
+        /* Smooth transitions for HTMX swaps */
+        .htmx-swapping { opacity: 0; transition: opacity 0.15s ease-out; }
+        .htmx-settling { opacity: 1; transition: opacity 0.15s ease-in; }
+
+        /* Card hover lift effect */
+        .card-hover { transition: transform 0.2s ease, box-shadow 0.2s ease; }
+        .card-hover:hover { transform: translateY(-2px); box-shadow: 0 8px 25px -5px rgba(0,0,0,0.15); }
+
+        /* Position badge colors */
+        .badge-qb  { background: #dc2626; color: white; }
+        .badge-rb  { background: #2563eb; color: white; }
+        .badge-wr  { background: #16a34a; color: white; }
+        .badge-te  { background: #d97706; color: white; }
+        .badge-k   { background: #7c3aed; color: white; }
+        .badge-def { background: #475569; color: white; }
+        .badge-flex { background: #0891b2; color: white; }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+        /* Mobile sidebar toggle */
+        @media (max-width: 768px) {
+            #sidebar { transform: translateX(-100%); transition: transform 0.3s ease; position: fixed; z-index: 50; height: 100vh; }
+            #sidebar.open { transform: translateX(0); }
+        }
+
+        /* Modal backdrop */
+        .modal-backdrop {
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(4px);
+        }
+    </style>
 </head>
-<body class="bg-gray-50">
-    <div class="flex h-screen">
+<body class="h-full bg-slate-100 font-display" hx-indicator="#global-loader">
+    <div class="flex h-full">
         {% include "components/_sidebar.html" %}
 
-        <div class="flex-1 flex flex-col overflow-hidden">
-            <header class="bg-white shadow-sm">
-                <div class="flex items-center justify-between px-6 py-4">
-                    <h1 class="text-2xl font-bold text-gray-900">
-                        {% block page_title %}Pigskin Mastermind{% endblock %}
-                    </h1>
-                    <div></div>
+        <div class="flex-1 flex flex-col overflow-hidden min-h-screen">
+            <!-- Top Bar -->
+            <header class="bg-white border-b border-slate-200 sticky top-0 z-30">
+                <div class="flex items-center justify-between px-6 py-3">
+                    <div class="flex items-center gap-3">
+                        <button onclick="document.getElementById('sidebar').classList.toggle('open')"
+                                class="md:hidden p-2 rounded-lg hover:bg-slate-100">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+                            </svg>
+                        </button>
+                        <h1 class="text-xl font-bold text-slate-800">
+                            {% block page_title %}Dashboard{% endblock %}
+                        </h1>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <button onclick="document.getElementById('player-search-modal').classList.remove('hidden'); setTimeout(() => document.getElementById('player-search-input').focus(), 100)"
+                                class="flex items-center gap-2 px-3 py-1.5 text-sm text-slate-500 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                            </svg>
+                            <span class="hidden sm:inline">Search players…</span>
+                            <kbd class="hidden sm:inline-flex items-center px-1.5 py-0.5 text-xs bg-slate-200 rounded">Ctrl+K</kbd>
+                        </button>
+                        <div id="global-loader" class="htmx-indicator">
+                            <svg class="animate-spin h-5 w-5 text-pigskin-500" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                            </svg>
+                        </div>
+                    </div>
                 </div>
             </header>
 
-            <main class="flex-1 overflow-y-auto p-6">
+            <!-- Main Content -->
+            <main class="flex-1 overflow-y-auto p-4 md:p-6 bg-slate-100">
                 {% block content %}{% endblock %}
             </main>
         </div>
     </div>
 
-    <div id="htmx-loading" class="htmx-indicator fixed top-4 right-4 bg-blue-500 text-white px-4 py-2 rounded shadow-lg">
-        Loading...
+    <!-- Toast Container -->
+    <div id="toast-container" class="fixed top-4 right-4 z-[60] flex flex-col gap-2 pointer-events-none">
     </div>
+
+    <!-- Player Search Modal -->
+    {% include "components/_player_search.html" %}
+
+    <script>
+        /* Keyboard shortcut for search */
+        document.addEventListener('keydown', function(e) {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+                e.preventDefault();
+                const modal = document.getElementById('player-search-modal');
+                modal.classList.toggle('hidden');
+                if (!modal.classList.contains('hidden')) {
+                    setTimeout(() => document.getElementById('player-search-input')?.focus(), 100);
+                }
+            }
+            if (e.key === 'Escape') {
+                document.getElementById('player-search-modal')?.classList.add('hidden');
+            }
+        });
+
+        /* Toast helpers */
+        function showToast(message, type) {
+            type = type || 'success';
+            var container = document.getElementById('toast-container');
+            var colors = {
+                success: 'bg-field-700 text-white',
+                error: 'bg-red-600 text-white',
+                info: 'bg-slate-700 text-white',
+                warning: 'bg-pigskin-500 text-white',
+            };
+            var icons = { success: '✓', error: '✕', info: 'ℹ', warning: '⚠' };
+            var toast = document.createElement('div');
+            toast.className = 'toast-enter pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg ' + (colors[type] || colors.info) + ' min-w-[300px]';
+            toast.innerHTML = '<span class="text-lg font-bold">' + (icons[type] || icons.info) + '</span>'
+                + '<span class="flex-1 text-sm font-medium">' + message + '</span>'
+                + '<button onclick="dismissToast(this.parentElement)" class="opacity-70 hover:opacity-100 text-lg">&times;</button>';
+            container.appendChild(toast);
+            setTimeout(function() { dismissToast(toast); }, 4000);
+        }
+
+        function dismissToast(el) {
+            if (!el || !el.parentElement) return;
+            el.classList.remove('toast-enter');
+            el.classList.add('toast-exit');
+            setTimeout(function() { el.remove(); }, 300);
+        }
+
+        /* Listen for HX-Trigger toast events */
+        document.body.addEventListener('htmx:afterRequest', function(e) {
+            var trigger = e.detail.xhr && e.detail.xhr.getResponseHeader('HX-Trigger');
+            if (trigger) {
+                try {
+                    var data = JSON.parse(trigger);
+                    if (data.showToast) {
+                        showToast(data.showToast.message, data.showToast.type);
+                    }
+                } catch(ex) {}
+            }
+        });
+
+        /* Close mobile sidebar on nav */
+        document.body.addEventListener('htmx:beforeRequest', function() {
+            var sb = document.getElementById('sidebar');
+            if (sb) sb.classList.remove('open');
+        });
+
+        /* Highlight active nav link */
+        (function() {
+            var path = window.location.pathname;
+            document.querySelectorAll('.nav-link').forEach(function(link) {
+                var href = link.getAttribute('href');
+                if (href === '/' && path === '/') {
+                    link.classList.add('active');
+                } else if (href !== '/' && path.startsWith(href)) {
+                    link.classList.add('active');
+                }
+            });
+        })();
+    </script>
 
     {% block extra_js %}{% endblock %}
 </body>

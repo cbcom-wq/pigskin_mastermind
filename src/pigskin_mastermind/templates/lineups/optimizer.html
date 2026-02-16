@@ -3,29 +3,82 @@
 {% block page_title %}Lineup Optimizer{% endblock %}
 
 {% block content %}
-<div class="max-w-4xl mx-auto">
-    <h2 class="text-2xl font-bold text-gray-900 mb-6">Lineup Optimizer</h2>
-
-    <div class="bg-white rounded-lg shadow p-6 mb-6">
-        <label class="block text-sm font-medium text-gray-700 mb-2">
-            Select Team
-        </label>
-        <select
-            id="team-select"
-            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-            onchange="if(this.value) { htmx.ajax('POST', '/lineups/' + this.value + '/optimize', {target: '#lineup-result', swap: 'innerHTML'}) }"
-        >
-            <option value="">Choose a team...</option>
-            {% for team in teams %}
-            <option value="{{ team.id }}">{{ team.name }} ({{ team.owner }})</option>
-            {% endfor %}
-        </select>
+<div class="max-w-5xl mx-auto">
+    <!-- Header -->
+    <div class="mb-6">
+        <h2 class="text-2xl font-bold text-slate-800">Lineup Optimizer</h2>
+        <p class="text-sm text-slate-500 mt-0.5">Generate the optimal starting lineup for your team</p>
     </div>
 
-    <div id="lineup-result" class="mt-6">
-        <div class="text-center text-gray-500 py-12">
-            Select a team to optimize their lineup
+    <!-- Team Selection Card -->
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 mb-6">
+        <div class="flex flex-col sm:flex-row items-start sm:items-end gap-4">
+            <div class="flex-1 w-full">
+                <label class="block text-sm font-semibold text-slate-700 mb-1.5">Select Team</label>
+                <select
+                    id="team-select"
+                    class="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-field-500 focus:border-field-500 outline-none transition-all bg-white"
+                >
+                    <option value="">Choose a team…</option>
+                    {% for team in teams %}
+                    <option value="{{ team.id }}" {% if selected_team_id == team.id %}selected{% endif %}>
+                        {{ team.name }} ({{ team.owner }}) — {{ team.players|length }} players
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button
+                id="optimize-btn"
+                onclick="optimizeLineup()"
+                class="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-field-600 to-field-700 hover:from-field-700 hover:to-field-800 text-white text-sm font-semibold rounded-lg shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+                Optimize
+                <svg class="w-4 h-4 animate-spin hidden" id="optimize-spinner" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <!-- Result Area -->
+    <div id="lineup-result">
+        <div class="bg-white rounded-xl shadow-sm border-2 border-dashed border-slate-300 p-12 text-center">
+            <div class="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center mx-auto mb-3">
+                <svg class="w-7 h-7 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2"/>
+                </svg>
+            </div>
+            <p class="text-sm text-slate-500">Select a team and click <strong>Optimize</strong> to generate the best lineup</p>
         </div>
     </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function optimizeLineup() {
+    var select = document.getElementById('team-select');
+    var teamId = select.value;
+    if (!teamId) {
+        showToast('Please select a team first', 'warning');
+        return;
+    }
+    var btn = document.getElementById('optimize-btn');
+    var spinner = document.getElementById('optimize-spinner');
+    btn.disabled = true;
+    spinner.classList.remove('hidden');
+
+    htmx.ajax('POST', '/lineups/' + teamId + '/optimize', {
+        target: '#lineup-result',
+        swap: 'innerHTML'
+    }).then(function() {
+        btn.disabled = false;
+        spinner.classList.add('hidden');
+    });
+}
+</script>
 {% endblock %}

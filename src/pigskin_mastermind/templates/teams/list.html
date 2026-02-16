@@ -3,52 +3,119 @@
 {% block page_title %}Teams{% endblock %}
 
 {% block content %}
-<div class="flex justify-between items-center mb-6">
-    <h2 class="text-2xl font-bold text-gray-900">My Teams</h2>
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+    <div>
+        <h2 class="text-2xl font-bold text-slate-800">My Teams</h2>
+        <p class="text-sm text-slate-500 mt-0.5">Manage your fantasy football teams</p>
+    </div>
     <button
         hx-get="/teams/new"
         hx-target="#team-form-modal"
-        class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
+        class="inline-flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-field-600 to-field-700 hover:from-field-700 hover:to-field-800 text-white text-sm font-semibold rounded-xl shadow-sm transition-all"
     >
-        + New Team
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+        </svg>
+        New Team
     </button>
 </div>
 
 <div id="team-form-modal"></div>
 
-<div id="teams-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+<div id="teams-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
     {% if teams %}
         {% for team in teams %}
-        <div class="bg-white rounded-lg shadow hover:shadow-lg transition-shadow p-6">
-            <h3 class="text-xl font-bold text-gray-900">{{ team.name }}</h3>
-            <p class="text-gray-600 text-sm mt-1">Owner: {{ team.owner }}</p>
-            <div class="mt-4 flex justify-between items-center">
-                <div class="text-sm text-gray-600">
-                    <span class="font-medium">{{ team.wins }}-{{ team.losses }}-{{ team.ties }}</span>
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden card-hover group">
+            <!-- Team header stripe -->
+            <div class="h-1.5 bg-gradient-to-r from-field-500 to-field-700"></div>
+            <div class="p-5">
+                <div class="flex items-start justify-between mb-3">
+                    <div class="flex items-center gap-3">
+                        <div class="w-11 h-11 rounded-xl bg-gradient-to-br from-field-700 to-field-900 flex items-center justify-center text-white font-bold text-sm shadow">
+                            {{ team.name[:2]|upper }}
+                        </div>
+                        <div>
+                            <h3 class="text-base font-bold text-slate-800 leading-tight">{{ team.name }}</h3>
+                            <p class="text-xs text-slate-500 mt-0.5">{{ team.owner }}</p>
+                        </div>
+                    </div>
+                    {% if team.last_synced_at %}
+                    <span class="flex items-center gap-1 text-[10px] font-medium text-field-600 bg-field-50 px-2 py-0.5 rounded-full">
+                        <span class="w-1.5 h-1.5 rounded-full bg-field-500"></span>
+                        Synced
+                    </span>
+                    {% endif %}
                 </div>
-                <div class="text-sm text-gray-600">
-                    <span class="font-medium">{{ "%.1f"|format(team.total_points) }}</span> pts
+
+                <!-- Stats Row -->
+                <div class="grid grid-cols-3 gap-2 mb-4">
+                    <div class="bg-slate-50 rounded-lg px-3 py-2 text-center">
+                        <p class="text-xs text-slate-500">Record</p>
+                        <p class="text-sm font-bold text-slate-700">{{ team.wins }}-{{ team.losses }}-{{ team.ties }}</p>
+                    </div>
+                    <div class="bg-slate-50 rounded-lg px-3 py-2 text-center">
+                        <p class="text-xs text-slate-500">Points</p>
+                        <p class="text-sm font-bold text-slate-700">{{ "%.0f"|format(team.total_points) }}</p>
+                    </div>
+                    <div class="bg-slate-50 rounded-lg px-3 py-2 text-center">
+                        <p class="text-xs text-slate-500">Players</p>
+                        <p class="text-sm font-bold text-slate-700">{{ team.players|length }}</p>
+                    </div>
                 </div>
-            </div>
-            <div class="mt-4 flex gap-2">
-                <a href="/teams/{{ team.id }}" class="flex-1 text-center bg-blue-50 hover:bg-blue-100 text-blue-700 px-3 py-2 rounded text-sm">
-                    View
-                </a>
-                <button
-                    hx-delete="/teams/{{ team.id }}"
-                    hx-target="closest div"
-                    hx-swap="outerHTML"
-                    hx-confirm="Delete {{ team.name }}?"
-                    class="bg-red-50 hover:bg-red-100 text-red-700 px-3 py-2 rounded text-sm"
-                >
-                    Delete
-                </button>
+
+                <!-- Action Buttons -->
+                <div class="flex gap-2">
+                    <a href="/teams/{{ team.id }}"
+                       class="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium text-field-700 bg-field-50 hover:bg-field-100 rounded-lg transition-colors">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                        </svg>
+                        View
+                    </a>
+                    <button
+                        hx-delete="/teams/{{ team.id }}"
+                        hx-target="closest .card-hover"
+                        hx-swap="outerHTML swap:0.2s"
+                        hx-confirm="Delete {{ team.name }}? This cannot be undone."
+                        class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors"
+                    >
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                        </svg>
+                    </button>
+                </div>
             </div>
         </div>
         {% endfor %}
     {% else %}
-        <div class="col-span-3 text-center py-12">
-            <p class="text-gray-500">No teams yet. Create your first team to get started!</p>
+        <div class="col-span-full">
+            <div class="bg-white rounded-xl shadow-sm border-2 border-dashed border-slate-300 p-12 text-center">
+                <div class="w-16 h-16 rounded-2xl bg-slate-100 flex items-center justify-center mx-auto mb-4">
+                    <span class="text-3xl">🏈</span>
+                </div>
+                <h3 class="text-lg font-bold text-slate-700 mb-1">No teams yet</h3>
+                <p class="text-sm text-slate-500 mb-4">Create your first team or import from ESPN to get started.</p>
+                <div class="flex flex-col sm:flex-row items-center justify-center gap-3">
+                    <button
+                        hx-get="/teams/new"
+                        hx-target="#team-form-modal"
+                        class="inline-flex items-center gap-2 px-4 py-2 bg-field-600 hover:bg-field-700 text-white text-sm font-semibold rounded-lg transition-colors"
+                    >
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+                        </svg>
+                        Create Team
+                    </button>
+                    <a href="/settings"
+                       class="inline-flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-lg transition-colors">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                        </svg>
+                        Import from ESPN
+                    </a>
+                </div>
+            </div>
         </div>
     {% endif %}
 </div>

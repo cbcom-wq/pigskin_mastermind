@@ -26,6 +26,7 @@ class Team:
     record: Dict[str, int] = field(default_factory=lambda: {'wins': 0, 'losses': 0, 'ties': 0})
     total_points: float = 0.0
     league_id: Optional[str] = None
+    is_user_team: bool = False
     
     def add_player(self, player: Player) -> None:
         """
