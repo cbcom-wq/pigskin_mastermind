@@ -237,3 +237,38 @@ class LeagueEntertainment:
             f"{winning_team.name} looking unstoppable!",
         ]
         return messages
+
+
+class SeasonVisualization:
+    """
+    Entertainment feature for season visualization.
+    
+    This class provides access to year-to-date graphic visualizations
+    showing player points accumulation and team results over the season.
+    """
+    
+    @staticmethod
+    def get_visualization_url(team_id: int) -> str:
+        """
+        Get the URL for the season animation visualization.
+        
+        Args:
+            team_id: Team ID
+            
+        Returns:
+            URL to the visualization page
+        """
+        return f"/visualizations/season-animation/{team_id}"
+    
+    @staticmethod
+    def get_api_data_url(team_id: int) -> str:
+        """
+        Get the API URL for season data.
+        
+        Args:
+            team_id: Team ID
+            
+        Returns:
+            URL to the API endpoint
+        """
+        return f"/visualizations/api/season-data/{team_id}"
