@@ -33,7 +33,11 @@ Base.metadata.create_all(bind=engine)
 
 # Register routers
 from pigskin_mastermind.api.routes.teams import router as teams_router
+from pigskin_mastermind.api.routes.lineups import router as lineups_router
+from pigskin_mastermind.api.routes.trades import router as trades_router
 app.include_router(teams_router)
+app.include_router(lineups_router)
+app.include_router(trades_router)
 
 
 @app.get("/health")
