@@ -38,6 +38,16 @@
                     </svg>
                     Sync ESPN
                 </button>
+                <button
+                    hx-post="/settings/sync-weekly/{{ team.id }}"
+                    hx-swap="none"
+                    class="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 rounded-lg transition-colors"
+                >
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                    </svg>
+                    Sync Weekly Data
+                </button>
                 {% endif %}
                 <a href="/lineups?team={{ team.id }}"
                    class="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-field-700 bg-field-50 hover:bg-field-100 rounded-lg transition-colors">
@@ -73,7 +83,126 @@
     </div>
 </div>
 
-<!-- Roster Table -->
+<!-- Week Selector -->
+{% if available_weeks %}
+<div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-6">
+    <div class="px-6 py-4">
+        <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+            <h3 class="text-sm font-semibold text-slate-700">View by Week:</h3>
+            <div class="flex flex-wrap gap-2">
+                <a href="/teams/{{ team.id }}"
+                   class="inline-flex items-center justify-center min-w-[3rem] px-3 py-1.5 text-sm font-medium rounded-lg transition-colors
+                          {% if not selected_week %}bg-field-600 text-white shadow-sm{% else %}bg-slate-100 text-slate-600 hover:bg-slate-200{% endif %}">
+                    Season
+                </a>
+                {% for w in available_weeks %}
+                <a href="/teams/{{ team.id }}?week={{ w }}"
+                   class="inline-flex items-center justify-center min-w-[2.5rem] px-3 py-1.5 text-sm font-medium rounded-lg transition-colors
+                          {% if selected_week == w %}bg-field-600 text-white shadow-sm{% else %}bg-slate-100 text-slate-600 hover:bg-slate-200{% endif %}">
+                    {{ w }}
+                </a>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% if selected_week and weekly_team %}
+<!-- Weekly Performance Header -->
+<div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-6">
+    <div class="px-6 py-4 border-b border-slate-200">
+        <h3 class="text-lg font-bold text-slate-800">Week {{ selected_week }} Performance</h3>
+    </div>
+    <div class="p-6">
+        <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            <div class="bg-slate-50 rounded-lg px-4 py-3 text-center">
+                <p class="text-xs text-slate-500 font-medium">Result</p>
+                <p class="text-lg font-bold
+                   {% if weekly_team.result == 'W' %}text-green-600{% elif weekly_team.result == 'L' %}text-red-600{% else %}text-slate-700{% endif %}">
+                    {{ weekly_team.result }}
+                </p>
+            </div>
+            <div class="bg-slate-50 rounded-lg px-4 py-3 text-center">
+                <p class="text-xs text-slate-500 font-medium">Points For</p>
+                <p class="text-lg font-bold text-slate-700">{{ "%.1f"|format(weekly_team.points_for) }}</p>
+            </div>
+            <div class="bg-slate-50 rounded-lg px-4 py-3 text-center">
+                <p class="text-xs text-slate-500 font-medium">Points Against</p>
+                <p class="text-lg font-bold text-slate-700">{{ "%.1f"|format(weekly_team.points_against) }}</p>
+            </div>
+            <div class="bg-slate-50 rounded-lg px-4 py-3 text-center">
+                <p class="text-xs text-slate-500 font-medium">Projected</p>
+                <p class="text-lg font-bold text-slate-700">{{ "%.1f"|format(weekly_team.projected_points) }}</p>
+            </div>
+            <div class="bg-slate-50 rounded-lg px-4 py-3 text-center">
+                <p class="text-xs text-slate-500 font-medium">Opponent</p>
+                <p class="text-sm font-bold text-slate-700 truncate" title="{{ weekly_team.opponent_name }}">{{ weekly_team.opponent_name }}</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Weekly Lineup Table -->
+<div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+    <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+        <h3 class="text-lg font-bold text-slate-800">Week {{ selected_week }} Lineup</h3>
+        <span class="text-sm text-slate-500">{{ weekly_players|length }} players</span>
+    </div>
+
+    {% if weekly_players %}
+    <div class="overflow-x-auto">
+        <table class="w-full">
+            <thead>
+                <tr class="bg-slate-50 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    <th class="px-6 py-3">Player</th>
+                    <th class="px-6 py-3">Pos</th>
+                    <th class="px-6 py-3">Slot</th>
+                    <th class="px-6 py-3">NFL Team</th>
+                    <th class="px-6 py-3 text-right">Projected</th>
+                    <th class="px-6 py-3 text-right">Actual</th>
+                    <th class="px-6 py-3 text-right">+/-</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+                {% for wp, player in weekly_players %}
+                <tr class="hover:bg-slate-50 transition-colors {% if wp.slot_position in ['BE', 'IR'] %}opacity-60{% endif %}">
+                    <td class="px-6 py-3">
+                        <span class="text-sm font-medium text-slate-800">{{ player.name }}</span>
+                    </td>
+                    <td class="px-6 py-3">
+                        <span class="inline-flex items-center justify-center w-10 h-6 rounded text-xs font-bold badge-{{ player.position|lower }}">
+                            {{ player.position }}
+                        </span>
+                    </td>
+                    <td class="px-6 py-3">
+                        <span class="inline-flex items-center justify-center px-2 h-6 rounded text-xs font-semibold
+                            {% if wp.slot_position in ['BE', 'IR'] %}bg-slate-100 text-slate-500{% else %}bg-blue-50 text-blue-700{% endif %}">
+                            {{ wp.slot_position or '-' }}
+                        </span>
+                    </td>
+                    <td class="px-6 py-3 text-sm text-slate-600">{{ player.nfl_team }}</td>
+                    <td class="px-6 py-3 text-sm font-semibold text-slate-700 text-right">{{ "%.1f"|format(wp.projected_points) }}</td>
+                    <td class="px-6 py-3 text-sm font-semibold text-slate-700 text-right">{{ "%.1f"|format(wp.actual_points) }}</td>
+                    <td class="px-6 py-3 text-sm font-semibold text-right
+                        {% if wp.actual_points - wp.projected_points > 0 %}text-green-600{% elif wp.actual_points - wp.projected_points < 0 %}text-red-500{% else %}text-slate-500{% endif %}">
+                        {% set diff = wp.actual_points - wp.projected_points %}
+                        {{ "%+.1f"|format(diff) }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="p-12 text-center">
+        <p class="text-sm text-slate-400">No player data available for this week.</p>
+    </div>
+    {% endif %}
+</div>
+
+{% else %}
+<!-- Season Roster Table (default view) -->
 <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
     <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
         <h3 class="text-lg font-bold text-slate-800">Roster</h3>
@@ -118,4 +247,5 @@
     </div>
     {% endif %}
 </div>
+{% endif %}
 {% endblock %}

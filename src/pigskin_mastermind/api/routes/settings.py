@@ -142,3 +142,17 @@ async def sync_team(team_db_id: int, db: Session = Depends(get_db)):
         return _toast_response(str(e), "error")
     except Exception as e:
         return _toast_response(f"Sync failed: {str(e)}", "error")
+
+
+@router.post("/sync-weekly/{team_db_id}")
+async def sync_weekly_stats(team_db_id: int, db: Session = Depends(get_db)):
+    """Sync weekly stats for a team from ESPN box scores."""
+    try:
+        from pigskin_mastermind.services.espn_sync import ESPNSyncService
+        sync_service = ESPNSyncService(db)
+        weeks = sync_service.sync_weekly_stats(team_db_id)
+        return _toast_response(f"Synced {weeks} weeks of data!", "success")
+    except ValueError as e:
+        return _toast_response(str(e), "error")
+    except Exception as e:
+        return _toast_response(f"Weekly sync failed: {str(e)}", "error")

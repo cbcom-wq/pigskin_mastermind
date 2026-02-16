@@ -1,6 +1,6 @@
 import sys
 import os
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
 from datetime import datetime
 
@@ -14,7 +14,9 @@ if ESPN_API_PATH not in sys.path:
 
 from espn_api.football import League
 
-from pigskin_mastermind.models.database import DBTeam, DBPlayer, DBLeague
+from pigskin_mastermind.models.database import (
+    DBTeam, DBPlayer, DBLeague, DBWeeklyTeamStats, DBWeeklyPlayerStats
+)
 
 
 class ESPNSyncService:
@@ -116,6 +118,190 @@ class ESPNSyncService:
             raise ValueError(f"League credentials not found for {db_team.league_id}")
 
         return self.import_team(
+            league_id=db_team.league_id,
+            team_id=int(db_team.espn_team_id),
+            espn_s2=db_league.espn_s2,
+            swid=db_league.swid,
+            year=db_league.year
+        )
+
+    def import_weekly_stats(
+        self,
+        league_id: str,
+        team_id: int,
+        espn_s2: str,
+        swid: str,
+        year: int = 2024
+    ) -> int:
+        """Import weekly stats for all completed weeks for a team.
+
+        Uses ESPN box_scores API to get per-week player lineups and points.
+        Returns the number of weeks imported.
+        """
+        league = League(
+            league_id=int(league_id),
+            year=year,
+            espn_s2=espn_s2,
+            swid=swid
+        )
+
+        # Find the DB team
+        db_team = self.db.query(DBTeam).filter_by(
+            espn_team_id=str(team_id),
+            league_id=league_id
+        ).first()
+        if not db_team:
+            raise ValueError(
+                f"Team {team_id} in league {league_id} not found in database. "
+                "Import the team first."
+            )
+
+        # Find the ESPN team object to get schedule/outcomes
+        espn_team = None
+        for t in league.teams:
+            if t.team_id == team_id:
+                espn_team = t
+                break
+        if not espn_team:
+            raise ValueError(f"Team {team_id} not found in ESPN league {league_id}")
+
+        current_week = league.current_week
+        weeks_imported = 0
+
+        for week in range(1, current_week + 1):
+            try:
+                box_scores = league.box_scores(week=week)
+            except Exception:
+                continue
+
+            # Find the box score matching our team
+            team_box = None
+            is_home = False
+            for box in box_scores:
+                home_id = box.home_team.team_id if hasattr(box.home_team, 'team_id') else box.home_team
+                away_id = box.away_team.team_id if hasattr(box.away_team, 'team_id') else box.away_team
+                if home_id == team_id:
+                    team_box = box
+                    is_home = True
+                    break
+                elif away_id == team_id:
+                    team_box = box
+                    is_home = False
+                    break
+
+            if not team_box:
+                continue
+
+            # Extract team-level data
+            if is_home:
+                points_for = team_box.home_score
+                points_against = team_box.away_score
+                projected = team_box.home_projected
+                lineup = team_box.home_lineup
+                opponent = team_box.away_team
+            else:
+                points_for = team_box.away_score
+                points_against = team_box.home_score
+                projected = team_box.away_projected
+                lineup = team_box.away_lineup
+                opponent = team_box.home_team
+
+            opponent_name = opponent.team_name if hasattr(opponent, 'team_name') else str(opponent)
+
+            # Determine result from the espn_team outcomes list
+            result = 'U'
+            if week <= len(espn_team.outcomes):
+                result = espn_team.outcomes[week - 1]
+
+            # Upsert weekly team stats
+            db_weekly = self.db.query(DBWeeklyTeamStats).filter_by(
+                team_id=db_team.id, week=week
+            ).first()
+            if not db_weekly:
+                db_weekly = DBWeeklyTeamStats(
+                    team_id=db_team.id,
+                    week=week
+                )
+                self.db.add(db_weekly)
+
+            db_weekly.points_for = points_for
+            db_weekly.points_against = points_against
+            db_weekly.projected_points = projected
+            db_weekly.opponent_name = opponent_name
+            db_weekly.result = result
+            db_weekly.updated_at = datetime.utcnow()
+
+            self.db.flush()  # ensure db_weekly.id is available
+
+            # Import player stats for this week
+            self._import_weekly_player_stats(lineup, db_weekly)
+
+            weeks_imported += 1
+
+        self.db.commit()
+        return weeks_imported
+
+    def _import_weekly_player_stats(
+        self,
+        lineup: List[Any],
+        db_weekly: DBWeeklyTeamStats
+    ) -> None:
+        """Import player-level stats for a single week."""
+        for box_player in lineup:
+            player_id = f"espn_{box_player.playerId}"
+
+            # Find or create the base player record
+            db_player = self.db.query(DBPlayer).filter_by(player_id=player_id).first()
+            if not db_player:
+                db_player = DBPlayer(
+                    player_id=player_id,
+                    name=box_player.name,
+                    position=box_player.position,
+                    nfl_team=box_player.proTeam,
+                    team_id=db_weekly.team_id
+                )
+                self.db.add(db_player)
+                self.db.flush()
+
+            # Upsert the weekly player stats
+            db_wp = self.db.query(DBWeeklyPlayerStats).filter_by(
+                player_id=db_player.id,
+                weekly_team_stats_id=db_weekly.id
+            ).first()
+            if not db_wp:
+                db_wp = DBWeeklyPlayerStats(
+                    player_id=db_player.id,
+                    weekly_team_stats_id=db_weekly.id,
+                    week=db_weekly.week
+                )
+                self.db.add(db_wp)
+
+            db_wp.slot_position = getattr(box_player, 'slot_position', None)
+            db_wp.projected_points = getattr(box_player, 'projected_points', 0.0)
+            db_wp.actual_points = getattr(box_player, 'points', 0.0)
+            db_wp.stats = {
+                'breakdown': getattr(box_player, 'breakdown', {}),
+                'points_breakdown': getattr(box_player, 'points_breakdown', {}),
+            }
+            db_wp.updated_at = datetime.utcnow()
+
+    def sync_weekly_stats(self, team_db_id: int) -> int:
+        """Sync weekly stats for an existing team from ESPN.
+
+        Returns number of weeks imported.
+        """
+        db_team = self.db.query(DBTeam).filter_by(id=team_db_id).first()
+        if not db_team:
+            raise ValueError(f"Team {team_db_id} not found")
+
+        if not db_team.espn_team_id:
+            raise ValueError(f"Team {team_db_id} is not linked to ESPN")
+
+        db_league = self.db.query(DBLeague).filter_by(league_id=db_team.league_id).first()
+        if not db_league:
+            raise ValueError(f"League credentials not found for {db_team.league_id}")
+
+        return self.import_weekly_stats(
             league_id=db_team.league_id,
             team_id=int(db_team.espn_team_id),
             espn_s2=db_league.espn_s2,
