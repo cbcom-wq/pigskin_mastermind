@@ -6,15 +6,19 @@ A comprehensive fantasy football research, entertainment, and management applica
 
 ### Team Management
 - Create and manage fantasy football teams
-- Import teams from fantasy football services (ESPN, Yahoo)
+- **Import teams from ESPN Fantasy Football** with full roster and statistics
+- Import entire leagues with all teams at once
+- Import historical weekly data for analysis
 - Track team records and performance
 - Compare teams and analyze composition
 
 ### Data & Analysis
-- Player statistics tracking
+- **Real-time ESPN API integration** for live player and team data
+- Player statistics tracking with detailed breakdowns
 - Fantasy point calculations (customizable scoring)
 - Position-based player management
 - Team performance metrics
+- Historical data for trend analysis and projections
 
 ### Decision-Making Tools
 - **Lineup Optimizer**: Automatically generate optimal starting lineups based on projections
@@ -68,8 +72,18 @@ pigskin entertainment generate-name --count 5
 # Generate player-based names
 pigskin entertainment player-names --player "Patrick Mahomes"
 
-# Import from ESPN
-pigskin import-cmd espn --team-id 12345 --swid YOUR_SWID --espn-s2 YOUR_ESPN_S2 --league-id 67890
+# Import from ESPN Fantasy Football
+# Import a single team
+pigskin import-cmd espn --team-id 1 --league-id 123456 --swid "{YOUR_SWID}" --espn-s2 "YOUR_ESPN_S2"
+
+# Import entire league
+pigskin import-cmd espn-league --league-id 123456 --swid "{YOUR_SWID}" --espn-s2 "YOUR_ESPN_S2"
+
+# Import historical weekly stats
+pigskin import-cmd espn-weekly --team-id 1 --league-id 123456 --swid "{YOUR_SWID}" --espn-s2 "YOUR_ESPN_S2"
+```
+
+See [ESPN API Integration Guide](docs/ESPN_API_GUIDE.md) for detailed instructions on getting your ESPN credentials and using the import features.
 ```
 
 ### Python API
@@ -153,18 +167,27 @@ flake8 src/ tests/
 
 ## Features Roadmap
 
-- [ ] Real-time API integrations with ESPN and Yahoo
-- [ ] Historical data analysis
+- [x] ~~Real-time API integrations with ESPN~~ ✅ **Completed!**
+- [x] ~~Historical data analysis~~ ✅ **Completed!**
+- [ ] Yahoo Fantasy API integration
 - [ ] Machine learning-based projections
-- [ ] Web interface
+- [x] ~~Web interface~~ ✅ **Completed!**
 - [ ] Mobile app
 - [ ] Advanced analytics and visualizations
 - [ ] Draft assistant tools
 - [ ] Waiver wire recommendations
 
+## Documentation
+
+- [ESPN API Integration Guide](docs/ESPN_API_GUIDE.md) - Complete guide for importing ESPN Fantasy data
+- [Additional Data Sources](docs/DATA_SOURCES.md) - Information about other potential data sources
+- [Tutorial](docs/TUTORIAL.md) - Getting started guide
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+For adding new data source integrations, see [DATA_SOURCES.md](docs/DATA_SOURCES.md) for recommendations and implementation patterns.
 
 ## License
 
