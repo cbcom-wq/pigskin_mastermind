@@ -64,8 +64,8 @@ def main():
         mahomes, mahomes_yearly_criteria
     )
 
-    print("Player: {0}".format(mahomes_yearly_report['player_name']))
-    print("Position: {0}".format(mahomes_yearly_report['position']))
+    print(f"Player: {mahomes_yearly_report['player_name']}")
+    print(f"Position: {mahomes_yearly_report['position']}")
     print(f"Team: {mahomes_yearly_report['team']}")
     print(f"Projected Points (Season): {mahomes_yearly_report['projected_points']}")
     print()
@@ -88,8 +88,8 @@ def main():
         kelce, kelce_yearly_criteria
     )
 
-    print("Player: {0}".format(kelce_yearly_report['player_name']))
-    print("Position: {0}".format(kelce_yearly_report['position']))
+    print(f"Player: {kelce_yearly_report['player_name']}")
+    print(f"Position: {kelce_yearly_report['position']}")
     print(f"Team: {kelce_yearly_report['team']}")
     print(f"Projected Points (Season): {kelce_yearly_report['projected_points']}")
     print()
