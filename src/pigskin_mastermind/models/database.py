@@ -22,6 +22,8 @@ class DBPlayer(Base):
 
     team = relationship("DBTeam", back_populates="players")
     weekly_stats = relationship("DBWeeklyPlayerStats", back_populates="player", cascade="all, delete-orphan")
+    season_stats = relationship("DBPlayerSeasonStats", back_populates="player", cascade="all, delete-orphan")
+    game_logs = relationship("DBPlayerGameLog", back_populates="player", cascade="all, delete-orphan")
 
 
 class DBTeam(Base):
@@ -86,6 +88,140 @@ class DBWeeklyPlayerStats(Base):
 
     player = relationship("DBPlayer", back_populates="weekly_stats")
     weekly_team_stats = relationship("DBWeeklyTeamStats", back_populates="player_stats")
+
+
+class DBPlayerSeasonStats(Base):
+    """Aggregated season-level stats for a player (one row per player per year)."""
+    __tablename__ = "player_season_stats"
+    __table_args__ = (
+        UniqueConstraint('player_id', 'year', name='uq_player_season'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=False, index=True)
+    year = Column(Integer, nullable=False)
+    games_played = Column(Integer, default=0)
+
+    # Passing
+    pass_att = Column(Integer, default=0)
+    pass_cmp = Column(Integer, default=0)
+    pass_yd = Column(Integer, default=0)
+    pass_td = Column(Integer, default=0)
+    pass_int = Column(Integer, default=0)
+    pass_rating = Column(Float, default=0.0)
+
+    # Rushing
+    rush_att = Column(Integer, default=0)
+    rush_yd = Column(Integer, default=0)
+    rush_td = Column(Integer, default=0)
+    rush_fumbles = Column(Integer, default=0)
+
+    # Receiving
+    targets = Column(Integer, default=0)
+    rec = Column(Integer, default=0)
+    rec_yd = Column(Integer, default=0)
+    rec_td = Column(Integer, default=0)
+
+    # Fantasy
+    fantasy_points_total = Column(Float, default=0.0)
+    fantasy_points_avg = Column(Float, default=0.0)
+    fantasy_points_per_touch = Column(Float, default=0.0)
+
+    # Advanced (from nfl_data_py)
+    snap_count = Column(Integer, nullable=True)
+    snap_pct = Column(Float, nullable=True)
+    air_yards = Column(Float, nullable=True)
+    yac = Column(Float, nullable=True)
+    wopr = Column(Float, nullable=True)
+
+    # Meta
+    source = Column(String, default='espn')  # 'espn', 'nfl_data_py', 'combined'
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    player = relationship("DBPlayer", back_populates="season_stats")
+
+
+class DBNFLTeamStats(Base):
+    """NFL team-level stats per season/week for matchup analysis."""
+    __tablename__ = "nfl_team_stats"
+    __table_args__ = (
+        UniqueConstraint('nfl_team', 'year', 'week', name='uq_nfl_team_year_week'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    nfl_team = Column(String, nullable=False, index=True)
+    year = Column(Integer, nullable=False)
+    week = Column(Integer, nullable=True)  # NULL for season totals
+
+    # Offense
+    total_yards = Column(Integer, default=0)
+    pass_yards = Column(Integer, default=0)
+    rush_yards = Column(Integer, default=0)
+    points_scored = Column(Integer, default=0)
+
+    # Defense
+    points_allowed = Column(Integer, default=0)
+    pass_yards_allowed = Column(Integer, default=0)
+    rush_yards_allowed = Column(Integer, default=0)
+
+    # Positional defense rankings (1=best defense, 32=worst)
+    def_rank_vs_qb = Column(Integer, nullable=True)
+    def_rank_vs_rb = Column(Integer, nullable=True)
+    def_rank_vs_wr = Column(Integer, nullable=True)
+    def_rank_vs_te = Column(Integer, nullable=True)
+
+    # Meta
+    source = Column(String, default='nfl_data_py')
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DBPlayerGameLog(Base):
+    """Individual game log entries — one row per player per game."""
+    __tablename__ = "player_game_logs"
+    __table_args__ = (
+        UniqueConstraint('player_id', 'year', 'week', name='uq_player_game_log'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=False, index=True)
+    year = Column(Integer, nullable=False)
+    week = Column(Integer, nullable=False)
+    opponent = Column(String, nullable=True)
+
+    # Passing
+    pass_att = Column(Integer, default=0)
+    pass_cmp = Column(Integer, default=0)
+    pass_yd = Column(Integer, default=0)
+    pass_td = Column(Integer, default=0)
+    pass_int = Column(Integer, default=0)
+
+    # Rushing
+    rush_att = Column(Integer, default=0)
+    rush_yd = Column(Integer, default=0)
+    rush_td = Column(Integer, default=0)
+
+    # Receiving
+    targets = Column(Integer, default=0)
+    rec = Column(Integer, default=0)
+    rec_yd = Column(Integer, default=0)
+    rec_td = Column(Integer, default=0)
+
+    # Misc
+    fumbles = Column(Integer, default=0)
+    fumbles_lost = Column(Integer, default=0)
+    two_pt_conversions = Column(Integer, default=0)
+
+    # Fantasy
+    fantasy_points = Column(Float, default=0.0)
+
+    # Tracking
+    is_active_game = Column(Boolean, default=False)
+
+    # Meta
+    source = Column(String, default='espn')  # 'espn', 'nfl_data_py'
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    player = relationship("DBPlayer", back_populates="game_logs")
 
 
 class DBLeague(Base):

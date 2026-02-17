@@ -1,0 +1,186 @@
+"""Stats API routes for player and team statistics."""
+
+from fastapi import APIRouter, Depends, Query, HTTPException
+from sqlalchemy.orm import Session
+from typing import List, Optional
+
+from pigskin_mastermind.api.database import get_db
+from pigskin_mastermind.models.database import DBPlayer, DBLeague
+from pigskin_mastermind.services.stats_service import StatsService
+from pigskin_mastermind.services.projection_criteria_builder import ProjectionCriteriaBuilder
+
+router = APIRouter(prefix="/api/stats", tags=["stats"])
+
+
+@router.get("/players/{player_id}")
+async def get_player_stats(
+    player_id: int,
+    year: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Get player stats summary."""
+    service = StatsService(db)
+    result = service.get_player_stats(player_id, year=year)
+    if not result:
+        raise HTTPException(status_code=404, detail="Player not found")
+    return result
+
+
+@router.get("/players/{player_id}/game-logs")
+async def get_player_game_logs(
+    player_id: int,
+    year: Optional[int] = Query(None),
+    limit: Optional[int] = Query(None, le=100),
+    db: Session = Depends(get_db),
+):
+    """Get game log history for a player."""
+    service = StatsService(db)
+    return service.get_player_game_logs(player_id, year=year, limit=limit)
+
+
+@router.get("/players/{player_id}/trends")
+async def get_player_trends(
+    player_id: int,
+    weeks: int = Query(4, ge=1, le=17),
+    db: Session = Depends(get_db),
+):
+    """Get recent performance trends for a player."""
+    service = StatsService(db)
+    return service.get_recent_performance(player_id, num_weeks=weeks)
+
+
+@router.get("/players/compare")
+async def compare_players(
+    player_ids: str = Query(..., description="Comma-separated player IDs"),
+    year: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Compare multiple players side-by-side."""
+    ids = [int(x.strip()) for x in player_ids.split(",") if x.strip()]
+    if len(ids) < 2:
+        raise HTTPException(status_code=400, detail="At least 2 player IDs required")
+    service = StatsService(db)
+    return service.compare_players(ids, year=year)
+
+
+@router.get("/teams/{nfl_team}/defense")
+async def get_team_defense(
+    nfl_team: str,
+    year: int = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Get team defense rankings by position."""
+    service = StatsService(db)
+    result = service.get_team_defense_rankings(nfl_team, year)
+    if not result:
+        raise HTTPException(status_code=404, detail="Team stats not found")
+    return result
+
+
+@router.post("/import/espn")
+async def import_espn_stats(
+    league_id: str = Query(...),
+    team_id: int = Query(...),
+    years: str = Query("2024", description="Comma-separated years"),
+    db: Session = Depends(get_db),
+):
+    """Trigger ESPN stats import for multiple seasons."""
+    from pigskin_mastermind.services.espn_sync import ESPNSyncService
+
+    db_league = db.query(DBLeague).filter_by(league_id=league_id).first()
+    if not db_league:
+        raise HTTPException(status_code=404, detail="League not found. Set up credentials first.")
+
+    year_list = [int(y.strip()) for y in years.split(",") if y.strip()]
+    service = ESPNSyncService(db)
+    results = service.import_weekly_stats_multi_season(
+        league_id=league_id,
+        team_id=team_id,
+        espn_s2=db_league.espn_s2,
+        swid=db_league.swid,
+        years=year_list,
+    )
+    return {"status": "success", "weeks_imported_by_year": results}
+
+
+@router.post("/import/nfl")
+async def import_nfl_stats(
+    years: str = Query("2024", description="Comma-separated years"),
+    db: Session = Depends(get_db),
+):
+    """Trigger nfl_data_py import for league-wide stats."""
+    from pigskin_mastermind.services.nfl_data_service import NFLDataService
+
+    year_list = [int(y.strip()) for y in years.split(",") if y.strip()]
+    service = NFLDataService(db)
+
+    weekly_count = service.import_weekly_stats(year_list)
+    seasonal_count = service.import_seasonal_stats(year_list)
+    defense_count = service.import_team_defense_rankings(year_list)
+
+    return {
+        "status": "success",
+        "weekly_rows": weekly_count,
+        "seasonal_rows": seasonal_count,
+        "defense_rows": defense_count,
+    }
+
+
+@router.post("/refresh")
+async def refresh_current_week(
+    team_db_id: int = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Poll current week scores for a team."""
+    from pigskin_mastermind.services.espn_sync import ESPNSyncService
+
+    service = ESPNSyncService(db)
+    try:
+        result = service.refresh_current_week(team_db_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
+
+
+@router.get("/players/{player_id}/projection")
+async def get_auto_projection(
+    player_id: int,
+    week: Optional[int] = Query(None),
+    year: int = Query(2025),
+    db: Session = Depends(get_db),
+):
+    """Auto-generate projection using criteria builder.
+
+    If week is provided, returns weekly projection criteria.
+    Otherwise, returns yearly projection criteria.
+    """
+    from pigskin_mastermind.models.player import Player as PlayerModel
+    from pigskin_mastermind.services.projection_service import (
+        WeeklyProjectionService, YearlyProjectionService
+    )
+
+    db_player = db.query(DBPlayer).filter_by(id=player_id).first()
+    if not db_player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    builder = ProjectionCriteriaBuilder(db)
+
+    # Create a Player model for the projection service
+    player_model = PlayerModel(
+        player_id=db_player.player_id,
+        name=db_player.name,
+        position=db_player.position,
+        team=db_player.nfl_team,
+        projected_points=db_player.projected_points,
+    )
+
+    if week:
+        criteria = builder.build_weekly_criteria(player_id, week, year)
+        service = WeeklyProjectionService()
+        report = service.generate_projection_report(player_model, criteria)
+    else:
+        criteria = builder.build_yearly_criteria(player_id, year)
+        service = YearlyProjectionService()
+        report = service.generate_projection_report(player_model, criteria)
+
+    return report
