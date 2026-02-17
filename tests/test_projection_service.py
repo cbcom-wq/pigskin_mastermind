@@ -1,6 +1,5 @@
 """Tests for projection services."""
 
-import pytest
 from pigskin_mastermind.models.player import Player
 from pigskin_mastermind.models.projection_criteria import (
     YearlyProjectionCriteria,
@@ -20,7 +19,7 @@ def test_yearly_projection_service_basic():
         position="RB",
         team="KC",
     )
-    
+
     criteria = YearlyProjectionCriteria(
         player_skill_level=75.0,
         team_offense_level=70.0,
@@ -33,10 +32,10 @@ def test_yearly_projection_service_basic():
         age_deviation_from_optimum=-1.0,
         coaching_stability_score=80.0,
     )
-    
+
     service = YearlyProjectionService()
     projection = service.calculate_projection(player, criteria)
-    
+
     # Projection should be positive
     assert projection > 0
     # Should be influenced by historical average
@@ -51,11 +50,11 @@ def test_yearly_projection_service_with_defaults():
         position="QB",
         team="KC",
     )
-    
+
     criteria = YearlyProjectionCriteria()
     service = YearlyProjectionService()
     projection = service.calculate_projection(player, criteria)
-    
+
     # With all defaults (averages), projection should be non-negative
     assert projection >= 0
 
@@ -68,23 +67,23 @@ def test_yearly_projection_high_skill_increases_projection():
         position="WR",
         team="KC",
     )
-    
+
     # Low skill criteria
     low_skill_criteria = YearlyProjectionCriteria(
         player_skill_level=30.0,
         historical_average_points=10.0,
     )
-    
+
     # High skill criteria
     high_skill_criteria = YearlyProjectionCriteria(
         player_skill_level=90.0,
         historical_average_points=10.0,
     )
-    
+
     service = YearlyProjectionService()
     low_projection = service.calculate_projection(player, low_skill_criteria)
     high_projection = service.calculate_projection(player, high_skill_criteria)
-    
+
     # Higher skill should result in higher projection
     assert high_projection > low_projection
 
@@ -97,23 +96,23 @@ def test_yearly_projection_age_deviation_penalty():
         position="RB",
         team="KC",
     )
-    
+
     # At optimal age
     optimal_criteria = YearlyProjectionCriteria(
         age_deviation_from_optimum=0.0,
         historical_average_points=15.0,
     )
-    
+
     # Far from optimal age
     non_optimal_criteria = YearlyProjectionCriteria(
         age_deviation_from_optimum=5.0,
         historical_average_points=15.0,
     )
-    
+
     service = YearlyProjectionService()
     optimal_projection = service.calculate_projection(player, optimal_criteria)
     non_optimal_projection = service.calculate_projection(player, non_optimal_criteria)
-    
+
     # Optimal age should result in higher projection
     assert optimal_projection > non_optimal_projection
 
@@ -126,7 +125,7 @@ def test_yearly_projection_report_generation():
         position="QB",
         team="KC",
     )
-    
+
     criteria = YearlyProjectionCriteria(
         player_skill_level=95.0,
         team_offense_level=90.0,
@@ -134,19 +133,19 @@ def test_yearly_projection_report_generation():
         age_deviation_from_optimum=0.0,
         coaching_stability_score=95.0,
     )
-    
+
     service = YearlyProjectionService()
     report = service.generate_projection_report(player, criteria)
-    
+
     # Check report structure
-    assert report['player_id'] == "p1"
-    assert report['player_name'] == "Patrick Mahomes"
-    assert report['position'] == "QB"
-    assert report['team'] == "KC"
-    assert report['projection_type'] == "yearly"
-    assert 'projected_points' in report
-    assert 'criteria_used' in report
-    assert report['criteria_used']['player_skill_level'] == 95.0
+    assert report["player_id"] == "p1"
+    assert report["player_name"] == "Patrick Mahomes"
+    assert report["position"] == "QB"
+    assert report["team"] == "KC"
+    assert report["projection_type"] == "yearly"
+    assert "projected_points" in report
+    assert "criteria_used" in report
+    assert report["criteria_used"]["player_skill_level"] == 95.0
 
 
 def test_weekly_projection_service_basic():
@@ -157,7 +156,7 @@ def test_weekly_projection_service_basic():
         position="WR",
         team="KC",
     )
-    
+
     criteria = WeeklyProjectionCriteria(
         player_skill_level=80.0,
         team_offense_level=75.0,
@@ -171,10 +170,10 @@ def test_weekly_projection_service_basic():
         offensive_momentum_score=20.0,
         weather_impact_score=-10.0,
     )
-    
+
     service = WeeklyProjectionService()
     projection = service.calculate_projection(player, criteria)
-    
+
     # Projection should be positive
     assert projection > 0
 
@@ -187,11 +186,11 @@ def test_weekly_projection_service_with_defaults():
         position="TE",
         team="KC",
     )
-    
+
     criteria = WeeklyProjectionCriteria()
     service = WeeklyProjectionService()
     projection = service.calculate_projection(player, criteria)
-    
+
     # With all defaults, projection should be non-negative
     assert projection >= 0
 
@@ -204,23 +203,27 @@ def test_weekly_projection_weak_defense_increases_projection():
         position="RB",
         team="KC",
     )
-    
+
     # Strong defense (low rank number = strong)
     strong_defense_criteria = WeeklyProjectionCriteria(
         opposing_defense_vs_position_rank=1,
         historical_average_points=10.0,
     )
-    
+
     # Weak defense (high rank number = weak)
     weak_defense_criteria = WeeklyProjectionCriteria(
         opposing_defense_vs_position_rank=32,
         historical_average_points=10.0,
     )
-    
+
     service = WeeklyProjectionService()
-    strong_defense_projection = service.calculate_projection(player, strong_defense_criteria)
-    weak_defense_projection = service.calculate_projection(player, weak_defense_criteria)
-    
+    strong_defense_projection = service.calculate_projection(
+        player, strong_defense_criteria
+    )
+    weak_defense_projection = service.calculate_projection(
+        player, weak_defense_criteria
+    )
+
     # Weaker opposing defense should result in higher projection
     assert weak_defense_projection > strong_defense_projection
 
@@ -233,23 +236,27 @@ def test_weekly_projection_momentum_impact():
         position="QB",
         team="KC",
     )
-    
+
     # Negative momentum
     negative_momentum_criteria = WeeklyProjectionCriteria(
         offensive_momentum_score=-50.0,
         historical_average_points=20.0,
     )
-    
+
     # Positive momentum
     positive_momentum_criteria = WeeklyProjectionCriteria(
         offensive_momentum_score=50.0,
         historical_average_points=20.0,
     )
-    
+
     service = WeeklyProjectionService()
-    negative_projection = service.calculate_projection(player, negative_momentum_criteria)
-    positive_projection = service.calculate_projection(player, positive_momentum_criteria)
-    
+    negative_projection = service.calculate_projection(
+        player, negative_momentum_criteria
+    )
+    positive_projection = service.calculate_projection(
+        player, positive_momentum_criteria
+    )
+
     # Positive momentum should result in higher projection
     assert positive_projection > negative_projection
 
@@ -262,7 +269,7 @@ def test_weekly_projection_report_generation():
         position="TE",
         team="KC",
     )
-    
+
     criteria = WeeklyProjectionCriteria(
         player_skill_level=90.0,
         team_offense_level=85.0,
@@ -271,19 +278,19 @@ def test_weekly_projection_report_generation():
         offensive_momentum_score=25.0,
         weather_impact_score=0.0,
     )
-    
+
     service = WeeklyProjectionService()
     report = service.generate_projection_report(player, criteria)
-    
+
     # Check report structure
-    assert report['player_id'] == "p2"
-    assert report['player_name'] == "Travis Kelce"
-    assert report['position'] == "TE"
-    assert report['team'] == "KC"
-    assert report['projection_type'] == "weekly"
-    assert 'projected_points' in report
-    assert 'criteria_used' in report
-    assert report['criteria_used']['opposing_defense_vs_position_rank'] == 30
+    assert report["player_id"] == "p2"
+    assert report["player_name"] == "Travis Kelce"
+    assert report["position"] == "TE"
+    assert report["team"] == "KC"
+    assert report["projection_type"] == "weekly"
+    assert "projected_points" in report
+    assert "criteria_used" in report
+    assert report["criteria_used"]["opposing_defense_vs_position_rank"] == 30
 
 
 def test_projection_non_negative():
@@ -294,7 +301,7 @@ def test_projection_non_negative():
         position="K",
         team="KC",
     )
-    
+
     # Very negative criteria
     negative_criteria = WeeklyProjectionCriteria(
         player_skill_level=10.0,
@@ -305,9 +312,9 @@ def test_projection_non_negative():
         offensive_momentum_score=-100.0,
         weather_impact_score=-100.0,
     )
-    
+
     service = WeeklyProjectionService()
     projection = service.calculate_projection(player, negative_criteria)
-    
+
     # Even with very negative criteria, projection should not be negative
     assert projection >= 0
