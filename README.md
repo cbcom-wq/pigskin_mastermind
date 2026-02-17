@@ -19,6 +19,7 @@ A comprehensive fantasy football research, entertainment, and management applica
 ### Decision-Making Tools
 - **Lineup Optimizer**: Automatically generate optimal starting lineups based on projections
 - **Trade Analyzer**: Evaluate trade fairness and impact
+- **Player Projections**: Generate weekly and yearly fantasy point projections using advanced criteria
 - Lineup change suggestions
 - Player comparison tools
 
@@ -77,6 +78,8 @@ pigskin import-cmd espn --team-id 12345 --swid YOUR_SWID --espn-s2 YOUR_ESPN_S2 
 ```python
 from pigskin_mastermind import Team, Player, TeamManager
 from pigskin_mastermind.services.decision_tools import LineupOptimizer, TradeAnalyzer
+from pigskin_mastermind.services.projection_service import YearlyProjectionService, WeeklyProjectionService
+from pigskin_mastermind.models.projection_criteria import YearlyProjectionCriteria, WeeklyProjectionCriteria
 from pigskin_mastermind.entertainment import TeamNameGenerator
 
 # Create a team manager
@@ -93,6 +96,31 @@ player = Player(
 )
 team.add_player(player)
 
+# Generate yearly projection
+yearly_service = YearlyProjectionService()
+yearly_criteria = YearlyProjectionCriteria(
+    player_skill_level=95.0,
+    team_offense_level=90.0,
+    historical_average_points=25.0,
+    age_deviation_from_optimum=0.0,
+    coaching_stability_score=95.0
+)
+yearly_projection = yearly_service.calculate_projection(player, yearly_criteria)
+print(f"Yearly projection: {yearly_projection} points")
+
+# Generate weekly projection
+weekly_service = WeeklyProjectionService()
+weekly_criteria = WeeklyProjectionCriteria(
+    player_skill_level=95.0,
+    team_offense_level=90.0,
+    historical_average_points=25.0,
+    opposing_defense_vs_position_rank=28,
+    offensive_momentum_score=20.0,
+    weather_impact_score=0.0
+)
+weekly_report = weekly_service.generate_projection_report(player, weekly_criteria)
+print(f"Weekly projection: {weekly_report['projected_points']} points")
+
 # Optimize lineup
 optimizer = LineupOptimizer()
 result = optimizer.optimize_lineup(team)
@@ -108,6 +136,50 @@ analyzer = TradeAnalyzer()
 trade_result = analyzer.evaluate_trade_for_team(team, gives=[player1], receives=[player2])
 print(f"Trade recommendation: {trade_result['recommendation']}")
 ```
+
+## Player Projections
+
+The projection system provides sophisticated fantasy point projections for players using multiple criteria. Two types of projections are available:
+
+### Yearly Projections
+Season-long projections using criteria such as:
+- Player skill level and team offense strength
+- Historical performance averages
+- Age deviation from optimal position age
+- Coaching staff stability
+- Injury risk and recent trends
+
+### Weekly Projections
+Week-by-week projections accounting for:
+- Opponent defensive strength vs. specific position
+- Recent offensive momentum
+- Weather conditions and forecast
+- Shared base projection criteria (see below) plus weekly-specific factors
+
+### Projection Criteria
+
+Both projection types use common base criteria:
+- **Player Skill Level** (0-100): Overall player ability rating
+- **Team Offense Level** (0-100): Team's offensive strength rating
+- **Opponent Defense Level** (0-100): Defense quality (higher = worse defense, better for offense)
+- **Positional Touch Percentage** (0-100): Share of team touches at this position
+- **Recent Trend Score** (-100 to 100): Performance trend indicator
+- **Historical Average Points**: Past fantasy points per game average
+- **Fantasy Points Per Touch**: Efficiency metric
+- **Injury Risk Score** (0-100): Injury history and risk assessment
+
+**Yearly-specific criteria:**
+- **Age Deviation from Optimum** (-10 to 10): Distance from peak age for position
+- **Coaching Stability Score** (0-100): Coaching staff consistency rating
+
+**Weekly-specific criteria:**
+- **Opposing Defense vs Position Rank** (1-32): Defensive rank against this position
+- **Offensive Momentum Score** (-100 to 100): Recent team offensive performance
+- **Weather Impact Score** (-100 to 100): Weather conditions impact
+
+### Example Usage
+
+See the Python API section above for projection usage examples.
 
 ## Project Structure
 
@@ -153,9 +225,11 @@ flake8 src/ tests/
 
 ## Features Roadmap
 
+- [x] Basic player projection system (weekly and yearly)
 - [ ] Real-time API integrations with ESPN and Yahoo
 - [ ] Historical data analysis
 - [ ] Machine learning-based projections
+- [ ] Enhanced projection algorithms with position-specific criteria
 - [ ] Web interface
 - [ ] Mobile app
 - [ ] Advanced analytics and visualizations
