@@ -8,8 +8,53 @@ from typing import Optional
 
 from pigskin_mastermind.api.database import get_db
 from pigskin_mastermind.models.database import DBPlayer, DBTeam
+from pigskin_mastermind.services.stats_service import StatsService
 
 router = APIRouter(tags=["players"])
+
+
+@router.get("/players/{player_id}")
+async def player_detail_page(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+):
+    """Player detail page showing stats, game logs, and projections."""
+    from pigskin_mastermind.api.main import templates
+
+    player = db.query(DBPlayer).filter_by(id=player_id).first()
+    if not player:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse("/players", status_code=302)
+
+    stats_svc = StatsService(db)
+
+    # Season stats from stats service
+    player_stats = stats_svc.get_player_stats(player_id)
+    seasons = player_stats.get("seasons", [])
+
+    # Game logs (last 30 games)
+    game_logs = stats_svc.get_player_game_logs(player_id, limit=30)
+
+    # Recent trend
+    trend = stats_svc.get_recent_performance(player_id, num_weeks=4)
+    if trend.get("num_weeks", 0) == 0:
+        trend = None
+
+    # Fantasy team name (if rostered)
+    fantasy_team = player.team.name if player.team else None
+
+    return templates.TemplateResponse(
+        "players/details.html",
+        {
+            "request": request,
+            "player": player,
+            "seasons": seasons,
+            "game_logs": game_logs,
+            "trend": trend,
+            "fantasy_team": fantasy_team,
+        },
+    )
 
 
 @router.get("/players")
@@ -65,7 +110,7 @@ async def search_players(
         if p.team:
             team_name = p.team.name
         html_parts.append(
-            f'<div class="flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 transition-colors cursor-default">'
+            f'<a href="/players/{p.id}" class="flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 transition-colors cursor-pointer">'
             f'  <div class="flex items-center gap-3">'
             f'    <span class="inline-flex items-center justify-center w-10 h-6 rounded text-xs font-bold badge-{p.position.lower()}">{p.position}</span>'
             f'    <div>'
@@ -77,7 +122,7 @@ async def search_players(
             f'    <p class="text-sm font-semibold text-slate-700">{p.projected_points:.1f}</p>'
             f'    <p class="text-[10px] text-slate-400">projected</p>'
             f'  </div>'
-            f'</div>'
+            f'</a>'
         )
     return HTMLResponse("\n".join(html_parts))
 
@@ -141,8 +186,8 @@ async def list_players(
     for p in players:
         team_name = p.team.name if p.team else "—"
         html_parts.append(
-            f'<tr class="hover:bg-slate-50 transition-colors">'
-            f'  <td class="px-6 py-3 text-sm font-medium text-slate-800">{p.name}</td>'
+            f'<tr class="hover:bg-slate-50 transition-colors cursor-pointer" onclick="window.location=\'/players/{p.id}\'" >'
+            f'  <td class="px-6 py-3 text-sm font-medium"><a href="/players/{p.id}" class="text-field-700 hover:text-field-900 hover:underline">{p.name}</a></td>'
             f'  <td class="px-6 py-3">'
             f'    <span class="inline-flex items-center justify-center w-10 h-6 rounded text-xs font-bold badge-{p.position.lower()}">{p.position}</span>'
             f'  </td>'

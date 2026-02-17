@@ -175,7 +175,7 @@
                 {% for wp, player in weekly_players %}
                 <tr class="hover:bg-slate-50 transition-colors {% if wp.slot_position in ['BE', 'IR'] %}opacity-60{% endif %}">
                     <td class="px-6 py-3">
-                        <span class="text-sm font-medium text-slate-800">{{ player.name }}</span>
+                        <a href="/players/{{ player.id }}" class="text-sm font-medium text-field-700 hover:text-field-900 hover:underline">{{ player.name }}</a>
                     </td>
                     <td class="px-6 py-3">
                         <span class="inline-flex items-center justify-center w-10 h-6 rounded text-xs font-bold badge-{{ player.position|lower }}">
@@ -232,7 +232,7 @@
                 {% for player in players %}
                 <tr class="hover:bg-slate-50 transition-colors">
                     <td class="px-6 py-3">
-                        <span class="text-sm font-medium text-slate-800">{{ player.name }}</span>
+                        <a href="/players/{{ player.id }}" class="text-sm font-medium text-field-700 hover:text-field-900 hover:underline">{{ player.name }}</a>
                     </td>
                     <td class="px-6 py-3">
                         <span class="inline-flex items-center justify-center w-10 h-6 rounded text-xs font-bold badge-{{ player.position|lower }}">
