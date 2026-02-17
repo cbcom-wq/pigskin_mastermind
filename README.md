@@ -154,7 +154,7 @@ Week-by-week projections accounting for:
 - Opponent defensive strength vs. specific position
 - Recent offensive momentum
 - Weather conditions and forecast
-- All yearly criteria factors
+- Shared base projection criteria (see below) plus weekly-specific factors
 
 ### Projection Criteria
 
