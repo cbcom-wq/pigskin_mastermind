@@ -11,6 +11,11 @@ setup(
         "requests>=2.31.0",
         "pandas>=2.0.0",
         "click>=8.1.0",
+        "espn-api>=0.7.0",
+        "fastapi>=0.109.0",
+        "uvicorn[standard]>=0.27.0",
+        "sqlalchemy>=2.0.25",
+        "jinja2>=3.1.3",
     ],
     extras_require={
         "dev": [
