@@ -73,9 +73,8 @@ class ProjectionService(ABC):
         base_score += trend_adjustment
 
         # Adjust for fantasy points per touch efficiency
-        if criteria.fantasy_points_per_touch > 0:
-            efficiency_adjustment = (criteria.fantasy_points_per_touch - 0.5) * 2
-            base_score += efficiency_adjustment
+        efficiency_adjustment = (criteria.fantasy_points_per_touch - 0.5) * 2
+        base_score += efficiency_adjustment
 
         # Adjust for injury risk (higher risk = lower projection)
         injury_penalty = criteria.injury_risk_score * -0.05
