@@ -34,7 +34,7 @@ def test_import_team_from_espn(mock_league, db):
     mock_team = Mock()
     mock_team.team_id = 1
     mock_team.team_name = "ESPN Team"
-    mock_team.owner = "ESPN Owner"
+    mock_team.owners = [{'displayName': 'ESPN Owner', 'firstName': 'ESPN', 'lastName': 'Owner'}]
     mock_team.wins = 5
     mock_team.losses = 3
     mock_team.ties = 0
