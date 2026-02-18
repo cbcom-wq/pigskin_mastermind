@@ -526,6 +526,123 @@ class ESPNSyncService:
         self.db.commit()
         return count
 
+    def import_all_players(
+        self,
+        league_id: str,
+        espn_s2: str,
+        swid: str,
+        year: int = 2024,
+        week: int = None,
+        positions: Optional[List[str]] = None,
+        batch_size: int = 500
+    ) -> int:
+        """Import all available players from ESPN (including free agents).
+
+        Args:
+            league_id: ESPN league ID
+            espn_s2: ESPN S2 authentication cookie
+            swid: ESPN SWID authentication cookie
+            year: Season year
+            week: Week to fetch player data for (defaults to current week)
+            positions: List of positions to import (e.g., ['QB', 'RB', 'WR', 'TE']).
+                      If None, imports all positions.
+            batch_size: Number of players to fetch per batch (max 500)
+
+        Returns:
+            Number of players imported/updated
+        """
+        league = League(
+            league_id=int(league_id),
+            year=year,
+            espn_s2=espn_s2,
+            swid=swid
+        )
+
+        if not week:
+            week = league.current_week
+
+        # Get all positions if not specified
+        if positions is None:
+            positions = ['QB', 'RB', 'WR', 'TE', 'K', 'D/ST']
+
+        players_imported = 0
+
+        # Fetch free agents for each position
+        for position in positions:
+            try:
+                free_agents = league.free_agents(
+                    week=week,
+                    size=batch_size,
+                    position=position
+                )
+
+                for espn_player in free_agents:
+                    self._import_player_from_box(espn_player, team_db_id=None)
+                    players_imported += 1
+
+            except Exception as e:
+                # Log error but continue with other positions
+                print(f"Error importing {position} players: {e}")
+                continue
+
+        self.db.commit()
+        return players_imported
+
+    def _import_player_from_box(self, espn_player: Any, team_db_id: Optional[int]) -> DBPlayer:
+        """Import a player from a BoxPlayer object (used by free agents and rosters).
+
+        Args:
+            espn_player: ESPN BoxPlayer object
+            team_db_id: Database team ID (None for free agents)
+
+        Returns:
+            DBPlayer instance
+        """
+        player_id = f"espn_{espn_player.playerId}"
+
+        db_player = self.db.query(DBPlayer).filter_by(player_id=player_id).first()
+        if not db_player:
+            db_player = DBPlayer(player_id=player_id)
+            self.db.add(db_player)
+
+        db_player.name = espn_player.name
+        db_player.position = espn_player.position
+        db_player.nfl_team = espn_player.proTeam
+        db_player.projected_points = getattr(espn_player, 'projected_points', 0.0)
+        db_player.actual_points = getattr(espn_player, 'points', 0.0)
+        
+        # Only update stats if available
+        stats = getattr(espn_player, 'stats', {})
+        if stats:
+            db_player.stats = stats
+        
+        # Update team_id only if provided (rostered player)
+        if team_db_id is not None:
+            db_player.team_id = team_db_id
+
+        return db_player
+
+    def sync_all_players(self, league_id: str, year: int = 2024) -> int:
+        """Sync all available players for a league.
+
+        Args:
+            league_id: League ID to sync players for
+            year: Season year
+
+        Returns:
+            Number of players imported/updated
+        """
+        db_league = self.db.query(DBLeague).filter_by(league_id=league_id).first()
+        if not db_league:
+            raise ValueError(f"League {league_id} not found in database")
+
+        return self.import_all_players(
+            league_id=league_id,
+            espn_s2=db_league.espn_s2,
+            swid=db_league.swid,
+            year=year or db_league.year
+        )
+
     def refresh_current_week(self, team_db_id: int) -> Dict[str, Any]:
         """Re-fetch only current week's box scores for active game tracking.
 

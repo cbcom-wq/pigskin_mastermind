@@ -24,7 +24,7 @@ def _toast_response(message: str, type: str = "success"):
 async def list_teams(request: Request, db: Session = Depends(get_db)):
     """List all teams."""
     from pigskin_mastermind.api.main import templates
-    teams = db.query(DBTeam).order_by(DBTeam.created_at.desc()).all()
+    teams = db.query(DBTeam).filter(DBTeam.is_user_team == True).order_by(DBTeam.created_at.desc()).all()
     return templates.TemplateResponse(
         "teams/list.html",
         {"request": request, "teams": teams}

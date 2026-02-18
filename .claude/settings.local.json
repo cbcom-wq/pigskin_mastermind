@@ -3,7 +3,9 @@
     "allow": [
       "Bash(wc:*)",
       "Bash(.venv/Scripts/python -m pytest tests/test_nfl_data_service.py -v)",
-      "Bash(.venv/Scripts/python -m pytest tests/ -v)"
+      "Bash(.venv/Scripts/python -m pytest tests/ -v)",
+      "Bash(cd:*)",
+      "Bash(python -m pytest:*)"
     ]
   }
 }

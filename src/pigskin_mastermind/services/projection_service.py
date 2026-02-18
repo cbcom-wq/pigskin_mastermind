@@ -73,8 +73,10 @@ class ProjectionService(ABC):
         base_score += trend_adjustment
 
         # Adjust for fantasy points per touch efficiency
-        efficiency_adjustment = (criteria.fantasy_points_per_touch - 0.5) * 2
-        base_score += efficiency_adjustment
+        # Skip when no touch data exists (0.0 means no data, not truly 0 efficiency)
+        if criteria.fantasy_points_per_touch != 0:
+            efficiency_adjustment = (criteria.fantasy_points_per_touch - 0.5) * 2
+            base_score += efficiency_adjustment
 
         # Adjust for injury risk (higher risk = lower projection)
         injury_penalty = criteria.injury_risk_score * -0.05
@@ -111,8 +113,12 @@ class YearlyProjectionService(ProjectionService):
         # Apply yearly-specific adjustments
 
         # Age deviation impact (peak age = 0 deviation)
-        # Players further from peak age get penalized
-        age_penalty = abs(criteria.age_deviation_from_optimum) * -0.5
+        # Post-peak players are penalized; pre-peak players get a small boost
+        dev = criteria.age_deviation_from_optimum
+        if dev > 0:
+            age_penalty = dev * -0.5       # past peak: -0.5 per year beyond peak
+        else:
+            age_penalty = dev * -0.1       # pre-peak: +0.1 per year before peak
         base_score += age_penalty
 
         # Coaching stability impact (stable coaching = better performance)

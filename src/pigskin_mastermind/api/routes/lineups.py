@@ -46,7 +46,7 @@ async def lineup_page(
 ):
     """Lineup optimizer page."""
     from pigskin_mastermind.api.main import templates
-    teams = db.query(DBTeam).order_by(DBTeam.name).all()
+    teams = db.query(DBTeam).filter(DBTeam.is_user_team == True).order_by(DBTeam.name).all()
     return templates.TemplateResponse(
         "lineups/optimizer.html",
         {"request": request, "teams": teams, "selected_team_id": team}
@@ -61,9 +61,9 @@ async def optimize_lineup(
 ):
     """Optimize lineup for a team, returns HTML fragment."""
     from pigskin_mastermind.api.main import templates
-    db_team = db.query(DBTeam).filter(DBTeam.id == team_db_id).first()
+    db_team = db.query(DBTeam).filter(DBTeam.id == team_db_id, DBTeam.is_user_team == True).first()
     if not db_team:
-        raise HTTPException(status_code=404, detail="Team not found")
+        raise HTTPException(status_code=404, detail="Team not found or not claimed")
 
     db_players = db.query(DBPlayer).filter(DBPlayer.team_id == team_db_id).all()
     if not db_players:

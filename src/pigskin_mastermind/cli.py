@@ -219,6 +219,52 @@ def stats_import_espn(league_id, team_id, years):
         db.close()
 
 
+@stats.command('import-all-players')
+@click.option('--league-id', required=True, help='ESPN league ID')
+@click.option('--year', type=int, default=2024, help='Season year')
+@click.option('--week', type=int, default=None, help='Week to import (defaults to current week)')
+@click.option('--positions', default='QB,RB,WR,TE,K,D/ST', help='Comma-separated positions to import')
+@click.option('--batch-size', type=int, default=500, help='Number of players to fetch per position')
+def stats_import_all_players(league_id, year, week, positions, batch_size):
+    """Import all available players (including free agents) from ESPN.
+    
+    This command fetches all available players from ESPN for the specified league,
+    not just players currently on rosters. This is essential for analyzing free agents
+    and making informed waiver wire decisions.
+    """
+    from pigskin_mastermind.services.espn_sync import ESPNSyncService
+    from pigskin_mastermind.models.database import DBLeague
+
+    db = _get_stats_db()
+    try:
+        db_league = db.query(DBLeague).filter_by(league_id=league_id).first()
+        if not db_league:
+            click.echo("Error: League not found. Set up credentials first.", err=True)
+            return
+
+        position_list = [p.strip() for p in positions.split(',')]
+        service = ESPNSyncService(db)
+        
+        click.echo(f"Importing all players for {year} (week {week or 'current'})...")
+        click.echo(f"Positions: {', '.join(position_list)}")
+        
+        count = service.import_all_players(
+            league_id=league_id,
+            espn_s2=db_league.espn_s2,
+            swid=db_league.swid,
+            year=year,
+            week=week,
+            positions=position_list,
+            batch_size=batch_size
+        )
+        
+        click.echo(f"Successfully imported {count} players.")
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+    finally:
+        db.close()
+
+
 @stats.command('import-nfl')
 @click.option('--years', default='2024', help='Comma-separated years (e.g. 2023,2024)')
 def stats_import_nfl(years):

@@ -58,8 +58,11 @@ class ProjectionCriteriaBuilder:
             .first()
         )
 
-        # Historical average points
+        # Historical average points — fall back to game-log average if the season
+        # record has no fantasy data (e.g. ESPN import only, NFL import not yet run)
         historical_avg = season.fantasy_points_avg if season else 0.0
+        if historical_avg == 0.0:
+            historical_avg = self._compute_historical_avg_from_logs(player_id)
 
         # Recent trend score: compare last 4 weeks vs season avg
         recent_trend = self._compute_trend_score(player_id, year, num_weeks=4)
@@ -99,6 +102,10 @@ class ProjectionCriteriaBuilder:
         # Offensive momentum from recent team scoring
         momentum = self._compute_momentum(player.nfl_team, year, num_weeks=4)
 
+        # Rank 1 = best defense (hardest to score against) → level near 0
+        # Rank 32 = worst defense (easiest to score against) → level near 100
+        opponent_def_level = ((def_rank - 1) / 31) * 100
+
         criteria_kwargs = {
             'historical_average_points': historical_avg,
             'recent_trend_score': recent_trend,
@@ -107,7 +114,7 @@ class ProjectionCriteriaBuilder:
             'injury_risk_score': injury_risk,
             'positional_touch_percentage': touch_pct,
             'team_offense_level': team_offense,
-            'opponent_defense_level': 50.0,  # neutral default
+            'opponent_defense_level': opponent_def_level,
             'opposing_defense_vs_position_rank': def_rank,
             'offensive_momentum_score': momentum,
             'weather_impact_score': 0.0,
@@ -156,6 +163,8 @@ class ProjectionCriteriaBuilder:
             )
 
         historical_avg = season.fantasy_points_avg if season else 0.0
+        if historical_avg == 0.0:
+            historical_avg = self._compute_historical_avg_from_logs(player_id)
         fpts_per_touch = season.fantasy_points_per_touch if season else 0.0
         skill_level = self._compute_skill_percentile(
             player_id, player.position, prev_year
@@ -191,6 +200,22 @@ class ProjectionCriteriaBuilder:
 
         return YearlyProjectionCriteria(**criteria_kwargs)
 
+    def _compute_historical_avg_from_logs(self, player_id: int) -> float:
+        """Compute per-game fantasy average directly from game logs.
+
+        Used as a fallback when DBPlayerSeasonStats.fantasy_points_avg is 0.0,
+        which happens when only the ESPN import has run (not the NFL data import).
+        """
+        logs = (
+            self.db.query(DBPlayerGameLog)
+            .filter_by(player_id=player_id)
+            .all()
+        )
+        if not logs:
+            return 0.0
+        total = sum(g.fantasy_points for g in logs)
+        return total / len(logs)
+
     def _compute_trend_score(
         self, player_id: int, year: int, num_weeks: int = 4
     ) -> float:
@@ -217,8 +242,12 @@ class ProjectionCriteriaBuilder:
         if season_avg == 0:
             return 0.0
 
-        # Percentage deviation scaled to -100..100
-        deviation = ((recent_avg - season_avg) / season_avg) * 100
+        # Apply confidence multiplier to dampen small-sample swings
+        # Cap raw deviation first, then scale by confidence so extreme single-game
+        # outliers don't override the dampening effect of a small sample.
+        confidence = len(recent_logs) / num_weeks
+        raw_deviation = ((recent_avg - season_avg) / season_avg) * 100
+        deviation = max(-100, min(100, raw_deviation)) * confidence
         return max(-100, min(100, deviation))
 
     def _compute_skill_percentile(

@@ -293,6 +293,39 @@ def test_weekly_projection_report_generation():
     assert report["criteria_used"]["opposing_defense_vs_position_rank"] == 30
 
 
+def test_yearly_projection_young_player_not_penalized():
+    """Young players (pre-peak) get a boost; old players (post-peak) get a penalty."""
+    player = Player(player_id="p1", name="Test Player", position="QB", team="KC")
+    base_kwargs = dict(historical_average_points=20.0)
+
+    young_criteria = YearlyProjectionCriteria(age_deviation_from_optimum=-7.0, **base_kwargs)
+    peak_criteria = YearlyProjectionCriteria(age_deviation_from_optimum=0.0, **base_kwargs)
+    old_criteria = YearlyProjectionCriteria(age_deviation_from_optimum=7.0, **base_kwargs)
+
+    service = YearlyProjectionService()
+    young = service.calculate_projection(player, young_criteria)
+    peak = service.calculate_projection(player, peak_criteria)
+    old = service.calculate_projection(player, old_criteria)
+
+    assert young > peak, "Young player should score higher than peak-age player"
+    assert peak > old, "Peak-age player should score higher than past-peak player"
+
+
+def test_yearly_projection_zero_efficiency_no_penalty():
+    """Players with no touch data (0.0) should not be penalized vs a neutral (0.5) player."""
+    player = Player(player_id="p1", name="Test Player", position="WR", team="KC")
+    base_kwargs = dict(historical_average_points=10.0)
+
+    no_data_criteria = YearlyProjectionCriteria(fantasy_points_per_touch=0.0, **base_kwargs)
+    neutral_criteria = YearlyProjectionCriteria(fantasy_points_per_touch=0.5, **base_kwargs)
+
+    service = YearlyProjectionService()
+    no_data = service.calculate_projection(player, no_data_criteria)
+    neutral = service.calculate_projection(player, neutral_criteria)
+
+    assert no_data >= neutral, "Zero touch data should not be penalized below neutral efficiency"
+
+
 def test_projection_non_negative():
     """Test that projections are always non-negative."""
     player = Player(

@@ -64,3 +64,36 @@ async def claim_team(league_id: str, team_id: str, db: Session = Depends(get_db)
     
     message = f"{'Claimed' if team.is_user_team else 'Unclaimed'} team: {team.name}"
     return _toast_response(message, "success")
+
+
+@router.post("/{league_id}/import-all-players")
+async def import_all_players(
+    league_id: str,
+    year: int = 2024,
+    db: Session = Depends(get_db)
+):
+    """Import all available players (including free agents) from ESPN for this league.
+    
+    This endpoint imports the complete player pool from ESPN, not just rostered players.
+    This is essential for analyzing waiver wire options and free agents.
+    """
+    from pigskin_mastermind.services.espn_sync import ESPNSyncService
+    
+    league = db.query(DBLeague).filter(DBLeague.league_id == league_id).first()
+    if not league:
+        raise HTTPException(status_code=404, detail="League not found")
+    
+    try:
+        service = ESPNSyncService(db)
+        count = service.import_all_players(
+            league_id=league_id,
+            espn_s2=league.espn_s2,
+            swid=league.swid,
+            year=year,
+            positions=['QB', 'RB', 'WR', 'TE', 'K', 'D/ST'],
+            batch_size=500
+        )
+        
+        return _toast_response(f"Successfully imported {count} players", "success")
+    except Exception as e:
+        return _toast_response(f"Error importing players: {str(e)}", "error")

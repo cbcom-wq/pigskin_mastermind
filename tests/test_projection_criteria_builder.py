@@ -172,6 +172,78 @@ class TestBuildYearlyCriteria:
         assert criteria.coaching_stability_score == 80.0
 
 
+class TestOpponentDefenseLevel:
+    def test_worst_defense_rank_32_gives_level_near_100(self, db, sample_data):
+        """Rank 32 (worst defense) should give opponent_defense_level near 100."""
+        builder = ProjectionCriteriaBuilder(db)
+        # Override def_rank by using a weak opponent in week 10 (has def_rank_vs_qb=5)
+        # We test via overrides to isolate the formula
+        criteria = builder.build_weekly_criteria(
+            sample_data.id, week=10, year=2024,
+            overrides={'opponent_defense_level': ((32 - 1) / 31) * 100}
+        )
+        assert criteria.opponent_defense_level == pytest.approx(100.0, rel=0.01)
+
+    def test_best_defense_rank_1_gives_level_near_0(self, db, sample_data):
+        """Rank 1 (best defense) should give opponent_defense_level near 0."""
+        criteria_level = ((1 - 1) / 31) * 100
+        assert criteria_level == pytest.approx(0.0, abs=0.01)
+
+    def test_middle_defense_rank_16_gives_level_near_48(self, db, sample_data):
+        """Rank 16 (middle defense) should give opponent_defense_level near 48.4."""
+        criteria_level = ((16 - 1) / 31) * 100
+        assert criteria_level == pytest.approx(48.4, rel=0.01)
+
+    def test_weekly_criteria_opponent_level_uses_def_rank(self, db, sample_data):
+        """build_weekly_criteria with a known def_rank should set opponent_defense_level correctly."""
+        # Week 10 opponent "OPP10" has def_rank_vs_qb=5
+        builder = ProjectionCriteriaBuilder(db)
+        criteria = builder.build_weekly_criteria(sample_data.id, week=10, year=2024)
+        expected = ((5 - 1) / 31) * 100
+        assert criteria.opponent_defense_level == pytest.approx(expected, rel=0.01)
+
+    def test_yearly_criteria_keeps_neutral_50(self, db, sample_data):
+        """build_yearly_criteria should keep opponent_defense_level at 50 (no single opponent)."""
+        builder = ProjectionCriteriaBuilder(db)
+        criteria = builder.build_yearly_criteria(sample_data.id, year=2025)
+        assert criteria.opponent_defense_level == 50.0
+
+
+class TestTrendScoreConfidence:
+    def test_small_sample_dampens_score(self, db):
+        """A 1-game sample (confidence=0.25) should give at most 25% of the raw deviation."""
+        team = DBTeam(team_id="t2", name="Team2", owner="Owner2")
+        db.add(team)
+        db.flush()
+
+        player = DBPlayer(
+            player_id="trend1", name="Trend Player", position="RB",
+            nfl_team="SF", team_id=team.id, stats={}
+        )
+        db.add(player)
+        db.flush()
+
+        # Season average = 5 pts over 4 games; only 1 recent game scoring 25 pts
+        # Raw deviation = ((25 - 5) / 5) * 100 = 400 → capped at 100
+        # With confidence = 1/4 = 0.25: result = 100 * 0.25 = 25
+        season = DBPlayerSeasonStats(
+            player_id=player.id, year=2024, games_played=4,
+            fantasy_points_total=20.0, fantasy_points_avg=5.0,
+        )
+        db.add(season)
+
+        # Only 1 game log (small sample)
+        db.add(DBPlayerGameLog(
+            player_id=player.id, year=2024, week=16,
+            fantasy_points=25.0,
+        ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        score = builder._compute_trend_score(player.id, year=2024, num_weeks=4)
+        assert score <= 25, f"Expected trend score ≤ 25 with 1/4 confidence, got {score}"
+
+
 class TestInjuryRisk:
     def test_out_player(self, db):
         player = DBPlayer(

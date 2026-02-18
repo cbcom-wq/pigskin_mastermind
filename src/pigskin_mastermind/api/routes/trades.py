@@ -25,7 +25,7 @@ class TradeRequest(BaseModel):
 async def trade_page(request: Request, db: Session = Depends(get_db)):
     """Trade analyzer page."""
     from pigskin_mastermind.api.main import templates
-    teams = db.query(DBTeam).order_by(DBTeam.name).all()
+    teams = db.query(DBTeam).filter(DBTeam.is_user_team == True).order_by(DBTeam.name).all()
     return templates.TemplateResponse(
         "trades/analyzer.html",
         {"request": request, "teams": teams}
@@ -42,6 +42,13 @@ async def team_players_for_trade(
     if not team_id:
         return HTMLResponse(
             '<p class="text-sm text-slate-400 text-center py-8">Select a team above to see your players</p>'
+        )
+
+    # Verify this is a user's team
+    team = db.query(DBTeam).filter(DBTeam.id == team_id, DBTeam.is_user_team == True).first()
+    if not team:
+        return HTMLResponse(
+            '<p class="text-sm text-slate-400 text-center py-8">Team not found or not claimed</p>'
         )
 
     players = db.query(DBPlayer).filter(
@@ -84,9 +91,9 @@ async def analyze_trade(
     """Analyze a trade and return HTML result fragment."""
     from pigskin_mastermind.api.main import templates
 
-    db_team = db.query(DBTeam).filter(DBTeam.id == trade.team_id).first()
+    db_team = db.query(DBTeam).filter(DBTeam.id == trade.team_id, DBTeam.is_user_team == True).first()
     if not db_team:
-        raise HTTPException(status_code=404, detail="Team not found")
+        raise HTTPException(status_code=404, detail="Team not found or not claimed")
 
     gives_players = db.query(DBPlayer).filter(DBPlayer.id.in_(trade.gives)).all()
     receives_players = db.query(DBPlayer).filter(DBPlayer.id.in_(trade.receives)).all()

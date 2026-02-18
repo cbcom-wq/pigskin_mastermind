@@ -63,23 +63,27 @@ async def health_check():
 @app.get("/")
 async def dashboard(request: Request, db: Session = Depends(get_db)):
     """Dashboard page with real statistics."""
-    team_count = db.query(DBTeam).count()
-    player_count = db.query(DBPlayer).count()
-    total_points = db.query(func.coalesce(func.sum(DBTeam.total_points), 0.0)).scalar()
+    team_count = db.query(DBTeam).filter(DBTeam.is_user_team == True).count()
+    # Player count should only include players from user's teams
+    user_team_ids = [t.id for t in db.query(DBTeam.id).filter(DBTeam.is_user_team == True).all()]
+    player_count = db.query(DBPlayer).filter(DBPlayer.team_id.in_(user_team_ids)).count() if user_team_ids else 0
+    total_points = db.query(func.coalesce(func.sum(DBTeam.total_points), 0.0)).filter(DBTeam.is_user_team == True).scalar()
 
-    # Position breakdown
+    # Position breakdown - only for user's teams
     position_counts = {}
-    pos_rows = (
-        db.query(DBPlayer.position, func.count(DBPlayer.id))
-        .group_by(DBPlayer.position)
-        .order_by(DBPlayer.position)
-        .all()
-    )
-    for pos, count in pos_rows:
-        position_counts[pos] = count
+    if user_team_ids:
+        pos_rows = (
+            db.query(DBPlayer.position, func.count(DBPlayer.id))
+            .filter(DBPlayer.team_id.in_(user_team_ids))
+            .group_by(DBPlayer.position)
+            .order_by(DBPlayer.position)
+            .all()
+        )
+        for pos, count in pos_rows:
+            position_counts[pos] = count
 
-    # Recent teams (up to 6)
-    recent_teams = db.query(DBTeam).order_by(DBTeam.created_at.desc()).limit(6).all()
+    # Recent teams (up to 6) - only user's teams
+    recent_teams = db.query(DBTeam).filter(DBTeam.is_user_team == True).order_by(DBTeam.created_at.desc()).limit(6).all()
 
     return templates.TemplateResponse(
         "dashboard.html",

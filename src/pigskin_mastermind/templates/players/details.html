@@ -78,6 +78,10 @@
                 class="tab-btn pb-3 text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-600 transition-colors">
                 Game Logs
             </button>
+            <button onclick="switchTab('projections')" data-tab="projections"
+                class="tab-btn pb-3 text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-600 transition-colors">
+                Projections
+            </button>
         </nav>
     </div>
 
@@ -211,6 +215,61 @@
         {% endif %}
     </div>
 
+    <!-- Projections Tab -->
+    <div id="tab-projections" class="tab-panel hidden">
+        <!-- Controls Card -->
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5 mb-4">
+            <h3 class="text-sm font-semibold text-slate-600 uppercase tracking-wider mb-4">Generate Projection</h3>
+            <div class="flex flex-wrap items-end gap-3">
+                <!-- Weekly / Yearly toggle -->
+                <div class="flex rounded-lg overflow-hidden border border-slate-200">
+                    <button id="proj-btn-weekly" onclick="setProjectionType('weekly')"
+                        class="px-4 py-2 text-sm font-semibold bg-pigskin-500 text-white transition-colors">
+                        Weekly
+                    </button>
+                    <button id="proj-btn-yearly" onclick="setProjectionType('yearly')"
+                        class="px-4 py-2 text-sm font-semibold bg-white text-slate-500 hover:bg-slate-50 transition-colors">
+                        Yearly
+                    </button>
+                </div>
+
+                <!-- Week input (hidden for yearly) -->
+                <div id="proj-week-wrapper" class="flex flex-col gap-1">
+                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Week</label>
+                    <input id="proj-week" type="number" min="1" max="18" value="1"
+                        class="w-20 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-pigskin-400">
+                </div>
+
+                <!-- Year input -->
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Year</label>
+                    <input id="proj-year" type="number" min="2020" max="2030" value="2025"
+                        class="w-24 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-pigskin-400">
+                </div>
+
+                <!-- Generate button -->
+                <button onclick="generateProjection()" id="proj-generate-btn"
+                    class="flex items-center gap-2 px-5 py-2 bg-pigskin-500 hover:bg-pigskin-600 text-white text-sm font-semibold rounded-lg transition-colors">
+                    <svg id="proj-spinner" class="hidden animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    Generate
+                </button>
+            </div>
+        </div>
+
+        <!-- Result area -->
+        <div id="proj-result">
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-10 text-center">
+                <svg class="w-10 h-10 mx-auto mb-2 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                </svg>
+                <p class="text-sm text-slate-400">Select a projection type and click Generate</p>
+            </div>
+        </div>
+    </div>
+
 </div>
 {% endblock %}
 
@@ -229,6 +288,112 @@ function switchTab(name) {
     var btn = document.querySelector('[data-tab="' + name + '"]');
     btn.classList.add('border-pigskin-500', 'text-pigskin-600');
     btn.classList.remove('border-transparent', 'text-slate-400');
+}
+
+var _projType = 'weekly';
+
+function setProjectionType(type) {
+    _projType = type;
+    var weekBtn = document.getElementById('proj-btn-weekly');
+    var yearBtn = document.getElementById('proj-btn-yearly');
+    var weekWrapper = document.getElementById('proj-week-wrapper');
+
+    if (type === 'weekly') {
+        weekBtn.classList.add('bg-pigskin-500', 'text-white');
+        weekBtn.classList.remove('bg-white', 'text-slate-500');
+        yearBtn.classList.add('bg-white', 'text-slate-500');
+        yearBtn.classList.remove('bg-pigskin-500', 'text-white');
+        weekWrapper.classList.remove('hidden');
+    } else {
+        yearBtn.classList.add('bg-pigskin-500', 'text-white');
+        yearBtn.classList.remove('bg-white', 'text-slate-500');
+        weekBtn.classList.add('bg-white', 'text-slate-500');
+        weekBtn.classList.remove('bg-pigskin-500', 'text-white');
+        weekWrapper.classList.add('hidden');
+    }
+}
+
+function generateProjection() {
+    var year = document.getElementById('proj-year').value;
+    var week = document.getElementById('proj-week').value;
+    var spinner = document.getElementById('proj-spinner');
+    var btn = document.getElementById('proj-generate-btn');
+
+    var url = '/api/stats/players/{{ player.id }}/projection?year=' + year;
+    if (_projType === 'weekly') {
+        url += '&week=' + week;
+    }
+
+    spinner.classList.remove('hidden');
+    btn.disabled = true;
+
+    fetch(url)
+        .then(function(resp) {
+            if (!resp.ok) {
+                return resp.json().then(function(e) { throw new Error(e.detail || 'Request failed'); });
+            }
+            return resp.json();
+        })
+        .then(function(data) {
+            renderProjectionResult(data);
+        })
+        .catch(function(err) {
+            showToast(err.message || 'Failed to generate projection', 'error');
+        })
+        .finally(function() {
+            spinner.classList.add('hidden');
+            btn.disabled = false;
+        });
+}
+
+var _criteriaLabels = {
+    player_skill_level: 'Player Skill Level',
+    team_offense_level: 'Team Offense Level',
+    opponent_defense_level: 'Opponent Defense Level',
+    positional_touch_percentage: 'Touch Percentage',
+    recent_trend_score: 'Recent Trend Score',
+    historical_average_points: 'Historical Avg Points',
+    fantasy_points_per_touch: 'Fantasy Pts / Touch',
+    injury_risk_score: 'Injury Risk Score',
+    age_deviation_from_optimum: 'Age vs Peak',
+    coaching_stability_score: 'Coaching Stability',
+    opposing_defense_vs_position_rank: 'Opp Defense Rank vs Position',
+    offensive_momentum_score: 'Offensive Momentum',
+    weather_impact_score: 'Weather Impact',
+};
+
+function renderProjectionResult(data) {
+    var typeLabel = data.projection_type === 'weekly' ? 'Weekly' : 'Season';
+    var rows = '';
+    var criteria = data.criteria_used || {};
+    Object.keys(criteria).forEach(function(key) {
+        var label = _criteriaLabels[key] || key;
+        var val = criteria[key];
+        if (typeof val === 'number') {
+            val = Math.round(val * 10) / 10;
+        }
+        rows += '<tr class="border-b border-slate-100 last:border-0">'
+            + '<td class="py-2.5 pr-4 text-sm text-slate-500">' + label + '</td>'
+            + '<td class="py-2.5 text-sm font-semibold text-slate-700 text-right">' + val + '</td>'
+            + '</tr>';
+    });
+
+    document.getElementById('proj-result').innerHTML =
+        '<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 mb-4 text-center">'
+        + '<p class="text-xs uppercase tracking-wider font-semibold text-slate-400 mb-1">' + typeLabel + ' Projection</p>'
+        + '<p class="text-5xl font-extrabold text-pigskin-600">' + data.projected_points + '</p>'
+        + '<p class="text-sm text-slate-400 mt-1">projected fantasy points</p>'
+        + '</div>'
+        + '<div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">'
+        + '<div class="px-5 py-3 border-b border-slate-100">'
+        + '<h4 class="text-xs uppercase tracking-wider font-semibold text-slate-500">Criteria Breakdown</h4>'
+        + '</div>'
+        + '<div class="px-5">'
+        + '<table class="w-full">'
+        + '<tbody>' + rows + '</tbody>'
+        + '</table>'
+        + '</div>'
+        + '</div>';
 }
 </script>
 {% endblock %}
