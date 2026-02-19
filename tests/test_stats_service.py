@@ -90,6 +90,16 @@ class TestGetPlayerStats:
         assert len(result['seasons']) == 1
         assert result['seasons'][0]['pass_yd'] == 4500
 
+    def test_season_stats_includes_targets_and_pass_fields(self, db, sample_data):
+        service = StatsService(db)
+        result = service.get_player_stats(sample_data.id)
+        season = result['seasons'][0]
+        assert 'targets' in season
+        assert 'pass_att' in season
+        assert 'pass_cmp' in season
+        assert 'rush_att' in season
+        assert 'pass_rating' in season
+
     def test_filter_by_year(self, db, sample_data):
         service = StatsService(db)
         result = service.get_player_stats(sample_data.id, year=2024)
