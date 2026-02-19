@@ -11,6 +11,10 @@ from pigskin_mastermind.models.database import DBTeam, DBPlayer, DBWeeklyTeamSta
 
 router = APIRouter(prefix="/teams", tags=["teams"])
 
+# Position display order: QB, RB, WR, TE, FLEX, DEF/DST, K; unknown positions last
+_POSITION_ORDER = {'QB': 0, 'RB': 1, 'WR': 2, 'TE': 3, 'FLEX': 4, 'DEF': 5, 'DST': 5, 'K': 6}
+_BENCH_SLOTS = {'BE', 'IR'}
+
 
 def _toast_response(message: str, type: str = "success"):
     """Create an empty response with an HX-Trigger header to show a toast."""
@@ -94,22 +98,23 @@ async def team_detail(
         ).first()
 
         # Fetch weekly player stats with player details
-        weekly_players = (
+        weekly_players = sorted(
             db.query(DBWeeklyPlayerStats, DBPlayer)
             .join(DBPlayer, DBWeeklyPlayerStats.player_id == DBPlayer.id)
             .filter(DBWeeklyPlayerStats.weekly_team_stats_id == weekly_team.id)
-            .order_by(
-                # Starters first (not BE or IR), then by actual points
-                DBWeeklyPlayerStats.slot_position.in_(['BE', 'IR']),
-                DBWeeklyPlayerStats.actual_points.desc()
-            )
-            .all()
+            .all(),
+            key=lambda row: (
+                1 if row[0].slot_position in _BENCH_SLOTS else 0,
+                _POSITION_ORDER.get(row[1].position, 7),
+                -row[0].actual_points,
+            ),
         )
 
-    # Current roster (season view)
-    players = db.query(DBPlayer).filter(DBPlayer.team_id == team_db_id).order_by(
-        DBPlayer.position, DBPlayer.projected_points.desc()
-    ).all()
+    # Current roster (season view): starters sorted by position order, then projected points
+    players = sorted(
+        db.query(DBPlayer).filter(DBPlayer.team_id == team_db_id).all(),
+        key=lambda p: (_POSITION_ORDER.get(p.position, 7), -p.projected_points),
+    )
 
     return templates.TemplateResponse(
         "teams/detail.html",
