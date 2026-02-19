@@ -201,3 +201,87 @@ class TestComparePlayers:
         assert len(result['players']) == 2
         assert result['players'][0]['name'] == "Patrick Mahomes"
         assert result['players'][1]['name'] == "Josh Allen"
+
+
+class TestGetYearlyRankings:
+    def _add_player(self, db, player_id, name, position, nfl_team, year,
+                    fantasy_points_total, adp=None, adp_source=None):
+        player = DBPlayer(player_id=player_id, name=name, position=position, nfl_team=nfl_team)
+        db.add(player)
+        db.flush()
+        season = DBPlayerSeasonStats(
+            player_id=player.id, year=year, games_played=16,
+            fantasy_points_total=fantasy_points_total,
+            fantasy_points_avg=fantasy_points_total / 16,
+            adp=adp,
+            adp_source=adp_source,
+        )
+        db.add(season)
+        db.commit()
+        return player
+
+    def test_rankings_sorted_by_adp(self, db):
+        self._add_player(db, "p1", "Player B", "RB", "KC", 2024, 300.0, adp=5.0)
+        self._add_player(db, "p2", "Player A", "QB", "KC", 2024, 350.0, adp=2.0)
+
+        service = StatsService(db)
+        rankings = service.get_yearly_rankings(2024)
+
+        assert rankings[0]['name'] == "Player A"  # lower ADP ranked first
+        assert rankings[1]['name'] == "Player B"
+        assert rankings[0]['rank'] == 1
+        assert rankings[1]['rank'] == 2
+
+    def test_no_adp_falls_back_to_fantasy_points(self, db):
+        self._add_player(db, "p1", "Low Points", "WR", "KC", 2024, 100.0, adp=None)
+        self._add_player(db, "p2", "High Points", "WR", "KC", 2024, 300.0, adp=None)
+
+        service = StatsService(db)
+        rankings = service.get_yearly_rankings(2024)
+
+        assert rankings[0]['name'] == "High Points"
+        assert rankings[1]['name'] == "Low Points"
+
+    def test_adp_players_ranked_before_no_adp(self, db):
+        self._add_player(db, "p1", "No ADP", "RB", "KC", 2024, 400.0, adp=None)
+        self._add_player(db, "p2", "Has ADP", "QB", "KC", 2024, 200.0, adp=10.0)
+
+        service = StatsService(db)
+        rankings = service.get_yearly_rankings(2024)
+
+        assert rankings[0]['name'] == "Has ADP"
+        assert rankings[1]['name'] == "No ADP"
+
+    def test_filter_by_position(self, db):
+        self._add_player(db, "p1", "QB Guy", "QB", "KC", 2024, 350.0, adp=3.0)
+        self._add_player(db, "p2", "RB Guy", "RB", "KC", 2024, 300.0, adp=1.0)
+
+        service = StatsService(db)
+        rankings = service.get_yearly_rankings(2024, position="QB")
+
+        assert len(rankings) == 1
+        assert rankings[0]['name'] == "QB Guy"
+
+    def test_returns_empty_for_missing_year(self, db):
+        service = StatsService(db)
+        rankings = service.get_yearly_rankings(1990)
+        assert rankings == []
+
+    def test_ranking_includes_expected_fields(self, db):
+        self._add_player(db, "p1", "Test Player", "WR", "KC", 2024, 200.0, adp=15.0, adp_source='csv')
+
+        service = StatsService(db)
+        rankings = service.get_yearly_rankings(2024)
+
+        r = rankings[0]
+        assert 'rank' in r
+        assert 'player_id' in r
+        assert 'name' in r
+        assert 'position' in r
+        assert 'nfl_team' in r
+        assert 'adp' in r
+        assert 'adp_source' in r
+        assert 'fantasy_points_total' in r
+        assert 'fantasy_points_avg' in r
+        assert 'games_played' in r
+        assert r['adp_source'] == 'csv'

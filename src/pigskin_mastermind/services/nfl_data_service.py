@@ -1,6 +1,8 @@
 """NFL data service wrapping nfl_data_py for league-wide stats import."""
 
-from typing import List, Optional
+import csv
+import io
+from typing import List, Optional, Union
 from datetime import datetime
 from sqlalchemy.orm import Session
 
@@ -310,6 +312,91 @@ class NFLDataService:
             db_player.updated_at = datetime.utcnow()
 
         self.db.commit()
+
+    def import_adp_from_csv(
+        self,
+        csv_source: Union[str, io.IOBase],
+        year: int,
+        adp_source: str = 'csv',
+    ) -> int:
+        """Import player Average Draft Position (ADP) data from a CSV source.
+
+        The CSV must contain at least the following columns:
+        - ``name``: player display name
+        - ``position``: player position (QB, RB, WR, TE, K, DEF)
+        - ``adp``: average draft position (float, lower = earlier pick)
+
+        An optional ``player_id`` column (gsis-style) may be present for
+        more precise player matching.  When not present, matching falls back
+        to ``name`` + ``position``.
+
+        Args:
+            csv_source: File path string **or** a file-like object (must be
+                opened in text mode / ``io.StringIO``).
+            year: The season year the ADP data belongs to.
+            adp_source: Label stored in ``adp_source`` column (e.g. 'csv',
+                'espn', 'yahoo', 'fantasypros').
+
+        Returns:
+            Number of player season-stat rows updated with ADP.
+        """
+        if isinstance(csv_source, str):
+            with open(csv_source, newline='', encoding='utf-8') as fh:
+                rows = list(csv.DictReader(fh))
+        else:
+            # Accept any file-like (StringIO, open file handles, etc.)
+            rows = list(csv.DictReader(csv_source))
+
+        count = 0
+        for row in rows:
+            raw_adp = row.get('adp') or row.get('ADP')
+            player_name = row.get('name') or row.get('Name') or row.get('player_name')
+            position = row.get('position') or row.get('Position') or row.get('pos')
+            gsis_id = row.get('player_id') or row.get('gsis_id')
+
+            if raw_adp is None or player_name is None:
+                continue
+
+            try:
+                adp_value = float(raw_adp)
+            except (ValueError, TypeError):
+                continue
+
+            # Locate the DBPlayer record
+            db_player = None
+            if gsis_id:
+                player_id_str = f"nfl_{gsis_id}"
+                db_player = self.db.query(DBPlayer).filter_by(
+                    player_id=player_id_str
+                ).first()
+
+            if db_player is None:
+                # Fallback: match by name (case-insensitive) and optionally position
+                query = self.db.query(DBPlayer).filter(
+                    DBPlayer.name.ilike(player_name.strip())
+                )
+                if position:
+                    query = query.filter(DBPlayer.position == position.upper().strip())
+                db_player = query.first()
+
+            if db_player is None:
+                continue
+
+            # Find or create the season stats row for this year
+            season = self.db.query(DBPlayerSeasonStats).filter_by(
+                player_id=db_player.id, year=year
+            ).first()
+            if not season:
+                season = DBPlayerSeasonStats(player_id=db_player.id, year=year)
+                self.db.add(season)
+
+            season.adp = adp_value
+            season.adp_source = adp_source
+            season.updated_at = datetime.utcnow()
+            count += 1
+
+        self.db.commit()
+        return count
 
 
 def _safe_int(val) -> int:
