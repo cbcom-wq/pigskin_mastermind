@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% block title %}Mock Draft — Pigskin Mastermind{% endblock %}
+{% block page_title %}Mock Draft{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto space-y-6">
+
+  <!-- Header card -->
+  <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+    <h2 class="text-xl font-bold text-slate-800 mb-1">Interactive Mock Draft</h2>
+    <p class="text-sm text-slate-500">
+      You pick for your team; AI auto-selects for all other teams using configurable strategies.
+      Want to test strategies head-to-head?
+      <a href="/draft/simulate" class="text-pigskin-600 font-medium hover:underline">Run a simulation →</a>
+    </p>
+  </div>
+
+  <!-- Setup form -->
+  <form id="draft-setup-form" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-6">
+
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div>
+        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Teams</label>
+        <input type="number" id="num-teams" min="2" max="20" value="10"
+               class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pigskin-400">
+      </div>
+      <div>
+        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Rounds</label>
+        <input type="number" id="num-rounds" min="1" max="20" value="15"
+               class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pigskin-400">
+      </div>
+      <div>
+        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">My pick slot</label>
+        <input type="number" id="user-pick-pos" min="1" max="20" value="1"
+               class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pigskin-400">
+      </div>
+    </div>
+
+    <!-- AI strategies accordion -->
+    <div>
+      <button type="button" onclick="toggleAIConfig()"
+              class="flex items-center gap-2 text-sm font-semibold text-slate-700 hover:text-pigskin-600 transition-colors">
+        <svg id="ai-chevron" class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+        </svg>
+        Configure AI team strategies
+      </button>
+      <div id="ai-config" class="hidden mt-4 space-y-3">
+        <p class="text-xs text-slate-400">Leave blank to use <em>Best Available</em> for that slot.</p>
+        <div id="ai-strategy-rows" class="space-y-2"></div>
+      </div>
+    </div>
+
+    <!-- Position by round (optional) -->
+    <div>
+      <button type="button" onclick="togglePBR()"
+              class="flex items-center gap-2 text-sm font-semibold text-slate-700 hover:text-pigskin-600 transition-colors">
+        <svg id="pbr-chevron" class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+        </svg>
+        Position-by-round map (for <em>Position by Round</em> strategy)
+      </button>
+      <div id="pbr-config" class="hidden mt-4 space-y-3">
+        <p class="text-xs text-slate-400">Optionally specify a target position for each round. Applies to any team using the <em>Position by Round</em> strategy.</p>
+        <div id="pbr-rows" class="space-y-2"></div>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-3">
+      <label class="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+        <input type="checkbox" id="use-db-players" class="rounded border-slate-300 text-pigskin-500">
+        Use my imported players (requires ESPN sync)
+      </label>
+    </div>
+
+    <button type="button" onclick="startDraft()"
+            class="w-full bg-pigskin-500 hover:bg-pigskin-600 text-white font-semibold py-2.5 rounded-xl transition-colors text-sm">
+      🏈 Start Draft
+    </button>
+  </form>
+
+  <!-- Strategy legend -->
+  <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+    <h3 class="text-sm font-bold text-slate-700 mb-3 uppercase tracking-wide">Strategy Guide</h3>
+    <dl class="space-y-2">
+      {% for s in strategies %}
+      <div class="flex gap-2">
+        <dt class="text-xs font-semibold text-pigskin-600 w-36 flex-shrink-0">{{ s.label }}</dt>
+        <dd class="text-xs text-slate-500">{{ s.desc }}</dd>
+      </div>
+      {% endfor %}
+    </dl>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  const STRATEGIES = {{ strategies | tojson }};
+  const POSITIONS = ['QB','RB','WR','TE','K','DEF'];
+
+  function toggleAIConfig() {
+    const el = document.getElementById('ai-config');
+    const ch = document.getElementById('ai-chevron');
+    el.classList.toggle('hidden');
+    ch.style.transform = el.classList.contains('hidden') ? '' : 'rotate(90deg)';
+    if (!el.classList.contains('hidden')) buildAIRows();
+  }
+
+  function togglePBR() {
+    const el = document.getElementById('pbr-config');
+    const ch = document.getElementById('pbr-chevron');
+    el.classList.toggle('hidden');
+    ch.style.transform = el.classList.contains('hidden') ? '' : 'rotate(90deg)';
+    if (!el.classList.contains('hidden')) buildPBRRows();
+  }
+
+  function buildAIRows() {
+    const numTeams = parseInt(document.getElementById('num-teams').value) || 10;
+    const userSlot = parseInt(document.getElementById('user-pick-pos').value) || 1;
+    const container = document.getElementById('ai-strategy-rows');
+    container.innerHTML = '';
+
+    const optHtml = STRATEGIES.map(s =>
+      `<option value="${s.value}">${s.label}</option>`
+    ).join('');
+
+    for (let slot = 1; slot <= numTeams; slot++) {
+      if (slot === userSlot) continue;
+      const div = document.createElement('div');
+      div.className = 'flex items-center gap-3';
+      div.innerHTML = `
+        <span class="text-xs font-medium text-slate-600 w-16 flex-shrink-0">Slot ${slot}</span>
+        <select id="ai-strat-${slot}" class="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+          ${optHtml}
+        </select>`;
+      container.appendChild(div);
+    }
+  }
+
+  function buildPBRRows() {
+    const numRounds = parseInt(document.getElementById('num-rounds').value) || 15;
+    const container = document.getElementById('pbr-rows');
+    container.innerHTML = '';
+    for (let rnd = 1; rnd <= numRounds; rnd++) {
+      const div = document.createElement('div');
+      div.className = 'flex items-center gap-3';
+      div.innerHTML = `
+        <span class="text-xs font-medium text-slate-600 w-16 flex-shrink-0">Round ${rnd}</span>
+        <select id="pbr-${rnd}" class="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+          <option value="">Best Available</option>
+          ${POSITIONS.map(p => `<option value="${p}">${p}</option>`).join('')}
+        </select>`;
+      container.appendChild(div);
+    }
+  }
+
+  async function startDraft() {
+    const numTeams   = parseInt(document.getElementById('num-teams').value);
+    const numRounds  = parseInt(document.getElementById('num-rounds').value);
+    const userSlot   = parseInt(document.getElementById('user-pick-pos').value);
+    const useDB      = document.getElementById('use-db-players').checked;
+
+    // Collect AI strategies
+    const aiStrategies = {};
+    for (let slot = 1; slot <= numTeams; slot++) {
+      const el = document.getElementById(`ai-strat-${slot}`);
+      if (el) aiStrategies[String(slot)] = el.value;
+    }
+
+    // Collect position by round
+    const positionByRound = {};
+    for (let rnd = 1; rnd <= numRounds; rnd++) {
+      const el = document.getElementById(`pbr-${rnd}`);
+      if (el && el.value) positionByRound[String(rnd)] = el.value;
+    }
+
+    const btn = document.querySelector('[onclick="startDraft()"]');
+    btn.disabled = true;
+    btn.textContent = 'Setting up draft…';
+
+    try {
+      const resp = await fetch('/draft/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          num_teams: numTeams,
+          num_rounds: numRounds,
+          user_pick_position: userSlot,
+          ai_strategies: aiStrategies,
+          use_db_players: useDB,
+          position_by_round: Object.keys(positionByRound).length ? positionByRound : null,
+        }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json();
+        showToast(err.detail || 'Failed to start draft', 'error');
+        btn.disabled = false;
+        btn.textContent = '🏈 Start Draft';
+        return;
+      }
+      const state = await resp.json();
+      window.location.href = `/draft/board/${state.draft_id}`;
+    } catch (e) {
+      showToast('Network error', 'error');
+      btn.disabled = false;
+      btn.textContent = '🏈 Start Draft';
+    }
+  }
+</script>
+{% endblock %}

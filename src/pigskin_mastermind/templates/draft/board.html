@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% block title %}Draft Board — Pigskin Mastermind{% endblock %}
+{% block page_title %}Draft Board{% endblock %}
+
+{% block content %}
+<div id="draft-app" data-draft-id="{{ state.draft_id }}" class="space-y-4">
+
+  <!-- Status bar -->
+  <div class="bg-white rounded-xl border border-slate-200 shadow-sm px-5 py-3 flex flex-wrap items-center gap-4">
+    <div>
+      <p class="text-xs text-slate-400 font-medium uppercase tracking-wide">Round</p>
+      <p id="status-round" class="text-2xl font-extrabold text-slate-800">{{ state.current_round }} / {{ state.num_rounds }}</p>
+    </div>
+    <div>
+      <p class="text-xs text-slate-400 font-medium uppercase tracking-wide">Pick</p>
+      <p id="status-pick" class="text-2xl font-extrabold text-slate-800">{{ state.current_pick_index + 1 }} / {{ state.total_picks }}</p>
+    </div>
+    <div class="flex-1">
+      <p class="text-xs text-slate-400 font-medium uppercase tracking-wide">On the clock</p>
+      <p id="status-team" class="text-base font-semibold text-pigskin-600">
+        {% if state.status == 'complete' %}
+          Draft Complete!
+        {% elif state.current_slot == state.user_pick_position %}
+          🟢 You (Slot {{ state.user_pick_position }})
+        {% else %}
+          AI — Slot {{ state.current_slot }}
+        {% endif %}
+      </p>
+    </div>
+    <div id="status-badge"
+         class="px-3 py-1.5 rounded-full text-xs font-bold
+         {% if state.status == 'complete' %}bg-field-100 text-field-700
+         {% elif state.current_slot == state.user_pick_position %}bg-pigskin-100 text-pigskin-700
+         {% else %}bg-slate-100 text-slate-600{% endif %}">
+      {% if state.status == 'complete' %}✓ Complete
+      {% elif state.current_slot == state.user_pick_position %}Your Pick
+      {% else %}AI Picking…{% endif %}
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+    <!-- Available players -->
+    <div class="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col" style="max-height:70vh;">
+      <div class="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+        <h3 class="text-sm font-bold text-slate-700">Available Players</h3>
+        <div class="flex gap-2">
+          <input type="text" id="player-filter" placeholder="Filter…"
+                 oninput="filterPlayers()"
+                 class="border border-slate-300 rounded-lg px-2 py-1 text-xs w-32 focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+          <select id="pos-filter" onchange="filterPlayers()"
+                  class="border border-slate-300 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+            <option value="">All</option>
+            <option>QB</option><option>RB</option><option>WR</option>
+            <option>TE</option><option>K</option><option>DEF</option>
+          </select>
+        </div>
+      </div>
+      <div id="player-list" class="overflow-y-auto flex-1 divide-y divide-slate-50">
+        <!-- rendered by JS -->
+      </div>
+    </div>
+
+    <!-- My roster + picks log -->
+    <div class="space-y-4 flex flex-col" style="max-height:70vh;">
+      <!-- My team -->
+      <div class="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col flex-1" style="min-height:0;">
+        <div class="px-4 py-3 border-b border-slate-100">
+          <h3 class="text-sm font-bold text-slate-700">My Team (Slot {{ state.user_pick_position }})</h3>
+        </div>
+        <div id="my-roster" class="overflow-y-auto flex-1 p-2 space-y-1">
+          <!-- rendered by JS -->
+        </div>
+      </div>
+      <!-- Recent picks -->
+      <div class="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col" style="max-height:30vh;">
+        <div class="px-4 py-3 border-b border-slate-100">
+          <h3 class="text-sm font-bold text-slate-700">Recent Picks</h3>
+        </div>
+        <div id="picks-log" class="overflow-y-auto flex-1 p-2 space-y-1">
+          <!-- rendered by JS -->
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Draft complete overlay -->
+  <div id="complete-overlay" class="hidden fixed inset-0 modal-backdrop z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-8 text-center space-y-4">
+      <div class="text-5xl">🏆</div>
+      <h2 class="text-2xl font-extrabold text-slate-800">Draft Complete!</h2>
+      <p class="text-sm text-slate-500">Your team has been assembled. Check the roster summary below.</p>
+      <div id="final-roster-summary" class="text-left space-y-1 mt-2"></div>
+      <div class="flex gap-3 justify-center pt-2">
+        <a href="/draft" class="px-5 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-sm font-semibold hover:bg-slate-200 transition-colors">New Draft</a>
+        <button onclick="document.getElementById('complete-overlay').classList.add('hidden')"
+                class="px-5 py-2.5 bg-pigskin-500 text-white rounded-xl text-sm font-semibold hover:bg-pigskin-600 transition-colors">View Board</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  // Initialise from server-rendered state
+  let draftState = {{ state | tojson }};
+
+  const USER_SLOT = String(draftState.user_pick_position);
+  const POS_COLORS = {QB:'badge-qb',RB:'badge-rb',WR:'badge-wr',TE:'badge-te',K:'badge-k',DEF:'badge-def'};
+
+  function posClass(pos) {
+    return POS_COLORS[pos] || 'bg-slate-200 text-slate-700';
+  }
+
+  function renderState(state) {
+    draftState = state;
+    renderPlayers(state.available_players);
+    renderMyRoster(state.rosters[USER_SLOT] || []);
+    renderPicksLog(state.picks_log);
+    updateStatusBar(state);
+    if (state.status === 'complete') showCompleteOverlay(state);
+  }
+
+  function renderPlayers(players) {
+    const filter = (document.getElementById('player-filter').value || '').toLowerCase();
+    const posFilter = document.getElementById('pos-filter').value;
+    const filtered = players.filter(p =>
+      (!posFilter || p.position === posFilter) &&
+      (!filter || p.name.toLowerCase().includes(filter))
+    );
+
+    const isUserTurn = draftState.status === 'in_progress' &&
+                       String(draftState.current_slot) === USER_SLOT;
+
+    document.getElementById('player-list').innerHTML = filtered.map(p => `
+      <div class="flex items-center justify-between px-3 py-2 hover:bg-slate-50 transition-colors">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="inline-flex items-center justify-center w-9 h-5 rounded text-[10px] font-bold flex-shrink-0 ${posClass(p.position)}">${p.position}</span>
+          <div class="min-w-0">
+            <p class="text-sm font-medium text-slate-700 truncate">${p.name}</p>
+            <p class="text-xs text-slate-400">${p.nfl_team} &middot; ${p.projected_points.toFixed(1)} pts</p>
+          </div>
+        </div>
+        ${isUserTurn
+          ? `<button onclick="makePick('${p.id}')"
+               class="flex-shrink-0 ml-2 px-2.5 py-1 text-xs font-semibold rounded-lg bg-pigskin-500 text-white hover:bg-pigskin-600 transition-colors">
+               Draft
+             </button>`
+          : `<span class="flex-shrink-0 ml-2 text-xs text-slate-300">—</span>`
+        }
+      </div>`).join('');
+  }
+
+  function renderMyRoster(players) {
+    if (!players.length) {
+      document.getElementById('my-roster').innerHTML =
+        '<p class="text-xs text-slate-400 text-center py-4">No players yet</p>';
+      return;
+    }
+    document.getElementById('my-roster').innerHTML = players.map(p => `
+      <div class="flex items-center gap-2 px-2 py-1 rounded-lg">
+        <span class="inline-flex items-center justify-center w-9 h-5 rounded text-[10px] font-bold flex-shrink-0 ${posClass(p.position)}">${p.position}</span>
+        <div class="min-w-0">
+          <p class="text-xs font-medium text-slate-700 truncate">${p.name}</p>
+          <p class="text-[10px] text-slate-400">${p.nfl_team} &middot; ${p.projected_points.toFixed(1)} pts</p>
+        </div>
+      </div>`).join('');
+  }
+
+  function renderPicksLog(log) {
+    const recent = [...log].reverse().slice(0, 30);
+    if (!recent.length) {
+      document.getElementById('picks-log').innerHTML =
+        '<p class="text-xs text-slate-400 text-center py-4">No picks yet</p>';
+      return;
+    }
+    document.getElementById('picks-log').innerHTML = recent.map(pick => `
+      <div class="flex items-center gap-2 px-2 py-1 text-xs">
+        <span class="text-slate-400 w-12 flex-shrink-0">R${pick.round} P${pick.pick_number}</span>
+        <span class="inline-flex items-center justify-center w-8 h-4 rounded text-[9px] font-bold flex-shrink-0 ${posClass(pick.player.position)}">${pick.player.position}</span>
+        <span class="truncate font-medium text-slate-700">${pick.player.name}</span>
+        <span class="ml-auto text-slate-400 flex-shrink-0">Slot ${pick.slot}</span>
+      </div>`).join('');
+  }
+
+  function updateStatusBar(state) {
+    const isComplete = state.status === 'complete';
+    const isUserTurn = !isComplete && String(state.current_slot) === USER_SLOT;
+
+    document.getElementById('status-round').textContent =
+      `${state.current_round} / ${state.num_rounds}`;
+    document.getElementById('status-pick').textContent =
+      `${Math.min(state.current_pick_index + 1, state.total_picks)} / ${state.total_picks}`;
+
+    const teamEl = document.getElementById('status-team');
+    const badgeEl = document.getElementById('status-badge');
+
+    if (isComplete) {
+      teamEl.textContent = 'Draft Complete!';
+      teamEl.className = 'text-base font-semibold text-field-600';
+      badgeEl.textContent = '✓ Complete';
+      badgeEl.className = 'px-3 py-1.5 rounded-full text-xs font-bold bg-field-100 text-field-700';
+    } else if (isUserTurn) {
+      teamEl.textContent = `🟢 You (Slot ${USER_SLOT})`;
+      teamEl.className = 'text-base font-semibold text-pigskin-600';
+      badgeEl.textContent = 'Your Pick';
+      badgeEl.className = 'px-3 py-1.5 rounded-full text-xs font-bold bg-pigskin-100 text-pigskin-700';
+    } else {
+      teamEl.textContent = `AI — Slot ${state.current_slot}`;
+      teamEl.className = 'text-base font-semibold text-slate-600';
+      badgeEl.textContent = 'AI Picking…';
+      badgeEl.className = 'px-3 py-1.5 rounded-full text-xs font-bold bg-slate-100 text-slate-600';
+    }
+  }
+
+  function showCompleteOverlay(state) {
+    const myPlayers = state.rosters[USER_SLOT] || [];
+    const posCounts = {};
+    myPlayers.forEach(p => { posCounts[p.position] = (posCounts[p.position] || 0) + 1; });
+    const totalProj = myPlayers.reduce((s, p) => s + p.projected_points, 0).toFixed(1);
+
+    document.getElementById('final-roster-summary').innerHTML = `
+      <p class="text-sm font-semibold text-slate-700 mb-2">Your ${myPlayers.length}-player roster</p>
+      ${Object.entries(posCounts).map(([pos, cnt]) =>
+        `<div class="flex items-center gap-2 text-xs text-slate-600">
+           <span class="inline-flex items-center justify-center w-8 h-4 rounded text-[9px] font-bold ${posClass(pos)}">${pos}</span>
+           <span>${cnt} player${cnt > 1 ? 's' : ''}</span>
+         </div>`).join('')}
+      <p class="mt-2 text-sm font-bold text-slate-800">Total Projected: ${totalProj} pts</p>`;
+
+    document.getElementById('complete-overlay').classList.remove('hidden');
+  }
+
+  function filterPlayers() {
+    renderPlayers(draftState.available_players);
+  }
+
+  async function makePick(playerId) {
+    try {
+      const resp = await fetch('/draft/pick', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({draft_id: draftState.draft_id, player_id: playerId}),
+      });
+      if (!resp.ok) {
+        const err = await resp.json();
+        showToast(err.detail || 'Pick failed', 'error');
+        return;
+      }
+      const newState = await resp.json();
+      renderState(newState);
+    } catch (e) {
+      showToast('Network error', 'error');
+    }
+  }
+
+  // Initial render
+  renderState(draftState);
+</script>
+{% endblock %}
