@@ -13,26 +13,26 @@
     </a>
 
     <!-- Player Header Card -->
-    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 mb-6">
+    <div class="bg-gradient-to-r from-slate-800 to-slate-700 rounded-xl shadow-md border border-slate-600 p-6 mb-6 text-white">
         <div class="flex flex-col sm:flex-row items-start sm:items-center gap-4">
-            <span class="inline-flex items-center justify-center w-14 h-9 rounded-lg text-sm font-extrabold badge-{{ player.position | lower }}">
+            <span class="inline-flex items-center justify-center w-16 h-10 rounded-lg text-sm font-extrabold badge-{{ player.position | lower }} shadow-sm">
                 {{ player.position }}
             </span>
             <div class="flex-1">
-                <h2 class="text-2xl font-bold text-slate-800">{{ player.name }}</h2>
-                <p class="text-sm text-slate-500 mt-0.5">
+                <h2 class="text-2xl font-bold text-white">{{ player.name }}</h2>
+                <p class="text-sm text-slate-300 mt-0.5">
                     {{ player.nfl_team }}
-                    {% if fantasy_team %} &middot; <span class="text-field-700 font-medium">{{ fantasy_team }}</span>{% endif %}
+                    {% if fantasy_team %} &middot; <span class="text-pigskin-300 font-medium">{{ fantasy_team }}</span>{% endif %}
                 </p>
             </div>
             <div class="flex gap-6 text-center">
-                <div>
-                    <p class="text-2xl font-bold text-slate-800">{{ "%.1f" | format(player.projected_points) }}</p>
-                    <p class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Projected</p>
+                <div class="bg-white/10 rounded-lg px-4 py-2">
+                    <p class="text-2xl font-bold text-white">{{ "%.1f" | format(player.projected_points) }}</p>
+                    <p class="text-[10px] uppercase tracking-wider text-slate-300 font-semibold">Projected</p>
                 </div>
-                <div>
-                    <p class="text-2xl font-bold text-slate-800">{{ "%.1f" | format(player.actual_points) }}</p>
-                    <p class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Actual</p>
+                <div class="bg-white/10 rounded-lg px-4 py-2">
+                    <p class="text-2xl font-bold text-white">{{ "%.1f" | format(player.actual_points) }}</p>
+                    <p class="text-[10px] uppercase tracking-wider text-slate-300 font-semibold">Actual</p>
                 </div>
             </div>
         </div>
@@ -90,48 +90,66 @@
         {% if seasons %}
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
             <div class="overflow-x-auto">
-                <table class="w-full text-sm">
+                <table class="w-full text-sm" id="season-table">
                     <thead>
                         <tr class="bg-slate-50 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                            <th class="px-4 py-3">Year</th>
-                            <th class="px-4 py-3 text-right">GP</th>
+                            <th class="px-4 py-3 cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('season-table', 0, 'text')">
+                                Year <span class="sort-indicator ml-1">↕</span>
+                            </th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('season-table', 1, 'num')">
+                                GP <span class="sort-indicator ml-1">↕</span>
+                            </th>
                             {% if player.position == 'QB' %}
-                            <th class="px-4 py-3 text-right">Pass Yd</th>
-                            <th class="px-4 py-3 text-right">Pass TD</th>
-                            <th class="px-4 py-3 text-right">INT</th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('season-table', 2, 'num')">Cmp%<span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('season-table', 3, 'num')">Pass Yd<span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('season-table', 4, 'num')">Pass TD<span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('season-table', 5, 'num')">INT<span class="sort-indicator ml-1">↕</span></th>
                             {% endif %}
-                            <th class="px-4 py-3 text-right">Rush Yd</th>
-                            <th class="px-4 py-3 text-right">Rush TD</th>
+                            {% if player.position not in ('K', 'DEF') %}
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('season-table', {% if player.position == 'QB' %}6{% else %}2{% endif %}, 'num')">Rush Yd<span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('season-table', {% if player.position == 'QB' %}7{% else %}3{% endif %}, 'num')">Rush TD<span class="sort-indicator ml-1">↕</span></th>
+                            {% endif %}
                             {% if player.position in ('WR', 'TE', 'RB') %}
-                            <th class="px-4 py-3 text-right">Rec</th>
-                            <th class="px-4 py-3 text-right">Rec Yd</th>
-                            <th class="px-4 py-3 text-right">Rec TD</th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('season-table', 4, 'num')">Tgt<span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('season-table', 5, 'num')">Rec<span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('season-table', 6, 'num')">Rec Yd<span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('season-table', 7, 'num')">Rec TD<span class="sort-indicator ml-1">↕</span></th>
                             {% endif %}
-                            <th class="px-4 py-3 text-right">Fpts Tot</th>
-                            <th class="px-4 py-3 text-right">Fpts/G</th>
-                            <th class="px-4 py-3 text-right">Snap %</th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('season-table', -3, 'num')">Fpts Tot<span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('season-table', -2, 'num')">Fpts/G<span class="sort-indicator ml-1">↕</span></th>
+                            {% if player.position not in ('K', 'DEF') %}
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('season-table', -1, 'num')">Snap %<span class="sort-indicator ml-1">↕</span></th>
+                            {% endif %}
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-100">
                         {% for s in seasons %}
-                        <tr class="hover:bg-slate-50 transition-colors">
-                            <td class="px-4 py-2.5 font-medium text-slate-800">{{ s.year }}</td>
+                        <tr class="hover:bg-slate-50 transition-colors {% if loop.index is odd %}bg-white{% else %}bg-slate-50/40{% endif %}">
+                            <td class="px-4 py-2.5 font-semibold text-slate-800">{{ s.year }}</td>
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ s.games_played }}</td>
                             {% if player.position == 'QB' %}
+                            <td class="px-4 py-2.5 text-right text-slate-600">
+                                {% if s.pass_att and s.pass_att > 0 %}{{ "%.1f" | format(s.pass_cmp / s.pass_att * 100) }}%{% else %}—{% endif %}
+                            </td>
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ s.pass_yd | default(0) }}</td>
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ s.pass_td | default(0) }}</td>
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ s.pass_int | default(0) }}</td>
                             {% endif %}
+                            {% if player.position not in ('K', 'DEF') %}
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ s.rush_yd | default(0) }}</td>
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ s.rush_td | default(0) }}</td>
+                            {% endif %}
                             {% if player.position in ('WR', 'TE', 'RB') %}
+                            <td class="px-4 py-2.5 text-right text-slate-600">{{ s.targets | default(0) }}</td>
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ s.rec | default(0) }}</td>
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ s.rec_yd | default(0) }}</td>
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ s.rec_td | default(0) }}</td>
                             {% endif %}
                             <td class="px-4 py-2.5 text-right font-semibold text-slate-700">{{ s.fantasy_points_total }}</td>
                             <td class="px-4 py-2.5 text-right font-semibold text-slate-700">{{ s.fantasy_points_avg }}</td>
+                            {% if player.position not in ('K', 'DEF') %}
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ "%.0f" | format(s.snap_pct or 0) }}%</td>
+                            {% endif %}
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -150,36 +168,56 @@
 
     <!-- Game Logs Tab -->
     <div id="tab-gamelogs" class="tab-panel hidden">
+        <!-- Filter bar -->
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-3 mb-4 flex flex-wrap items-center gap-3">
+            <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Filter:</label>
+            <select id="gl-year-filter" onchange="filterGameLogs()" class="px-3 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-pigskin-400 bg-white">
+                <option value="">All Years</option>
+                {% set years_seen = namespace(values=[]) %}
+                {% for g in game_logs %}
+                    {% if g.year not in years_seen.values %}
+                        {% set _ = years_seen.values.append(g.year) %}
+                        <option value="{{ g.year }}">{{ g.year }}</option>
+                    {% endif %}
+                {% endfor %}
+            </select>
+            <span class="text-xs text-slate-400" id="gl-count">{{ game_logs | length }} games</span>
+        </div>
+
         {% if game_logs %}
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
             <div class="overflow-x-auto">
-                <table class="w-full text-sm">
+                <table class="w-full text-sm" id="gamelogs-table">
                     <thead>
                         <tr class="bg-slate-50 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                            <th class="px-4 py-3">Week</th>
-                            <th class="px-4 py-3">Opp</th>
+                            <th class="px-4 py-3 cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('gamelogs-table', 0, 'text')">Week <span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('gamelogs-table', 1, 'text')">Opp <span class="sort-indicator ml-1">↕</span></th>
                             {% if player.position == 'QB' %}
-                            <th class="px-4 py-3 text-right">Cmp/Att</th>
-                            <th class="px-4 py-3 text-right">Pass Yd</th>
-                            <th class="px-4 py-3 text-right">Pass TD</th>
-                            <th class="px-4 py-3 text-right">INT</th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('gamelogs-table', 2, 'text')">Cmp/Att <span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('gamelogs-table', 3, 'num')">Pass Yd <span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('gamelogs-table', 4, 'num')">Pass TD <span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('gamelogs-table', 5, 'num')">INT <span class="sort-indicator ml-1">↕</span></th>
                             {% endif %}
-                            <th class="px-4 py-3 text-right">Rush</th>
-                            <th class="px-4 py-3 text-right">Rush Yd</th>
-                            <th class="px-4 py-3 text-right">Rush TD</th>
+                            {% if player.position not in ('K', 'DEF') %}
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('gamelogs-table', {% if player.position == 'QB' %}6{% else %}2{% endif %}, 'num')">Rush <span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('gamelogs-table', {% if player.position == 'QB' %}7{% else %}3{% endif %}, 'num')">Rush Yd <span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('gamelogs-table', {% if player.position == 'QB' %}8{% else %}4{% endif %}, 'num')">Rush TD <span class="sort-indicator ml-1">↕</span></th>
+                            {% endif %}
                             {% if player.position in ('WR', 'TE', 'RB') %}
-                            <th class="px-4 py-3 text-right">Tgt</th>
-                            <th class="px-4 py-3 text-right">Rec</th>
-                            <th class="px-4 py-3 text-right">Rec Yd</th>
-                            <th class="px-4 py-3 text-right">Rec TD</th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('gamelogs-table', 5, 'num')">Tgt <span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('gamelogs-table', 6, 'num')">Rec <span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('gamelogs-table', 7, 'num')">Rec Yd <span class="sort-indicator ml-1">↕</span></th>
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('gamelogs-table', 8, 'num')">Rec TD <span class="sort-indicator ml-1">↕</span></th>
                             {% endif %}
-                            <th class="px-4 py-3 text-right">Fum</th>
-                            <th class="px-4 py-3 text-right font-bold">Fpts</th>
+                            {% if player.position not in ('K', 'DEF') %}
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none" onclick="sortTable('gamelogs-table', -2, 'num')">Fum <span class="sort-indicator ml-1">↕</span></th>
+                            {% endif %}
+                            <th class="px-4 py-3 text-right cursor-pointer hover:bg-slate-100 select-none font-bold" onclick="sortTable('gamelogs-table', -1, 'num')">Fpts <span class="sort-indicator ml-1">↕</span></th>
                         </tr>
                     </thead>
-                    <tbody class="divide-y divide-slate-100">
+                    <tbody class="divide-y divide-slate-100" id="gamelogs-body">
                         {% for g in game_logs %}
-                        <tr class="hover:bg-slate-50 transition-colors">
+                        <tr class="hover:bg-slate-50 transition-colors gl-row {% if loop.index is odd %}bg-white{% else %}bg-slate-50/40{% endif %}" data-year="{{ g.year }}">
                             <td class="px-4 py-2.5 font-medium text-slate-800">{{ g.year }} W{{ g.week }}</td>
                             <td class="px-4 py-2.5 text-slate-600">{{ g.opponent or '—' }}</td>
                             {% if player.position == 'QB' %}
@@ -188,17 +226,23 @@
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ g.pass_td }}</td>
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ g.pass_int }}</td>
                             {% endif %}
+                            {% if player.position not in ('K', 'DEF') %}
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ g.rush_att }}</td>
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ g.rush_yd }}</td>
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ g.rush_td }}</td>
+                            {% endif %}
                             {% if player.position in ('WR', 'TE', 'RB') %}
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ g.targets }}</td>
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ g.rec }}</td>
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ g.rec_yd }}</td>
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ g.rec_td }}</td>
                             {% endif %}
+                            {% if player.position not in ('K', 'DEF') %}
                             <td class="px-4 py-2.5 text-right text-slate-600">{{ g.fumbles }}</td>
-                            <td class="px-4 py-2.5 text-right font-semibold text-slate-700">{{ g.fantasy_points }}</td>
+                            {% endif %}
+                            <td class="px-4 py-2.5 text-right font-semibold {{ 'text-field-600' if g.fantasy_points >= 20 else ('text-pigskin-600' if g.fantasy_points >= 10 else 'text-red-500' if g.fantasy_points < 5 else 'text-slate-700') }}">
+                                {{ g.fantasy_points }}
+                            </td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -276,20 +320,74 @@
 {% block extra_js %}
 <script>
 function switchTab(name) {
-    // Hide all panels
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
-    // Deactivate all buttons
     document.querySelectorAll('.tab-btn').forEach(b => {
         b.classList.remove('border-pigskin-500', 'text-pigskin-600');
         b.classList.add('border-transparent', 'text-slate-400');
     });
-    // Show selected
     document.getElementById('tab-' + name).classList.remove('hidden');
     var btn = document.querySelector('[data-tab="' + name + '"]');
     btn.classList.add('border-pigskin-500', 'text-pigskin-600');
     btn.classList.remove('border-transparent', 'text-slate-400');
 }
 
+// ── Game log year filter ──────────────────────────────────────────────────────
+function filterGameLogs() {
+    var year = document.getElementById('gl-year-filter').value;
+    var rows = document.querySelectorAll('#gamelogs-body .gl-row');
+    var count = 0;
+    rows.forEach(function(row) {
+        var show = !year || row.dataset.year === year;
+        row.style.display = show ? '' : 'none';
+        if (show) count++;
+    });
+    var counter = document.getElementById('gl-count');
+    if (counter) counter.textContent = count + ' game' + (count !== 1 ? 's' : '');
+}
+
+// ── Sortable tables ───────────────────────────────────────────────────────────
+var _sortState = {};
+
+function sortTable(tableId, colIndex, type) {
+    var table = document.getElementById(tableId);
+    if (!table) return;
+    var tbody = table.querySelector('tbody');
+    var rows = Array.from(tbody.querySelectorAll('tr'));
+
+    var key = tableId + ':' + colIndex;
+    var asc = !_sortState[key];
+    _sortState[key] = asc;
+
+    // Reset all indicators in this table
+    table.querySelectorAll('.sort-indicator').forEach(function(el) { el.textContent = '↕'; });
+
+    // Resolve negative index (count from end)
+    var allHeaders = table.querySelectorAll('thead th');
+    var realIndex = colIndex >= 0 ? colIndex : allHeaders.length + colIndex;
+    var th = allHeaders[realIndex];
+    if (th) {
+        var ind = th.querySelector('.sort-indicator');
+        if (ind) ind.textContent = asc ? '↑' : '↓';
+    }
+
+    rows.sort(function(a, b) {
+        var cells_a = Array.from(a.querySelectorAll('td'));
+        var cells_b = Array.from(b.querySelectorAll('td'));
+        var ri = colIndex >= 0 ? colIndex : cells_a.length + colIndex;
+        var va = cells_a[ri] ? cells_a[ri].textContent.trim() : '';
+        var vb = cells_b[ri] ? cells_b[ri].textContent.trim() : '';
+        if (type === 'num') {
+            va = parseFloat(va.replace('%', '')) || 0;
+            vb = parseFloat(vb.replace('%', '')) || 0;
+            return asc ? va - vb : vb - va;
+        }
+        return asc ? va.localeCompare(vb) : vb.localeCompare(va);
+    });
+
+    rows.forEach(function(row) { tbody.appendChild(row); });
+}
+
+// ── Projection helpers ────────────────────────────────────────────────────────
 var _projType = 'weekly';
 
 function setProjectionType(type) {
