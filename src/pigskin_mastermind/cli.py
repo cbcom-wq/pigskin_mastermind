@@ -396,5 +396,67 @@ def stats_defense(nfl_team, year):
         db.close()
 
 
+@stats.command('import-adp')
+@click.argument('csv_file', type=click.Path(exists=True, dir_okay=False))
+@click.option('--year', type=int, required=True, help='Season year the ADP data belongs to')
+@click.option('--source', default='csv', show_default=True,
+              help='Label for the ADP source (e.g. espn, yahoo, fantasypros)')
+def stats_import_adp(csv_file, year, source):
+    """Import player ADP data from a CSV file.
+
+    The CSV must contain columns: name, position, adp.
+    An optional player_id (gsis-style) column improves matching accuracy.
+
+    Example CSV header: name,position,adp
+    """
+    from pigskin_mastermind.services.nfl_data_service import NFLDataService
+
+    db = _get_stats_db()
+    try:
+        service = NFLDataService(db)
+        count = service.import_adp_from_csv(csv_file, year=year, adp_source=source)
+        click.echo(f"ADP import complete: {count} player(s) updated for {year}.")
+    except FileNotFoundError as e:
+        click.echo(f"Error: {e}", err=True)
+    finally:
+        db.close()
+
+
+@stats.command('yearly-rankings')
+@click.option('--year', type=int, required=True, help='Season year')
+@click.option('--position', default=None,
+              type=click.Choice(['QB', 'RB', 'WR', 'TE', 'K', 'DEF'], case_sensitive=False),
+              help='Filter by position')
+@click.option('--top', type=int, default=None, help='Show only top N players')
+def stats_yearly_rankings(year, position, top):
+    """Show yearly player rankings sorted by ADP then fantasy points."""
+    from pigskin_mastermind.services.stats_service import StatsService
+
+    db = _get_stats_db()
+    try:
+        service = StatsService(db)
+        rankings = service.get_yearly_rankings(year, position=position)
+        if not rankings:
+            click.echo(f"No rankings data found for {year}.", err=True)
+            return
+
+        if top:
+            rankings = rankings[:top]
+
+        pos_label = f" ({position.upper()})" if position else ""
+        click.echo(f"\n{year} Yearly Rankings{pos_label}")
+        click.echo(f"{'Rank':>4} {'Name':<25} {'Pos':<5} {'Team':<5} {'ADP':>6} {'FPts':>8} {'Avg':>6}")
+        click.echo("-" * 65)
+        for r in rankings:
+            adp_str = f"{r['adp']:.1f}" if r['adp'] is not None else "N/A"
+            click.echo(
+                f"{r['rank']:>4} {r['name']:<25} {r['position']:<5} {r['nfl_team']:<5} "
+                f"{adp_str:>6} {r['fantasy_points_total'] or 0:>8.1f} "
+                f"{r['fantasy_points_avg']:>6.2f}"
+            )
+    finally:
+        db.close()
+
+
 if __name__ == '__main__':
     main()

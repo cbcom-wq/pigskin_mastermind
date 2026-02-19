@@ -134,6 +134,10 @@ class DBPlayerSeasonStats(Base):
     yac = Column(Float, nullable=True)
     wopr = Column(Float, nullable=True)
 
+    # ADP (Average Draft Position)
+    adp = Column(Float, nullable=True)
+    adp_source = Column(String, nullable=True)  # e.g. 'csv', 'espn', 'yahoo'
+
     # Meta
     source = Column(String, default='espn')  # 'espn', 'nfl_data_py', 'combined'
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

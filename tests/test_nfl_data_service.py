@@ -195,3 +195,99 @@ class TestImportTeamDefenseRankings:
 
         assert count > 0
         assert db.query(DBNFLTeamStats).count() > 0
+
+
+class TestImportADPFromCSV:
+    def _seed_players(self, db):
+        """Create two players for ADP matching tests."""
+        qb = DBPlayer(player_id="nfl_GSIS001", name="Test QB", position="QB", nfl_team="KC")
+        rb = DBPlayer(player_id="nfl_GSIS002", name="Test RB", position="RB", nfl_team="KC")
+        db.add_all([qb, rb])
+        db.commit()
+        return qb, rb
+
+    def test_import_by_name_creates_season_stats(self, db):
+        self._seed_players(db)
+        csv_data = "name,position,adp\nTest QB,QB,5.5\nTest RB,RB,12.0\n"
+        import io
+        service = NFLDataService(db)
+        count = service.import_adp_from_csv(io.StringIO(csv_data), year=2024)
+
+        assert count == 2
+        qb = db.query(DBPlayer).filter_by(name="Test QB").first()
+        season = db.query(DBPlayerSeasonStats).filter_by(player_id=qb.id, year=2024).first()
+        assert season is not None
+        assert season.adp == pytest.approx(5.5)
+        assert season.adp_source == 'csv'
+
+    def test_import_by_player_id(self, db):
+        qb, _ = self._seed_players(db)
+        csv_data = "player_id,name,position,adp\nGSIS001,Test QB,QB,3.2\n"
+        import io
+        service = NFLDataService(db)
+        count = service.import_adp_from_csv(io.StringIO(csv_data), year=2024)
+
+        assert count == 1
+        season = db.query(DBPlayerSeasonStats).filter_by(player_id=qb.id, year=2024).first()
+        assert season.adp == pytest.approx(3.2)
+
+    def test_import_updates_existing_season_stats(self, db):
+        qb, _ = self._seed_players(db)
+        existing = DBPlayerSeasonStats(
+            player_id=qb.id, year=2024, games_played=16,
+            fantasy_points_total=300.0, fantasy_points_avg=18.75,
+        )
+        db.add(existing)
+        db.commit()
+
+        csv_data = "name,position,adp\nTest QB,QB,7.0\n"
+        import io
+        service = NFLDataService(db)
+        count = service.import_adp_from_csv(io.StringIO(csv_data), year=2024)
+
+        assert count == 1
+        season = db.query(DBPlayerSeasonStats).filter_by(player_id=qb.id, year=2024).first()
+        assert season.adp == pytest.approx(7.0)
+        assert season.games_played == 16  # existing data preserved
+
+    def test_import_skips_missing_name(self, db):
+        self._seed_players(db)
+        csv_data = "name,position,adp\n,QB,5.5\n"
+        import io
+        service = NFLDataService(db)
+        count = service.import_adp_from_csv(io.StringIO(csv_data), year=2024)
+        assert count == 0
+
+    def test_import_skips_invalid_adp(self, db):
+        self._seed_players(db)
+        csv_data = "name,position,adp\nTest QB,QB,not_a_number\n"
+        import io
+        service = NFLDataService(db)
+        count = service.import_adp_from_csv(io.StringIO(csv_data), year=2024)
+        assert count == 0
+
+    def test_import_skips_unknown_player(self, db):
+        self._seed_players(db)
+        csv_data = "name,position,adp\nUnknown Player,WR,50.0\n"
+        import io
+        service = NFLDataService(db)
+        count = service.import_adp_from_csv(io.StringIO(csv_data), year=2024)
+        assert count == 0
+
+    def test_import_custom_adp_source_label(self, db):
+        self._seed_players(db)
+        csv_data = "name,position,adp\nTest RB,RB,15.0\n"
+        import io
+        service = NFLDataService(db)
+        service.import_adp_from_csv(io.StringIO(csv_data), year=2024, adp_source='fantasypros')
+        rb = db.query(DBPlayer).filter_by(name="Test RB").first()
+        season = db.query(DBPlayerSeasonStats).filter_by(player_id=rb.id, year=2024).first()
+        assert season.adp_source == 'fantasypros'
+
+    def test_import_from_file_path(self, db, tmp_path):
+        self._seed_players(db)
+        csv_file = tmp_path / "adp.csv"
+        csv_file.write_text("name,position,adp\nTest QB,QB,4.0\n")
+        service = NFLDataService(db)
+        count = service.import_adp_from_csv(str(csv_file), year=2024)
+        assert count == 1

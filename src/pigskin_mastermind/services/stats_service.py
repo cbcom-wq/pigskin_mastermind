@@ -245,6 +245,62 @@ class StatsService:
 
         return {"players": comparisons}
 
+    def get_yearly_rankings(
+        self,
+        year: int,
+        position: Optional[str] = None,
+    ) -> List[dict]:
+        """Get yearly player rankings sorted by ADP (when available) then by
+        total fantasy points.
+
+        Players that have an ADP recorded for the requested year are ranked
+        first (ascending ADP = drafted earlier = higher rank), followed by
+        players without ADP data ranked by descending fantasy points.
+
+        Args:
+            year: Season year to rank players for.
+            position: Optional position filter (QB, RB, WR, TE, K, DEF).
+
+        Returns:
+            Ordered list of player ranking dicts, each containing:
+            ``rank``, ``player_id``, ``name``, ``position``, ``nfl_team``,
+            ``adp``, ``adp_source``, ``fantasy_points_total``,
+            ``fantasy_points_avg``, ``games_played``.
+        """
+        query = (
+            self.db.query(DBPlayer, DBPlayerSeasonStats)
+            .join(DBPlayerSeasonStats, DBPlayerSeasonStats.player_id == DBPlayer.id)
+            .filter(DBPlayerSeasonStats.year == year)
+        )
+        if position:
+            query = query.filter(DBPlayer.position == position.upper())
+
+        rows = query.all()
+
+        # Separate players with and without ADP
+        with_adp = [(p, s) for p, s in rows if s.adp is not None]
+        without_adp = [(p, s) for p, s in rows if s.adp is None]
+
+        with_adp.sort(key=lambda x: x[1].adp)
+        without_adp.sort(key=lambda x: x[1].fantasy_points_total or 0.0, reverse=True)
+
+        rankings = []
+        for rank, (player, season) in enumerate(with_adp + without_adp, start=1):
+            rankings.append({
+                "rank": rank,
+                "player_id": player.id,
+                "name": player.name,
+                "position": player.position,
+                "nfl_team": player.nfl_team,
+                "adp": season.adp,
+                "adp_source": season.adp_source,
+                "fantasy_points_total": season.fantasy_points_total,
+                "fantasy_points_avg": round(season.fantasy_points_avg or 0.0, 2),
+                "games_played": season.games_played,
+            })
+
+        return rankings
+
     def _game_log_to_dict(self, g: DBPlayerGameLog) -> dict:
         return {
             "year": g.year,
