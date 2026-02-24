@@ -156,3 +156,54 @@ async def sync_weekly_stats(team_db_id: int, db: Session = Depends(get_db)):
         return _toast_response(str(e), "error")
     except Exception as e:
         return _toast_response(f"Weekly sync failed: {str(e)}", "error")
+
+
+@router.post("/populate-stats")
+async def populate_stats(db: Session = Depends(get_db)):
+    """Parse raw ESPN player JSON stats into structured game logs and season stats."""
+    try:
+        from pigskin_mastermind.services.espn_sync import ESPNSyncService
+        from pigskin_mastermind.models.database import DBLeague
+        # Determine the year from the first league, default to 2025
+        league = db.query(DBLeague).first()
+        year = league.year if league else 2025
+        sync_service = ESPNSyncService(db)
+        result = sync_service.populate_stats_from_player_json(year=year)
+        return _toast_response(
+            f"Populated {result['season_stats']} season stats and {result['game_logs']} game logs!",
+            "success",
+        )
+    except Exception as e:
+        return _toast_response(f"Stats population failed: {str(e)}", "error")
+
+
+@router.post("/import-full-season")
+async def import_full_season(db: Session = Depends(get_db)):
+    """Import player stats for every week of the season from ESPN.
+
+    This re-fetches free agents for each week so that per-week breakdowns
+    are available for all completed weeks, then populates structured tables.
+    """
+    try:
+        from pigskin_mastermind.services.espn_sync import ESPNSyncService
+        league = db.query(DBLeague).first()
+        if not league:
+            return _toast_response("No league configured — add one first.", "error")
+        if not league.espn_s2 or not league.swid:
+            return _toast_response("Missing ESPN credentials for this league.", "error")
+
+        sync_service = ESPNSyncService(db)
+        result = sync_service.import_all_players_full_season(
+            league_id=league.league_id,
+            espn_s2=league.espn_s2,
+            swid=league.swid,
+            year=league.year,
+        )
+        return _toast_response(
+            f"Imported {result['players']} players, "
+            f"{result['game_logs']} game logs, "
+            f"{result['season_stats']} season stats!",
+            "success",
+        )
+    except Exception as e:
+        return _toast_response(f"Full-season import failed: {str(e)}", "error")

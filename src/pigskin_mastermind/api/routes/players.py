@@ -7,7 +7,7 @@ from sqlalchemy import func
 from typing import Optional
 
 from pigskin_mastermind.api.database import get_db
-from pigskin_mastermind.models.database import DBPlayer, DBTeam
+from pigskin_mastermind.models.database import DBPlayer, DBTeam, DBPlayerSeasonStats
 from pigskin_mastermind.services.stats_service import StatsService
 
 router = APIRouter(tags=["players"])
@@ -28,6 +28,32 @@ async def player_detail_page(
         return RedirectResponse("/players", status_code=302)
 
     stats_svc = StatsService(db)
+
+    # On-demand: fetch full weekly stats from ESPN for this player
+    # if we don't already have game logs for them
+    has_season_stats = db.query(DBPlayerSeasonStats).filter_by(player_id=player_id).first()
+    if not has_season_stats:
+        try:
+            from pigskin_mastermind.services.espn_sync import ESPNSyncService
+            from pigskin_mastermind.models.database import DBLeague
+            league = db.query(DBLeague).first()
+            if league and league.espn_s2 and league.swid:
+                sync_svc = ESPNSyncService(db)
+                sync_svc.fetch_player_full_stats(
+                    db_player_id=player_id,
+                    league_id=league.league_id,
+                    espn_s2=league.espn_s2,
+                    swid=league.swid,
+                    year=league.year,
+                )
+            elif player.stats:
+                # Fallback: parse whatever JSON we already have
+                sync_svc = ESPNSyncService(db)
+                sync_svc._populate_single_player_stats(
+                    player, year=league.year if league else 2025,
+                )
+        except Exception:
+            pass  # Non-critical — page still renders
 
     # Season stats from stats service
     player_stats = stats_svc.get_player_stats(player_id)

@@ -154,6 +154,27 @@
         </form>
     </div>
 
+    <!-- Populate Stats -->
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mt-6">
+        <div class="px-6 py-4 border-b border-slate-200">
+            <h3 class="text-base font-bold text-slate-800">Player Stats</h3>
+            <p class="text-xs text-slate-500 mt-0.5">Parse imported ESPN player data into structured season stats and game logs</p>
+        </div>
+        <div class="p-6 space-y-4">
+            <button
+                hx-post="/settings/populate-stats"
+                hx-swap="none"
+                class="inline-flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white text-sm font-semibold rounded-lg shadow-sm transition-all"
+            >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+                Populate Season Stats &amp; Game Logs
+            </button>
+            <p class="text-xs text-slate-400">Parses already-imported ESPN data into structured stats tables. Full per-week game logs are also fetched automatically from ESPN when you open a player's detail page.</p>
+        </div>
+    </div>
+
     <!-- Help Section -->
     <div class="mt-6 bg-slate-50 rounded-xl border border-slate-200 p-6">
         <h3 class="text-sm font-bold text-slate-700 mb-2">How to find your ESPN cookies</h3>

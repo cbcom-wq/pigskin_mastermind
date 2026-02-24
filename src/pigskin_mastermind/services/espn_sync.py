@@ -588,8 +588,258 @@ class ESPNSyncService:
         self.db.commit()
         return players_imported
 
+    def import_all_players_full_season(
+        self,
+        league_id: str,
+        espn_s2: str,
+        swid: str,
+        year: int = 2024,
+        positions: Optional[List[str]] = None,
+        batch_size: int = 500,
+        progress_callback=None,
+    ) -> Dict[str, int]:
+        """Import all players with stats for every week of the season.
+
+        ESPN's ``free_agents`` endpoint only returns breakdown stats for the
+        single week requested.  This method loops through every completed week
+        so that each player's JSON ``stats`` dict ends up with per-week
+        breakdowns for the full season, then populates the structured
+        ``player_game_logs`` and ``player_season_stats`` tables.
+
+        Args:
+            league_id: ESPN league ID
+            espn_s2: ESPN S2 authentication cookie
+            swid: ESPN SWID authentication cookie
+            year: Season year
+            positions: Positions to import.  Defaults to all.
+            batch_size: Number of players per ESPN API page.
+            progress_callback: Optional callable(week, total_weeks) for UI.
+
+        Returns:
+            Dict with 'players', 'game_logs', 'season_stats' counts.
+        """
+        league = League(
+            league_id=int(league_id),
+            year=year,
+            espn_s2=espn_s2,
+            swid=swid,
+        )
+
+        total_weeks = league.current_week
+        if positions is None:
+            positions = ['QB', 'RB', 'WR', 'TE', 'K', 'D/ST']
+
+        seen_player_ids: set = set()
+
+        for week in range(1, total_weeks + 1):
+            if progress_callback:
+                progress_callback(week, total_weeks)
+            for position in positions:
+                try:
+                    free_agents = league.free_agents(
+                        week=week, size=batch_size, position=position,
+                    )
+                    for espn_player in free_agents:
+                        db_player = self._import_player_from_box(
+                            espn_player, team_db_id=None,
+                        )
+                        seen_player_ids.add(db_player.player_id)
+                except Exception as e:
+                    print(f"Error importing {position} week {week}: {e}")
+                    continue
+            # Commit per week to avoid holding a huge transaction
+            self.db.commit()
+
+        # Now populate structured tables from the merged JSON
+        result = self.populate_stats_from_player_json(year=year)
+        result['players'] = len(seen_player_ids)
+        return result
+
+    def fetch_player_full_stats(
+        self,
+        db_player_id: int,
+        league_id: str,
+        espn_s2: str,
+        swid: str,
+        year: int = 2025,
+    ) -> Dict[str, int]:
+        """Fetch full per-week stats for a single player from ESPN.
+
+        Uses ``league.player_info(playerId=X)`` which returns all weekly
+        breakdowns in one API call via the ``kona_playercard`` view, then
+        writes the results into ``player_game_logs`` and
+        ``player_season_stats``.
+
+        Args:
+            db_player_id: Internal database ID of the player.
+            league_id: ESPN league ID.
+            espn_s2: ESPN authentication cookie.
+            swid: ESPN SWID cookie.
+            year: Season year.
+
+        Returns:
+            Dict with 'game_logs' and 'season_stats' counts.
+        """
+        db_player = self.db.query(DBPlayer).filter_by(id=db_player_id).first()
+        if not db_player:
+            return {"game_logs": 0, "season_stats": 0}
+
+        # Extract ESPN integer ID from our "espn_XXXXX" player_id
+        if not db_player.player_id or not db_player.player_id.startswith("espn_"):
+            return {"game_logs": 0, "season_stats": 0}
+        espn_id = int(db_player.player_id.replace("espn_", ""))
+
+        league = League(
+            league_id=int(league_id),
+            year=year,
+            espn_s2=espn_s2,
+            swid=swid,
+        )
+
+        espn_player = league.player_info(playerId=espn_id)
+        if not espn_player:
+            return {"game_logs": 0, "season_stats": 0}
+
+        # Update the raw stats JSON on the player record (all weeks)
+        raw_stats = getattr(espn_player, 'stats', {})
+        if raw_stats:
+            merged = db_player.stats if db_player.stats else {}
+            for k, v in raw_stats.items():
+                merged[str(k)] = v
+            db_player.stats = merged
+            self.db.flush()
+
+        # Now parse the updated JSON into structured tables for this player
+        return self._populate_single_player_stats(db_player, year)
+
+    def _populate_single_player_stats(
+        self,
+        player: DBPlayer,
+        year: int,
+    ) -> Dict[str, int]:
+        """Parse the raw stats JSON for a single player into game logs and
+        season stats rows.
+
+        Returns:
+            Dict with 'game_logs' and 'season_stats' counts.
+        """
+        raw = player.stats
+        if not raw or not isinstance(raw, dict):
+            return {"game_logs": 0, "season_stats": 0}
+
+        game_log_count = 0
+
+        # ---- per-week game logs ----
+        for week_key, week_data in raw.items():
+            if week_key == '0':
+                continue
+            try:
+                week_num = int(week_key)
+            except (ValueError, TypeError):
+                continue
+
+            breakdown = week_data.get('breakdown', {}) if isinstance(week_data, dict) else {}
+            if not breakdown:
+                continue
+
+            parsed = map_espn_breakdown_to_stats(breakdown)
+            points = week_data.get('points', 0.0) if isinstance(week_data, dict) else 0.0
+
+            game_log = self.db.query(DBPlayerGameLog).filter_by(
+                player_id=player.id, year=year, week=week_num,
+            ).first()
+            if not game_log:
+                game_log = DBPlayerGameLog(
+                    player_id=player.id, year=year, week=week_num,
+                )
+                self.db.add(game_log)
+
+            game_log.pass_att = parsed.get('pass_att', 0)
+            game_log.pass_cmp = parsed.get('pass_cmp', 0)
+            game_log.pass_yd = parsed.get('pass_yd', 0)
+            game_log.pass_td = parsed.get('pass_td', 0)
+            game_log.pass_int = parsed.get('pass_int', 0)
+            game_log.rush_att = parsed.get('rush_att', 0)
+            game_log.rush_yd = parsed.get('rush_yd', 0)
+            game_log.rush_td = parsed.get('rush_td', 0)
+            game_log.targets = parsed.get('targets', 0)
+            game_log.rec = parsed.get('rec', 0)
+            game_log.rec_yd = parsed.get('rec_yd', 0)
+            game_log.rec_td = parsed.get('rec_td', 0)
+            game_log.fumbles = parsed.get('fumbles', 0)
+            game_log.fumbles_lost = parsed.get('fumbles_lost', 0)
+            game_log.two_pt_conversions = parsed.get('two_pt_conversions', 0)
+            game_log.fantasy_points = float(points) if points else 0.0
+            game_log.source = 'espn'
+            game_log.updated_at = datetime.utcnow()
+            game_log_count += 1
+
+        # ---- season aggregate from key '0' ----
+        season_count = 0
+        season_data = raw.get('0')
+        if season_data and isinstance(season_data, dict):
+            breakdown = season_data.get('breakdown', {})
+            if breakdown:
+                parsed = map_espn_breakdown_to_stats(breakdown)
+                points_total = float(season_data.get('points', 0.0) or 0.0)
+
+                season = self.db.query(DBPlayerSeasonStats).filter_by(
+                    player_id=player.id, year=year,
+                ).first()
+                if not season:
+                    season = DBPlayerSeasonStats(player_id=player.id, year=year)
+                    self.db.add(season)
+
+                week_keys = [k for k in raw.keys() if k != '0']
+                season.games_played = len(week_keys)
+                season.pass_att = parsed.get('pass_att', 0)
+                season.pass_cmp = parsed.get('pass_cmp', 0)
+                season.pass_yd = parsed.get('pass_yd', 0)
+                season.pass_td = parsed.get('pass_td', 0)
+                season.pass_int = parsed.get('pass_int', 0)
+                season.rush_att = parsed.get('rush_att', 0)
+                season.rush_yd = parsed.get('rush_yd', 0)
+                season.rush_td = parsed.get('rush_td', 0)
+                season.rush_fumbles = parsed.get('fumbles_lost', 0)
+                season.targets = parsed.get('targets', 0)
+                season.rec = parsed.get('rec', 0)
+                season.rec_yd = parsed.get('rec_yd', 0)
+                season.rec_td = parsed.get('rec_td', 0)
+                season.fantasy_points_total = points_total
+                season.fantasy_points_avg = (
+                    points_total / season.games_played
+                    if season.games_played > 0 else 0.0
+                )
+                total_touches = season.rush_att + season.rec
+                season.fantasy_points_per_touch = (
+                    points_total / total_touches if total_touches > 0 else 0.0
+                )
+
+                if season.pass_att and season.pass_att > 0:
+                    comp_pct = season.pass_cmp / season.pass_att
+                    td_pct = season.pass_td / season.pass_att
+                    int_pct = season.pass_int / season.pass_att
+                    ypa = season.pass_yd / season.pass_att
+                    a = max(0, min(2.375, (comp_pct - 0.3) * 5))
+                    b = max(0, min(2.375, (ypa - 3) * 0.25))
+                    c = max(0, min(2.375, td_pct * 20))
+                    d = max(0, min(2.375, 2.375 - (int_pct * 25)))
+                    season.pass_rating = ((a + b + c + d) / 6) * 100
+                else:
+                    season.pass_rating = 0.0
+
+                season.source = 'espn'
+                season.updated_at = datetime.utcnow()
+                season_count = 1
+
+        self.db.commit()
+        return {"game_logs": game_log_count, "season_stats": season_count}
+
     def _import_player_from_box(self, espn_player: Any, team_db_id: Optional[int]) -> DBPlayer:
         """Import a player from a BoxPlayer object (used by free agents and rosters).
+
+        Merges per-week stats into the existing JSON blob rather than
+        overwriting, so multiple calls for different weeks accumulate data.
 
         Args:
             espn_player: ESPN BoxPlayer object
@@ -610,12 +860,19 @@ class ESPNSyncService:
         db_player.nfl_team = espn_player.proTeam
         db_player.projected_points = getattr(espn_player, 'projected_points', 0.0)
         db_player.actual_points = getattr(espn_player, 'points', 0.0)
-        
-        # Only update stats if available
-        stats = getattr(espn_player, 'stats', {})
-        if stats:
-            db_player.stats = stats
-        
+
+        # Merge new stats into existing JSON (preserve per-week data from
+        # previous imports rather than overwriting with single-week data).
+        new_stats = getattr(espn_player, 'stats', {})
+        if new_stats:
+            existing = db_player.stats if db_player.stats else {}
+            # Convert keys to str for consistent merging
+            for k, v in new_stats.items():
+                sk = str(k)
+                # Always keep the freshest season totals ('0') and each week
+                existing[sk] = v
+            db_player.stats = existing
+
         # Update team_id only if provided (rostered player)
         if team_db_id is not None:
             db_player.team_id = team_db_id
@@ -642,6 +899,150 @@ class ESPNSyncService:
             swid=db_league.swid,
             year=year or db_league.year
         )
+
+    def populate_stats_from_player_json(self, year: int = 2025) -> Dict[str, int]:
+        """Parse the raw stats JSON on every player into structured game logs
+        and season stats rows.
+
+        The ``import_all_players`` flow stores ESPN stats as a JSON blob on
+        ``DBPlayer.stats`` but never writes to the ``player_game_logs`` or
+        ``player_season_stats`` tables.  This method fills that gap.
+
+        Args:
+            year: The season year these stats belong to.
+
+        Returns:
+            Dict with 'game_logs' and 'season_stats' counts.
+        """
+        players = (
+            self.db.query(DBPlayer)
+            .filter(DBPlayer.stats.isnot(None))
+            .all()
+        )
+
+        game_log_count = 0
+        season_count = 0
+
+        for player in players:
+            raw = player.stats
+            if not raw or not isinstance(raw, dict):
+                continue
+
+            # ---------- per-week game logs ----------
+            for week_key, week_data in raw.items():
+                if week_key == '0':
+                    # '0' is the season aggregate — handled below
+                    continue
+                try:
+                    week_num = int(week_key)
+                except (ValueError, TypeError):
+                    continue
+
+                breakdown = week_data.get('breakdown', {}) if isinstance(week_data, dict) else {}
+                if not breakdown:
+                    continue
+
+                parsed = map_espn_breakdown_to_stats(breakdown)
+                points = week_data.get('points', 0.0) if isinstance(week_data, dict) else 0.0
+
+                game_log = self.db.query(DBPlayerGameLog).filter_by(
+                    player_id=player.id,
+                    year=year,
+                    week=week_num,
+                ).first()
+                if not game_log:
+                    game_log = DBPlayerGameLog(
+                        player_id=player.id,
+                        year=year,
+                        week=week_num,
+                    )
+                    self.db.add(game_log)
+
+                game_log.pass_att = parsed.get('pass_att', 0)
+                game_log.pass_cmp = parsed.get('pass_cmp', 0)
+                game_log.pass_yd = parsed.get('pass_yd', 0)
+                game_log.pass_td = parsed.get('pass_td', 0)
+                game_log.pass_int = parsed.get('pass_int', 0)
+                game_log.rush_att = parsed.get('rush_att', 0)
+                game_log.rush_yd = parsed.get('rush_yd', 0)
+                game_log.rush_td = parsed.get('rush_td', 0)
+                game_log.targets = parsed.get('targets', 0)
+                game_log.rec = parsed.get('rec', 0)
+                game_log.rec_yd = parsed.get('rec_yd', 0)
+                game_log.rec_td = parsed.get('rec_td', 0)
+                game_log.fumbles = parsed.get('fumbles', 0)
+                game_log.fumbles_lost = parsed.get('fumbles_lost', 0)
+                game_log.two_pt_conversions = parsed.get('two_pt_conversions', 0)
+                game_log.fantasy_points = float(points) if points else 0.0
+                game_log.source = 'espn'
+                game_log.updated_at = datetime.utcnow()
+                game_log_count += 1
+
+            # ---------- season aggregate from key '0' ----------
+            season_data = raw.get('0')
+            if not season_data or not isinstance(season_data, dict):
+                continue
+            breakdown = season_data.get('breakdown', {})
+            if not breakdown:
+                continue
+
+            parsed = map_espn_breakdown_to_stats(breakdown)
+            points_total = float(season_data.get('points', 0.0) or 0.0)
+
+            season = self.db.query(DBPlayerSeasonStats).filter_by(
+                player_id=player.id, year=year,
+            ).first()
+            if not season:
+                season = DBPlayerSeasonStats(player_id=player.id, year=year)
+                self.db.add(season)
+
+            # Count games from the per-week keys (exclude '0')
+            week_keys = [k for k in raw.keys() if k != '0']
+            season.games_played = len(week_keys)
+
+            season.pass_att = parsed.get('pass_att', 0)
+            season.pass_cmp = parsed.get('pass_cmp', 0)
+            season.pass_yd = parsed.get('pass_yd', 0)
+            season.pass_td = parsed.get('pass_td', 0)
+            season.pass_int = parsed.get('pass_int', 0)
+            season.rush_att = parsed.get('rush_att', 0)
+            season.rush_yd = parsed.get('rush_yd', 0)
+            season.rush_td = parsed.get('rush_td', 0)
+            season.rush_fumbles = parsed.get('fumbles_lost', 0)
+            season.targets = parsed.get('targets', 0)
+            season.rec = parsed.get('rec', 0)
+            season.rec_yd = parsed.get('rec_yd', 0)
+            season.rec_td = parsed.get('rec_td', 0)
+            season.fantasy_points_total = points_total
+            season.fantasy_points_avg = (
+                points_total / season.games_played
+                if season.games_played > 0 else 0.0
+            )
+            total_touches = season.rush_att + season.rec
+            season.fantasy_points_per_touch = (
+                points_total / total_touches if total_touches > 0 else 0.0
+            )
+
+            # Passer rating (simplified NFL formula)
+            if season.pass_att and season.pass_att > 0:
+                comp_pct = season.pass_cmp / season.pass_att
+                td_pct = season.pass_td / season.pass_att
+                int_pct = season.pass_int / season.pass_att
+                ypa = season.pass_yd / season.pass_att
+                a = max(0, min(2.375, (comp_pct - 0.3) * 5))
+                b = max(0, min(2.375, (ypa - 3) * 0.25))
+                c = max(0, min(2.375, td_pct * 20))
+                d = max(0, min(2.375, 2.375 - (int_pct * 25)))
+                season.pass_rating = ((a + b + c + d) / 6) * 100
+            else:
+                season.pass_rating = 0.0
+
+            season.source = 'espn'
+            season.updated_at = datetime.utcnow()
+            season_count += 1
+
+        self.db.commit()
+        return {"game_logs": game_log_count, "season_stats": season_count}
 
     def refresh_current_week(self, team_db_id: int) -> Dict[str, Any]:
         """Re-fetch only current week's box scores for active game tracking.
