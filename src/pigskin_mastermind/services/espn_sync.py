@@ -499,7 +499,7 @@ class ESPNSyncService:
                 season.fantasy_points_total / season.games_played
                 if season.games_played > 0 else 0.0
             )
-            total_touches = season.rush_att + season.rec
+            total_touches = season.pass_att + season.rush_att + season.rec
             season.fantasy_points_per_touch = (
                 season.fantasy_points_total / total_touches
                 if total_touches > 0 else 0.0
@@ -810,7 +810,7 @@ class ESPNSyncService:
                     points_total / season.games_played
                     if season.games_played > 0 else 0.0
                 )
-                total_touches = season.rush_att + season.rec
+                total_touches = season.pass_att + season.rush_att + season.rec
                 season.fantasy_points_per_touch = (
                     points_total / total_touches if total_touches > 0 else 0.0
                 )
@@ -1018,7 +1018,7 @@ class ESPNSyncService:
                 points_total / season.games_played
                 if season.games_played > 0 else 0.0
             )
-            total_touches = season.rush_att + season.rec
+            total_touches = season.pass_att + season.rush_att + season.rec
             season.fantasy_points_per_touch = (
                 points_total / total_touches if total_touches > 0 else 0.0
             )

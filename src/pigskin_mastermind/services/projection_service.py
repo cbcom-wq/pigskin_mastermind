@@ -76,6 +76,7 @@ class ProjectionService(ABC):
         # Skip when no touch data exists (0.0 means no data, not truly 0 efficiency)
         if criteria.fantasy_points_per_touch != 0:
             efficiency_adjustment = (criteria.fantasy_points_per_touch - 0.5) * 2
+            efficiency_adjustment = max(-5.0, min(5.0, efficiency_adjustment))
             base_score += efficiency_adjustment
 
         # Adjust for injury risk (higher risk = lower projection)

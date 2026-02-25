@@ -53,13 +53,17 @@ def sample_data(db):
     db.flush()
 
     # Season stats
+    _fpts_total = 350.0
+    _pass_att = 500
+    _rush_att = 50
+    _rec = 0
     season = DBPlayerSeasonStats(
         player_id=player.id, year=2024, games_played=16,
-        pass_yd=4500, pass_td=35, pass_int=10,
-        rush_att=50, rush_yd=200, rush_td=3,
-        rec=0, rec_yd=0, rec_td=0, targets=0,
-        fantasy_points_total=350.0, fantasy_points_avg=21.875,
-        fantasy_points_per_touch=7.0,
+        pass_att=_pass_att, pass_cmp=340, pass_yd=4500, pass_td=35, pass_int=10,
+        rush_att=_rush_att, rush_yd=200, rush_td=3,
+        rec=_rec, rec_yd=0, rec_td=0, targets=0,
+        fantasy_points_total=_fpts_total, fantasy_points_avg=21.875,
+        fantasy_points_per_touch=round(_fpts_total / (_pass_att + _rush_att + _rec), 6),
         snap_pct=0.95,
     )
     db.add(season)
@@ -98,7 +102,11 @@ class TestBuildWeeklyCriteria:
 
         assert isinstance(criteria, WeeklyProjectionCriteria)
         assert criteria.historical_average_points == 21.875
-        assert criteria.fantasy_points_per_touch == 7.0
+        # Criteria builder reads fantasy_points_per_touch directly from the stored season stats.
+        # With the corrected formula (pass_att + rush_att + rec in denominator):
+        # 350.0 / (500 + 50 + 0) = ~0.636
+        season = db.query(DBPlayerSeasonStats).filter_by(player_id=sample_data.id).first()
+        assert criteria.fantasy_points_per_touch == pytest.approx(season.fantasy_points_per_touch, rel=0.01)
         assert 0 <= criteria.player_skill_level <= 100
 
     def test_opponent_defense_rank(self, db, sample_data):
