@@ -7,11 +7,12 @@ from sqlalchemy.orm import Session
 from typing import Dict, List, Optional
 
 from pigskin_mastermind.api.database import get_db
-from pigskin_mastermind.models.database import DBPlayer
+from pigskin_mastermind.models.database import DBPlayer, DBPlayerSeasonStats
 from pigskin_mastermind.services.mock_draft import (
     DraftStrategy,
     MockDraftEngine,
     draft_engine,
+    fetch_espn_adp,
 )
 
 router = APIRouter(prefix="/draft", tags=["draft"])
@@ -28,6 +29,8 @@ class StartDraftRequest(BaseModel):
     user_pick_position: int = Field(1, ge=1, le=20)
     ai_strategies: Optional[Dict[str, str]] = None
     use_db_players: bool = False
+    use_espn_adp: bool = False
+    espn_adp_year: int = Field(2025, ge=2019, le=2030)
     position_by_round: Optional[Dict[str, str]] = None
 
 
@@ -51,12 +54,26 @@ class SimulationRequest(BaseModel):
 
 
 def _load_db_players(db: Session) -> List[dict]:
-    """Load all DB players and convert to draft pool format."""
+    """Load all DB players and convert to draft pool format, enriching with ADP if available."""
     db_players = (
         db.query(DBPlayer)
         .order_by(DBPlayer.projected_points.desc())
         .all()
     )
+    # Build ADP lookup: player_id → latest adp value
+    adp_map: Dict[int, float] = {}
+    try:
+        adp_rows = (
+            db.query(DBPlayerSeasonStats.player_id, DBPlayerSeasonStats.adp)
+            .filter(DBPlayerSeasonStats.adp.isnot(None))
+            .all()
+        )
+        for row in adp_rows:
+            if row.player_id not in adp_map or row.adp < adp_map[row.player_id]:
+                adp_map[row.player_id] = row.adp
+    except Exception:
+        pass
+
     return [
         {
             "id": str(p.player_id),
@@ -64,6 +81,7 @@ def _load_db_players(db: Session) -> List[dict]:
             "position": p.position,
             "nfl_team": p.nfl_team,
             "projected_points": p.projected_points or 0.0,
+            "adp_rank": adp_map.get(p.id),
         }
         for p in db_players
         if p.position in ("QB", "RB", "WR", "TE", "K", "DEF")
@@ -113,7 +131,16 @@ async def simulation_page(request: Request, db: Session = Depends(get_db)):
 @router.post("/start")
 async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
     """Create a new interactive mock draft and return its initial state."""
-    player_pool = _load_db_players(db) if req.use_db_players else None
+    player_pool: Optional[List[dict]] = None
+    if req.use_espn_adp:
+        player_pool = fetch_espn_adp(year=req.espn_adp_year)
+        if player_pool is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Failed to fetch ADP data from ESPN. Check connectivity or try again.",
+            )
+    elif req.use_db_players:
+        player_pool = _load_db_players(db)
 
     # Convert position_by_round keys to int
     pbr: Optional[Dict[int, str]] = None
@@ -138,6 +165,27 @@ async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
     state = draft_engine._public_state(internal)
 
     return state
+
+
+@router.get("/adp")
+async def get_espn_adp(year: int = 2025, limit: int = 300):
+    """Fetch live ADP-ordered player rankings from ESPN's public fantasy API.
+
+    Args:
+        year: Fantasy football season year (default 2025).
+        limit: Maximum players to return (default 300, max 500).
+
+    Returns:
+        JSON with ``players`` list ordered by ADP and ``source`` label.
+    """
+    limit = max(1, min(limit, 500))
+    players = fetch_espn_adp(year=year, limit=limit)
+    if players is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Failed to fetch ADP data from ESPN. Check connectivity or try again later.",
+        )
+    return {"source": "espn", "year": year, "count": len(players), "players": players}
 
 
 @router.get("/board/{draft_id}")

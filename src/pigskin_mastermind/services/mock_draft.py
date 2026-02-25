@@ -1,9 +1,116 @@
 """Mock draft service for fantasy football draft simulation."""
 
+import json
 import random
 import uuid
 from enum import Enum
 from typing import Any, Dict, List, Optional
+from urllib.error import URLError
+from urllib.request import Request, urlopen
+
+
+# ESPN pro-team ID → NFL abbreviation (covers all 32 active franchises; unknown IDs map to "FA")
+_ESPN_TEAM_MAP: Dict[int, str] = {
+    1: "ATL", 2: "BUF", 3: "CHI", 4: "CIN", 5: "CLE",
+    6: "DAL", 7: "DEN", 8: "DET", 9: "GB", 10: "TEN",
+    11: "IND", 12: "KC", 13: "LV", 14: "LAR", 15: "MIA",
+    16: "MIN", 17: "NE", 18: "NO", 19: "NYG", 20: "NYJ",
+    21: "PHI", 22: "ARI", 23: "PIT", 24: "LAC", 25: "SF",
+    26: "SEA", 27: "TB", 28: "WAS", 29: "CAR", 30: "JAX",
+    33: "BAL", 34: "HOU",
+}
+
+# ESPN defaultPositionId → standard fantasy position abbreviation
+_ESPN_POSITION_MAP: Dict[int, str] = {
+    1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "DEF",
+}
+
+
+def fetch_espn_adp(year: int = 2025, limit: int = 300) -> Optional[List[Dict[str, Any]]]:
+    """Fetch ADP-ordered player rankings from ESPN's public fantasy API.
+
+    Uses ESPN's league-defaults endpoint which is publicly accessible and
+    returns players sorted by Average Draft Position (PPR scoring).
+
+    Args:
+        year: The fantasy football season year (e.g. 2025).
+        limit: Maximum number of players to return (default 300).
+
+    Returns:
+        List of player dicts (id, name, position, nfl_team, projected_points,
+        adp_rank) ordered by ADP, or ``None`` if the request fails.
+    """
+    url = (
+        f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{year}"
+        f"/segments/0/leaguedefaults/3?view=kona_player_info"
+    )
+
+    fantasy_filter = json.dumps({
+        "players": {
+            "filterSlotIds": {
+                "value": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 23, 24],
+            },
+            "sortAdp": {"sortPriority": 1, "sortAsc": True},
+            "limit": limit,
+            "filterRanksForScoringPeriodIds": {"value": [0]},
+            "filterRanksForRankTypes": {"value": ["PPR"]},
+        }
+    })
+
+    req = Request(
+        url,
+        headers={
+            "X-Fantasy-Filter": fantasy_filter,
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (compatible; PigskinMastermind/1.0)",
+        },
+    )
+
+    try:
+        with urlopen(req, timeout=10) as response:
+            data = json.loads(response.read())
+    except (URLError, OSError, ValueError):
+        return None
+
+    raw_players = data.get("players", [])
+    if not raw_players:
+        return None
+
+    players: List[Dict[str, Any]] = []
+    for i, entry in enumerate(raw_players):
+        pool_entry = entry.get("playerPoolEntry", {})
+        player_info = pool_entry.get("player", {})
+
+        name = player_info.get("fullName")
+        if not name:
+            continue
+
+        pos_id = player_info.get("defaultPositionId")
+        position = _ESPN_POSITION_MAP.get(pos_id)
+        if not position:
+            continue
+
+        nfl_team = _ESPN_TEAM_MAP.get(entry.get("onTeamId", 0), "FA")
+
+        adp = (
+            pool_entry.get("averageDraftPositionPPR")
+            or pool_entry.get("averageDraftPosition")
+            or float(i + 1)
+        )
+
+        ratings = pool_entry.get("playerRatings", {})
+        projected = round(float(ratings.get("totalRating") or 0.0), 1)
+
+        players.append({
+            "id": f"espn_{entry.get('id', i)}",
+            "name": name,
+            "position": position,
+            "nfl_team": nfl_team,
+            "projected_points": projected,
+            "adp_rank": round(float(adp), 1),
+        })
+
+    return players if players else None
 
 
 class DraftStrategy(str, Enum):
@@ -132,6 +239,7 @@ def _default_player_pool() -> List[Dict[str, Any]]:
             "position": pos,
             "nfl_team": team,
             "projected_points": proj,
+            "adp_rank": float(i + 1),
         })
 
     return pool
@@ -214,8 +322,11 @@ class MockDraftEngine:
         }
 
         pool = player_pool if player_pool is not None else _default_player_pool()
-        # Sort pool descending by projected_points so display is consistent
-        pool = sorted(pool, key=lambda p: p["projected_points"], reverse=True)
+        # Sort pool: by ADP rank (ascending) when available, else by projected_points (descending)
+        if pool and pool[0].get("adp_rank") is not None:
+            pool = sorted(pool, key=lambda p: p.get("adp_rank") or 9999)
+        else:
+            pool = sorted(pool, key=lambda p: p["projected_points"], reverse=True)
 
         state: Dict[str, Any] = {
             "draft_id": draft_id,
@@ -315,7 +426,10 @@ class MockDraftEngine:
             }
 
             pool = player_pool if player_pool is not None else _default_player_pool()
-            pool = sorted(pool, key=lambda p: p["projected_points"], reverse=True)
+            if pool and pool[0].get("adp_rank") is not None:
+                pool = sorted(pool, key=lambda p: p.get("adp_rank") or 9999)
+            else:
+                pool = sorted(pool, key=lambda p: p["projected_points"], reverse=True)
 
             state: Dict[str, Any] = {
                 "draft_id": draft_id,

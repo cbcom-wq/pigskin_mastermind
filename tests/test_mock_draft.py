@@ -1,10 +1,13 @@
 """Tests for the mock draft service and API routes."""
 
+import json
 import pytest
+from unittest.mock import patch, MagicMock
 from pigskin_mastermind.services.mock_draft import (
     DraftStrategy,
     MockDraftEngine,
     _default_player_pool,
+    fetch_espn_adp,
 )
 
 
@@ -401,6 +404,165 @@ def test_default_player_pool_has_all_positions():
     assert positions >= {"QB", "RB", "WR", "TE", "K", "DEF"}
 
 
+def test_default_player_pool_has_adp_rank():
+    """Each player in the default pool must have an adp_rank field."""
+    pool = _default_player_pool()
+    for p in pool:
+        assert "adp_rank" in p
+        assert isinstance(p["adp_rank"], float)
+
+
+def test_default_pool_sorted_by_adp_in_draft():
+    """When using the default pool, create_draft should order by adp_rank ascending."""
+    engine = _make_engine()
+    state = engine.create_draft(num_teams=2, num_rounds=2, user_pick_position=1)
+    players = state["available_players"]
+    adp_ranks = [p.get("adp_rank") for p in players if p.get("adp_rank") is not None]
+    assert adp_ranks == sorted(adp_ranks), "Players should be sorted by ADP rank ascending"
+
+
+# ---------------------------------------------------------------------------
+# fetch_espn_adp tests (mocked network calls)
+# ---------------------------------------------------------------------------
+
+
+def _make_espn_api_response(players):
+    """Build a minimal ESPN API response body for mocking."""
+    return json.dumps({"players": players}).encode()
+
+
+def _make_espn_player_entry(pid, name, pos_id, team_id, adp, rating=10.0):
+    return {
+        "id": pid,
+        "onTeamId": team_id,
+        "playerPoolEntry": {
+            "averageDraftPositionPPR": adp,
+            "averageDraftPosition": adp,
+            "playerRatings": {"totalRating": rating},
+            "player": {
+                "id": pid,
+                "fullName": name,
+                "defaultPositionId": pos_id,
+            },
+        },
+    }
+
+
+def test_fetch_espn_adp_parses_response():
+    """fetch_espn_adp should parse valid ESPN API responses correctly."""
+    fake_data = [
+        _make_espn_player_entry(1, "Top QB", 1, 12, 1.0, 25.0),
+        _make_espn_player_entry(2, "Top RB", 2, 25, 2.5, 22.0),
+        _make_espn_player_entry(3, "Top WR", 3, 4, 3.3, 20.0),
+        _make_espn_player_entry(4, "Top TE", 4, 12, 10.0, 15.0),
+        _make_espn_player_entry(5, "Top K", 5, 12, 100.0, 8.0),
+        _make_espn_player_entry(6, "Top DEF", 16, 25, 110.0, 9.0),
+    ]
+
+    mock_response = MagicMock()
+    mock_response.read.return_value = _make_espn_api_response(fake_data)
+    mock_response.__enter__ = lambda s: s
+    mock_response.__exit__ = MagicMock(return_value=False)
+
+    with patch("pigskin_mastermind.services.mock_draft.urlopen", return_value=mock_response):
+        result = fetch_espn_adp(year=2025, limit=50)
+
+    assert result is not None
+    assert len(result) == 6
+    assert result[0]["name"] == "Top QB"
+    assert result[0]["position"] == "QB"
+    assert result[0]["adp_rank"] == 1.0
+    assert result[1]["name"] == "Top RB"
+    assert result[1]["position"] == "RB"
+    assert result[5]["position"] == "DEF"
+
+
+def test_fetch_espn_adp_filters_unknown_positions():
+    """Players with unknown ESPN position IDs should be excluded."""
+    fake_data = [
+        _make_espn_player_entry(1, "Known QB", 1, 12, 1.0),
+        _make_espn_player_entry(2, "Unknown Pos", 99, 12, 2.0),  # unknown position
+    ]
+    mock_response = MagicMock()
+    mock_response.read.return_value = _make_espn_api_response(fake_data)
+    mock_response.__enter__ = lambda s: s
+    mock_response.__exit__ = MagicMock(return_value=False)
+
+    with patch("pigskin_mastermind.services.mock_draft.urlopen", return_value=mock_response):
+        result = fetch_espn_adp(year=2025)
+
+    assert result is not None
+    assert len(result) == 1
+    assert result[0]["name"] == "Known QB"
+
+
+def test_fetch_espn_adp_returns_none_on_error():
+    """fetch_espn_adp should return None when the request fails."""
+    from urllib.error import URLError
+    with patch("pigskin_mastermind.services.mock_draft.urlopen", side_effect=URLError("timeout")):
+        result = fetch_espn_adp(year=2025)
+    assert result is None
+
+
+def test_fetch_espn_adp_returns_none_on_empty_response():
+    """fetch_espn_adp should return None when ESPN returns no players."""
+    mock_response = MagicMock()
+    mock_response.read.return_value = json.dumps({"players": []}).encode()
+    mock_response.__enter__ = lambda s: s
+    mock_response.__exit__ = MagicMock(return_value=False)
+
+    with patch("pigskin_mastermind.services.mock_draft.urlopen", return_value=mock_response):
+        result = fetch_espn_adp(year=2025)
+
+    assert result is None
+
+
+def test_fetch_espn_adp_player_dict_fields():
+    """Each parsed player must have all required draft pool fields."""
+    fake_data = [_make_espn_player_entry(1, "Patrick Mahomes", 1, 12, 15.0, 28.5)]
+    mock_response = MagicMock()
+    mock_response.read.return_value = _make_espn_api_response(fake_data)
+    mock_response.__enter__ = lambda s: s
+    mock_response.__exit__ = MagicMock(return_value=False)
+
+    with patch("pigskin_mastermind.services.mock_draft.urlopen", return_value=mock_response):
+        result = fetch_espn_adp(year=2025)
+
+    assert result is not None
+    player = result[0]
+    for field in ("id", "name", "position", "nfl_team", "projected_points", "adp_rank"):
+        assert field in player, f"Missing field: {field}"
+    assert player["id"] == "espn_1"
+    assert player["nfl_team"] == "KC"  # team_id 12 = KC
+    assert player["adp_rank"] == 15.0
+    assert player["projected_points"] == 28.5
+
+
+def test_draft_sorts_by_adp_when_espn_pool_provided():
+    """When a pool with adp_rank is provided, create_draft should sort by ADP ascending."""
+    engine = _make_engine()
+    pool = [
+        {"id": "p1", "name": "P1", "position": "QB", "nfl_team": "KC",
+         "projected_points": 5.0, "adp_rank": 50.0},
+        {"id": "p2", "name": "P2", "position": "RB", "nfl_team": "SF",
+         "projected_points": 20.0, "adp_rank": 1.0},   # lower ADP = drafted earlier
+        {"id": "p3", "name": "P3", "position": "WR", "nfl_team": "BUF",
+         "projected_points": 15.0, "adp_rank": 10.0},
+    ]
+    state = engine.create_draft(
+        num_teams=2, num_rounds=1, user_pick_position=1, player_pool=pool
+    )
+    adp_ranks = [p["adp_rank"] for p in state["available_players"]]
+    assert adp_ranks == sorted(adp_ranks), "Players should be sorted by ADP ascending"
+    assert state["available_players"][0]["id"] == "p2"  # ADP 1.0 comes first
+
+
+
+    pool = _default_player_pool()
+    positions = {p["position"] for p in pool}
+    assert positions >= {"QB", "RB", "WR", "TE", "K", "DEF"}
+
+
 def test_default_player_pool_unique_ids():
     pool = _default_player_pool()
     ids = [p["id"] for p in pool]
@@ -518,3 +680,74 @@ def test_run_simulation_api(client):
     data = resp.json()
     assert len(data["simulations"]) == 2
     assert "by_strategy" in data["summary"]
+
+
+def test_get_adp_endpoint_failure(client):
+    """GET /draft/adp should return 503 when ESPN is unreachable."""
+    from urllib.error import URLError
+    with patch("pigskin_mastermind.api.routes.draft.fetch_espn_adp", return_value=None):
+        resp = client.get("/draft/adp?year=2025")
+    assert resp.status_code == 503
+
+
+def test_get_adp_endpoint_success(client):
+    """GET /draft/adp should return 200 with player list when ESPN responds."""
+    fake_players = [
+        {"id": "espn_1", "name": "Top QB", "position": "QB", "nfl_team": "KC",
+         "projected_points": 25.0, "adp_rank": 1.0},
+        {"id": "espn_2", "name": "Top RB", "position": "RB", "nfl_team": "SF",
+         "projected_points": 22.0, "adp_rank": 2.0},
+    ]
+    with patch("pigskin_mastermind.api.routes.draft.fetch_espn_adp", return_value=fake_players):
+        resp = client.get("/draft/adp?year=2025&limit=50")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["source"] == "espn"
+    assert data["year"] == 2025
+    assert data["count"] == 2
+    assert len(data["players"]) == 2
+    assert data["players"][0]["adp_rank"] == 1.0
+
+
+def test_start_draft_with_espn_adp(client):
+    """POST /draft/start with use_espn_adp=True should use the ESPN player pool."""
+    fake_players = [
+        {"id": f"espn_{i}", "name": f"Player {i}", "position": pos, "nfl_team": "KC",
+         "projected_points": float(20 - i), "adp_rank": float(i + 1)}
+        for i, pos in enumerate(["QB", "RB", "WR", "TE", "K", "DEF",
+                                   "RB", "WR", "RB", "WR", "WR", "RB",
+                                   "TE", "K", "DEF", "QB", "WR", "RB",
+                                   "WR", "TE"])
+    ]
+    with patch("pigskin_mastermind.api.routes.draft.fetch_espn_adp", return_value=fake_players):
+        resp = client.post(
+            "/draft/start",
+            json={
+                "num_teams": 2,
+                "num_rounds": 3,
+                "user_pick_position": 1,
+                "use_espn_adp": True,
+                "espn_adp_year": 2025,
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] in ("in_progress", "complete")
+    # Players should be from the ESPN pool (ids start with espn_)
+    for p in data["available_players"]:
+        assert p["id"].startswith("espn_")
+
+
+def test_start_draft_with_espn_adp_failure(client):
+    """POST /draft/start with use_espn_adp=True should return 503 when ESPN is unavailable."""
+    with patch("pigskin_mastermind.api.routes.draft.fetch_espn_adp", return_value=None):
+        resp = client.post(
+            "/draft/start",
+            json={
+                "num_teams": 2,
+                "num_rounds": 2,
+                "user_pick_position": 1,
+                "use_espn_adp": True,
+            },
+        )
+    assert resp.status_code == 503
