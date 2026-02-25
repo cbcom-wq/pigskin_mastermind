@@ -110,6 +110,8 @@
 
   const USER_SLOT = String(draftState.user_pick_position);
   const POS_COLORS = {QB:'badge-qb',RB:'badge-rb',WR:'badge-wr',TE:'badge-te',K:'badge-k',DEF:'badge-def'};
+  const ADP_TIER1_MAX = 36;   // picks 1–36: early rounds (pigskin)
+  const ADP_TIER2_MAX = 72;   // picks 37–72: mid rounds (field green)
 
   function posClass(pos) {
     return POS_COLORS[pos] || 'bg-slate-200 text-slate-700';
@@ -135,13 +137,23 @@
     const isUserTurn = draftState.status === 'in_progress' &&
                        String(draftState.current_slot) === USER_SLOT;
 
-    document.getElementById('player-list').innerHTML = filtered.map(p => `
+    document.getElementById('player-list').innerHTML = filtered.map(p => {
+      const adpLabel = p.adp_rank != null ? `ADP ${p.adp_rank.toFixed(1)}` : '';
+      const adpClass = p.adp_rank != null && p.adp_rank <= ADP_TIER1_MAX
+        ? 'text-pigskin-600 font-bold'
+        : p.adp_rank != null && p.adp_rank <= ADP_TIER2_MAX
+          ? 'text-field-600 font-semibold'
+          : 'text-slate-400';
+      return `
       <div class="flex items-center justify-between px-3 py-2 hover:bg-slate-50 transition-colors">
         <div class="flex items-center gap-2 min-w-0">
           <span class="inline-flex items-center justify-center w-9 h-5 rounded text-[10px] font-bold flex-shrink-0 ${posClass(p.position)}">${p.position}</span>
           <div class="min-w-0">
             <p class="text-sm font-medium text-slate-700 truncate">${p.name}</p>
-            <p class="text-xs text-slate-400">${p.nfl_team} &middot; ${p.projected_points.toFixed(1)} pts</p>
+            <p class="text-xs text-slate-400">
+              ${p.nfl_team} &middot; ${p.projected_points.toFixed(1)} pts
+              ${adpLabel ? `<span class="ml-1 ${adpClass}">${adpLabel}</span>` : ''}
+            </p>
           </div>
         </div>
         ${isUserTurn
@@ -151,7 +163,8 @@
              </button>`
           : `<span class="flex-shrink-0 ml-2 text-xs text-slate-300">—</span>`
         }
-      </div>`).join('');
+      </div>`;
+    }).join('');
   }
 
   function renderMyRoster(players) {
