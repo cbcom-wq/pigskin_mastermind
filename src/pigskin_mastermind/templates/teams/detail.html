@@ -177,7 +177,7 @@
                     <td class="px-6 py-3">
                         <div class="flex items-center gap-2">
                             {% if player.headshot_url %}<img src="{{ player.headshot_url }}" alt="" class="w-8 h-8 rounded-full object-cover bg-slate-200 flex-shrink-0" onerror="this.style.display='none'" />{% endif %}
-                            <a href="/players/{{ player.id }}" class="text-sm font-medium text-field-700 hover:text-field-900 hover:underline">{{ player.name }}</a>
+                            <a href="/players/{{ player.id }}?back=/teams/{{ team.id }}" class="text-sm font-medium text-field-700 hover:text-field-900 hover:underline">{{ player.name }}</a>
                         </div>
                     </td>
                     <td class="px-6 py-3">
@@ -237,7 +237,7 @@
                     <td class="px-6 py-3">
                         <div class="flex items-center gap-2">
                             {% if player.headshot_url %}<img src="{{ player.headshot_url }}" alt="" class="w-8 h-8 rounded-full object-cover bg-slate-200 flex-shrink-0" onerror="this.style.display='none'" />{% endif %}
-                            <a href="/players/{{ player.id }}" class="text-sm font-medium text-field-700 hover:text-field-900 hover:underline">{{ player.name }}</a>
+                            <a href="/players/{{ player.id }}?back=/teams/{{ team.id }}" class="text-sm font-medium text-field-700 hover:text-field-900 hover:underline">{{ player.name }}</a>
                         </div>
                     </td>
                     <td class="px-6 py-3">

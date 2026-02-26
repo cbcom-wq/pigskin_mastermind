@@ -24,7 +24,7 @@
                             {{ position }}
                         </span>
                         <div>
-                            <p class="text-sm font-semibold"><a href="/players/{{ player.id }}" class="text-field-700 hover:text-field-900 hover:underline">{{ player.name }}</a></p>
+                            <p class="text-sm font-semibold"><a href="/players/{{ player.id }}?back=/lineups{% if team_db_id %}?team={{ team_db_id }}{% endif %}" class="text-field-700 hover:text-field-900 hover:underline">{{ player.name }}</a></p>
                             <p class="text-xs text-slate-500">{{ player.team }}</p>
                         </div>
                     </div>
@@ -50,7 +50,7 @@
                             {{ player.position }}
                         </span>
                         <div>
-                            <p class="text-sm"><a href="/players/{{ player.id }}" class="text-field-700 hover:text-field-900 hover:underline">{{ player.name }}</a></p>
+                            <p class="text-sm"><a href="/players/{{ player.id }}?back=/lineups{% if team_db_id %}?team={{ team_db_id }}{% endif %}" class="text-field-700 hover:text-field-900 hover:underline">{{ player.name }}</a></p>
                             <p class="text-xs text-slate-400">{{ player.team }}</p>
                         </div>
                     </div>

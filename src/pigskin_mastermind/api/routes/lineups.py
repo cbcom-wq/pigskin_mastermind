@@ -82,5 +82,5 @@ async def optimize_lineup(
 
     return templates.TemplateResponse(
         "lineups/_lineup_result.html",
-        {"request": request, "result": result, "team": team}
+        {"request": request, "result": result, "team": team, "team_db_id": team_db_id}
     )

@@ -18,6 +18,7 @@ router = APIRouter(tags=["players"])
 async def player_detail_page(
     request: Request,
     player_id: int,
+    back: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     """Player detail page showing stats, game logs, and projections."""
@@ -80,6 +81,7 @@ async def player_detail_page(
             "game_logs": game_logs,
             "trend": trend,
             "fantasy_team": fantasy_team,
+            "back_url": back,
         },
     )
 
@@ -90,6 +92,7 @@ async def player_simulation_page(
     player_id: int,
     year: Optional[int] = Query(None),
     week: Optional[int] = Query(None, ge=1, le=22),
+    back: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     """Full-page player game simulation view."""
@@ -107,6 +110,7 @@ async def player_simulation_page(
             "player": player,
             "default_year": year or datetime.utcnow().year,
             "default_week": week or 1,
+            "back_url": back,
         },
     )
 
