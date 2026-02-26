@@ -76,6 +76,140 @@
         height: 3px;
         border-radius: 2px;
     }
+
+    /* ── Celebration overlay ─────────────────────────────────────────── */
+    .celebration-overlay {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 50;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.15s ease;
+    }
+    .celebration-overlay.active {
+        opacity: 1;
+        pointer-events: auto;
+    }
+    .celebration-card {
+        position: relative;
+        padding: 1.5rem 2.5rem;
+        border-radius: 1rem;
+        text-align: center;
+        transform: scale(0.6);
+        transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+        box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        overflow: hidden;
+        min-width: 280px;
+        cursor: pointer;
+    }
+    .celebration-overlay.active .celebration-card {
+        transform: scale(1);
+    }
+    /* Tier backgrounds */
+    .celebration-card.tier-touchdown {
+        background: linear-gradient(135deg, #065f46 0%, #047857 40%, #d97706 100%);
+        border: 2px solid #fbbf24;
+    }
+    .celebration-card.tier-big-play {
+        background: linear-gradient(135deg, #92400e 0%, #d97706 50%, #f59e0b 100%);
+        border: 2px solid #fbbf24;
+    }
+    .celebration-card.tier-turnover {
+        background: linear-gradient(135deg, #7f1d1d 0%, #dc2626 100%);
+        border: 2px solid #ef4444;
+    }
+    .celebration-card.tier-high-fpts {
+        background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 50%, #7c3aed 100%);
+        border: 2px solid #818cf8;
+    }
+    /* Confetti */
+    .confetti-container {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+    }
+    .confetti-piece {
+        position: absolute;
+        width: 8px;
+        height: 8px;
+        top: -10px;
+        opacity: 0;
+    }
+    .celebration-overlay.active .confetti-piece {
+        animation: confettiFall 1.8s ease-in forwards;
+    }
+    @keyframes confettiFall {
+        0%   { opacity: 1; transform: translateY(0) rotate(0deg) scale(1); }
+        100% { opacity: 0; transform: translateY(250px) rotate(720deg) scale(0.3); }
+    }
+    /* Shake for turnovers */
+    .celebration-card.tier-turnover {
+        animation: none;
+    }
+    .celebration-overlay.active .celebration-card.tier-turnover {
+        animation: dangerShake 0.5s ease-in-out;
+    }
+    @keyframes dangerShake {
+        0%, 100% { transform: scale(1) translateX(0); }
+        15% { transform: scale(1) translateX(-8px); }
+        30% { transform: scale(1) translateX(8px); }
+        45% { transform: scale(1) translateX(-6px); }
+        60% { transform: scale(1) translateX(6px); }
+        75% { transform: scale(1) translateX(-3px); }
+    }
+    /* Glow pulse for big play */
+    .celebration-overlay.active .celebration-card.tier-big-play {
+        animation: glowPulse 0.8s ease-in-out 2;
+    }
+    @keyframes glowPulse {
+        0%, 100% { box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+        50% { box-shadow: 0 20px 60px rgba(245,158,11,0.6), 0 0 40px rgba(245,158,11,0.3); }
+    }
+    .celebration-emoji { font-size: 2.5rem; line-height: 1; }
+    .celebration-title {
+        font-size: 1.5rem;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: white;
+        text-shadow: 0 2px 8px rgba(0,0,0,0.4);
+        margin-top: 0.25rem;
+    }
+    .celebration-player {
+        font-size: 0.875rem;
+        font-weight: 700;
+        color: rgba(255,255,255,0.9);
+        margin-top: 0.25rem;
+    }
+    .celebration-detail {
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: rgba(255,255,255,0.7);
+        margin-top: 0.25rem;
+    }
+    .celebration-fpts {
+        display: inline-block;
+        margin-top: 0.5rem;
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        background: rgba(255,255,255,0.2);
+        color: white;
+        font-size: 0.875rem;
+        font-weight: 800;
+    }
+    .celebration-headshot {
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        border: 3px solid rgba(255,255,255,0.8);
+        object-fit: cover;
+        margin: 0 auto 0.5rem;
+        display: block;
+    }
 </style>
 
 <div class="max-w-7xl mx-auto space-y-5">
@@ -123,7 +257,7 @@
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <div class="lg:col-span-2 space-y-4">
             <!-- Route chart field -->
-            <div class="bg-slate-900 rounded-xl shadow-sm border border-slate-700 p-4">
+            <div class="bg-slate-900 rounded-xl shadow-sm border border-slate-700 p-4 relative">
                 <div class="flex items-center justify-between mb-3">
                     <h3 class="text-xs uppercase tracking-wider font-semibold text-slate-400">Route Chart</h3>
                     <div class="flex items-center gap-3">
@@ -175,6 +309,14 @@
                             <!-- Labels -->
                             <g id="svg-labels"></g>
                         </svg>
+                    </div>
+                </div>
+
+                <!-- Celebration overlay -->
+                <div id="celebration-overlay" class="celebration-overlay" onclick="dismissCelebration()">
+                    <div id="celebration-card" class="celebration-card">
+                        <div id="celebration-confetti" class="confetti-container"></div>
+                        <div id="celebration-content"></div>
                     </div>
                 </div>
 
@@ -789,6 +931,8 @@ function applyFrame(index, instant) {
 
     if (e.home_score !== null && e.home_score !== undefined) _q('sim-home-score').textContent = e.home_score;
     if (e.away_score !== null && e.away_score !== undefined) _q('sim-away-score').textContent = e.away_score;
+
+    checkCelebration(e, index, instant);
 }
 
 function playSimulation() {
@@ -888,6 +1032,140 @@ async function loadSimulation() {
     } finally {
         spinner.classList.add('hidden');
         btn.disabled = false;
+    }
+}
+
+/* ── celebration system ───────────────────────────────────────────── */
+
+let celebrationTimer = null;
+const CELEBRATION_DURATION = 2800;
+const CONFETTI_COLORS = ['#fbbf24','#34d399','#60a5fa','#f472b6','#a78bfa','#fb923c','#ffffff'];
+
+function estimatePlayFpts(snapshot, prevSnapshot) {
+    function calc(s) {
+        let p = 0;
+        p += (_def(s.pass_yards, 0)) * 0.04;
+        p += (_def(s.pass_tds, 0)) * 4;
+        p += (_def(s.pass_interceptions, 0)) * -2;
+        p += (_def(s.rush_yards, 0)) * 0.1;
+        p += (_def(s.rush_tds, 0)) * 6;
+        p += (_def(s.receptions, 0)) * 1;
+        p += (_def(s.rec_yards, 0)) * 0.1;
+        p += (_def(s.rec_tds, 0)) * 6;
+        return p;
+    }
+    return Math.round((calc(snapshot || {}) - calc(prevSnapshot || {})) * 10) / 10;
+}
+
+function determineCelebrationTier(evt, fptsGained) {
+    const b = evt.badges || {};
+    if (b.touchdown) return 'touchdown';
+    if (b.turnover) return 'turnover';
+    if (b.big_play) return 'big-play';
+    if (fptsGained >= 4.0) return 'high-fpts';
+    return null;
+}
+
+function buildConfetti(container, tier) {
+    container.innerHTML = '';
+    if (tier === 'turnover') return;
+    const count = tier === 'touchdown' ? 30 : 15;
+    for (let i = 0; i < count; i++) {
+        const piece = document.createElement('div');
+        piece.className = 'confetti-piece';
+        const color = CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)];
+        const left = Math.random() * 100;
+        const delay = Math.random() * 0.8;
+        const size = 4 + Math.random() * 8;
+        piece.style.cssText = 'left:' + left + '%;background:' + color
+            + ';animation-delay:' + delay + 's;width:' + size + 'px;height:' + size + 'px;border-radius:'
+            + (Math.random() > 0.5 ? '50%' : '2px') + ';';
+        container.appendChild(piece);
+    }
+}
+
+function showCelebration(evt, tier, fptsGained, playerName, playerHeadshot, playerPosition) {
+    const overlay = _q('celebration-overlay');
+    const card = _q('celebration-card');
+    const content = _q('celebration-content');
+    const confetti = _q('celebration-confetti');
+
+    // Clear previous
+    if (celebrationTimer) { clearTimeout(celebrationTimer); celebrationTimer = null; }
+    overlay.classList.remove('active');
+    card.className = 'celebration-card tier-' + tier;
+
+    // Tier-specific content
+    const tierConfig = {
+        'touchdown': { emoji: '🏆', title: 'TOUCHDOWN!', color: '#fbbf24' },
+        'big-play':  { emoji: '🔥', title: 'BIG PLAY!', color: '#f59e0b' },
+        'turnover':  { emoji: '💀', title: 'TURNOVER',  color: '#ef4444' },
+        'high-fpts': { emoji: '⚡', title: 'HUGE PLAY!', color: '#818cf8' },
+    };
+    const cfg = tierConfig[tier] || tierConfig['big-play'];
+
+    let html = '';
+    if (playerHeadshot) {
+        html += '<img src="' + playerHeadshot + '" class="celebration-headshot" onerror="this.style.display=\'none\'">';
+    }
+    html += '<div class="celebration-emoji">' + cfg.emoji + '</div>';
+    html += '<div class="celebration-title">' + cfg.title + '</div>';
+    if (playerName) {
+        html += '<div class="celebration-player">' + (playerPosition ? playerPosition + ' · ' : '') + playerName + '</div>';
+    }
+    const yards = evt.yards_gained;
+    const ydsStr = yards > 0 ? '+' + yards : String(yards);
+    html += '<div class="celebration-detail">' + ydsStr + ' yards · ' + (evt.description || '').substring(0, 60) + '</div>';
+    if (fptsGained > 0 && tier !== 'turnover') {
+        html += '<span class="celebration-fpts">+' + fptsGained.toFixed(1) + ' FPTS</span>';
+    }
+    content.innerHTML = html;
+
+    buildConfetti(confetti, tier);
+
+    // Animate in
+    requestAnimationFrame(function() {
+        overlay.classList.add('active');
+    });
+
+    // Auto-dismiss
+    celebrationTimer = setTimeout(function() {
+        dismissCelebration();
+    }, CELEBRATION_DURATION);
+}
+
+function dismissCelebration() {
+    const overlay = _q('celebration-overlay');
+    overlay.classList.remove('active');
+    if (celebrationTimer) { clearTimeout(celebrationTimer); celebrationTimer = null; }
+    // Resume playback if it was paused for celebration
+    if (simPlaying && !simTimer) {
+        simTimer = setInterval(function() {
+            if (simCurrentIndex >= simEvents.length - 1) { pauseSimulation(); return; }
+            applyFrame(simCurrentIndex + 1, false);
+        }, simBaseDelay / simSpeed);
+    }
+}
+
+function checkCelebration(evt, index, instant) {
+    if (instant) return;
+
+    const prevSnapshot = index > 0 ? (simEvents[index - 1].stats_snapshot || {}) : {};
+    const currSnapshot = evt.stats_snapshot || {};
+    const fptsGained = estimatePlayFpts(currSnapshot, prevSnapshot);
+    const tier = determineCelebrationTier(evt, fptsGained);
+    if (!tier) return;
+
+    const playerName = '{{ player.name }}';
+    const playerHeadshot = PLAYER_HEADSHOT_URL;
+    const playerPosition = '{{ player.position }}';
+
+    showCelebration(evt, tier, fptsGained, playerName, playerHeadshot, playerPosition);
+
+    // Pause auto-playback briefly to show celebration
+    if (simPlaying && simTimer) {
+        clearInterval(simTimer);
+        simTimer = null;
     }
 }
 
