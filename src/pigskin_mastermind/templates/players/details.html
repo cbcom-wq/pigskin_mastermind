@@ -514,6 +514,51 @@ var _criteriaLabels = {
     weather_impact_score: 'Weather Impact',
 };
 
+// Map each criteria to a "goodness" score 0-1 (1 = best for projection).
+// `invert: true` means lower raw value = better (e.g., injury risk).
+var _criteriaConfig = {
+    player_skill_level:              { min: 0,   max: 100,  invert: false },
+    team_offense_level:              { min: 0,   max: 100,  invert: false },
+    opponent_defense_level:          { min: 0,   max: 100,  invert: false },
+    positional_touch_percentage:     { min: 0,   max: 100,  invert: false },
+    recent_trend_score:              { min: -100,max: 100,  invert: false },
+    historical_average_points:       { min: 0,   max: 30,   invert: false },
+    fantasy_points_per_touch:        { min: 0,   max: 3,    invert: false },
+    injury_risk_score:               { min: 0,   max: 100,  invert: true  },
+    age_deviation_from_optimum:      { min: -10, max: 10,   invert: true, absMode: true },
+    coaching_stability_score:        { min: 0,   max: 100,  invert: false },
+    opposing_defense_vs_position_rank:{ min: 1,  max: 32,   invert: true  },
+    offensive_momentum_score:        { min: -100,max: 100,  invert: false },
+    weather_impact_score:            { min: -100,max: 100,  invert: false },
+};
+
+function _criteriaGoodness(key, val) {
+    var cfg = _criteriaConfig[key];
+    if (!cfg) return 0.5;
+    var v = (typeof val === 'number') ? val : parseFloat(val);
+    if (isNaN(v)) return 0.5;
+    // For absMode (age deviation), closer to 0 = better
+    if (cfg.absMode) {
+        var maxAbs = Math.max(Math.abs(cfg.min), Math.abs(cfg.max));
+        var ratio = maxAbs > 0 ? 1 - (Math.abs(v) / maxAbs) : 0.5;
+        return Math.max(0, Math.min(1, ratio));
+    }
+    var ratio = (v - cfg.min) / (cfg.max - cfg.min);
+    ratio = Math.max(0, Math.min(1, ratio));
+    return cfg.invert ? 1 - ratio : ratio;
+}
+
+function _goodnessColor(g) {
+    // 0 = worst (red), 0.5 = neutral (yellow/amber), 1 = best (green)
+    if (g >= 0.7) return { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200', badge: 'bg-emerald-100', icon: '▲', iconColor: 'text-emerald-500' };
+    if (g >= 0.45) return { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200', badge: 'bg-amber-100', icon: '●', iconColor: 'text-amber-400' };
+    return { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200', badge: 'bg-red-100', icon: '▼', iconColor: 'text-red-500' };
+}
+
+function _goodnessBarWidth(g) {
+    return Math.max(4, Math.round(g * 100));
+}
+
 function renderProjectionResult(data) {
     var typeLabel = data.projection_type === 'weekly' ? 'Weekly' : 'Season';
     var rows = '';
@@ -524,9 +569,21 @@ function renderProjectionResult(data) {
         if (typeof val === 'number') {
             val = Math.round(val * 10) / 10;
         }
-        rows += '<tr class="border-b border-slate-100 last:border-0">'
-            + '<td class="py-2.5 pr-4 text-sm text-slate-500">' + label + '</td>'
-            + '<td class="py-2.5 text-sm font-semibold text-slate-700 text-right">' + val + '</td>'
+        var g = _criteriaGoodness(key, val);
+        var c = _goodnessColor(g);
+        var barW = _goodnessBarWidth(g);
+
+        rows += '<tr class="border-b border-slate-100 last:border-0 ' + c.bg + '">'
+            + '<td class="py-2.5 pl-4 pr-2 text-sm text-slate-500 whitespace-nowrap">'
+            +   '<span class="' + c.iconColor + ' mr-1.5 text-xs">' + c.icon + '</span>'
+            +   label
+            + '</td>'
+            + '<td class="py-2.5 px-2 w-28">'
+            +   '<div class="h-1.5 rounded-full bg-slate-100 overflow-hidden">'
+            +     '<div class="h-full rounded-full transition-all ' + c.badge + '" style="width:' + barW + '%"></div>'
+            +   '</div>'
+            + '</td>'
+            + '<td class="py-2.5 pl-2 pr-4 text-sm font-semibold ' + c.text + ' text-right whitespace-nowrap">' + val + '</td>'
             + '</tr>';
     });
 
@@ -537,10 +594,15 @@ function renderProjectionResult(data) {
         + '<p class="text-sm text-slate-400 mt-1">projected fantasy points</p>'
         + '</div>'
         + '<div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">'
-        + '<div class="px-5 py-3 border-b border-slate-100">'
+        + '<div class="px-5 py-3 border-b border-slate-100 flex items-center justify-between">'
         + '<h4 class="text-xs uppercase tracking-wider font-semibold text-slate-500">Criteria Breakdown</h4>'
+        + '<div class="flex gap-3 text-[10px] text-slate-400">'
+        + '<span class="text-emerald-500">▲ Positive</span>'
+        + '<span class="text-amber-400">● Neutral</span>'
+        + '<span class="text-red-500">▼ Negative</span>'
         + '</div>'
-        + '<div class="px-5">'
+        + '</div>'
+        + '<div class="px-1">'
         + '<table class="w-full">'
         + '<tbody>' + rows + '</tbody>'
         + '</table>'
