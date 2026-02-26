@@ -142,6 +142,42 @@ async def refresh_current_week(
     return result
 
 
+@router.get("/players/{player_id}/play-by-play")
+async def get_player_play_by_play(
+    player_id: int,
+    year: int = Query(..., description="NFL season year, e.g. 2024"),
+    week: int = Query(..., ge=1, le=22, description="Week number (1-18 regular season)"),
+    db: Session = Depends(get_db),
+):
+    """Fetch play-by-play data for a player in a specific week.
+
+    Pulls live data from nfl_data_py (backed by the NFL endpoint) so
+    in-progress games are supported.
+    """
+    from pigskin_mastermind.services.nfl_data_service import NFLDataService
+
+    db_player = db.query(DBPlayer).filter_by(id=player_id).first()
+    if not db_player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    service = NFLDataService(db)
+    try:
+        plays = service.get_play_by_play(player_db_id=player_id, year=year, week=week)
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    return {
+        "player_id": player_id,
+        "player_name": db_player.name,
+        "year": year,
+        "week": week,
+        "plays": plays,
+        "total_plays": len(plays),
+    }
+
+
 @router.get("/players/{player_id}/projection")
 async def get_auto_projection(
     player_id: int,

@@ -82,6 +82,10 @@
                 class="tab-btn pb-3 text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-600 transition-colors">
                 Projections
             </button>
+            <button onclick="switchTab('pbp')" data-tab="pbp"
+                class="tab-btn pb-3 text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-600 transition-colors">
+                Play-by-Play
+            </button>
         </nav>
     </div>
 
@@ -313,6 +317,47 @@
             </div>
         </div>
     </div>
+    <!-- Play-by-Play Tab -->
+    <div id="tab-pbp" class="tab-panel hidden">
+        <!-- Controls -->
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 mb-4">
+            <div class="flex flex-wrap items-end gap-3">
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Year</label>
+                    <input id="pbp-year" type="number" min="2000" max="2030" value="2024"
+                        class="w-24 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-pigskin-400">
+                </div>
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Week</label>
+                    <input id="pbp-week" type="number" min="1" max="22" value="1"
+                        class="w-20 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-pigskin-400">
+                </div>
+                <button onclick="loadPlayByPlay()" id="pbp-load-btn"
+                    class="flex items-center gap-2 px-5 py-2 bg-pigskin-500 hover:bg-pigskin-600 text-white text-sm font-semibold rounded-lg transition-colors">
+                    <svg id="pbp-spinner" class="hidden animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    Load Plays
+                </button>
+                <span id="pbp-live-badge" class="hidden items-center gap-1 px-2 py-1 rounded-full bg-field-100 text-field-700 text-xs font-semibold">
+                    <span class="w-2 h-2 rounded-full bg-field-500 animate-pulse inline-block"></span>
+                    Live
+                </span>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div id="pbp-result">
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-10 text-center">
+                <svg class="w-10 h-10 mx-auto mb-2 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                </svg>
+                <p class="text-sm text-slate-400">Select a year and week, then click Load Plays</p>
+            </div>
+        </div>
+    </div>
 
 </div>
 {% endblock %}
@@ -488,6 +533,129 @@ function renderProjectionResult(data) {
         + '</div>'
         + '<div class="px-5">'
         + '<table class="w-full">'
+        + '<tbody>' + rows + '</tbody>'
+        + '</table>'
+        + '</div>'
+        + '</div>';
+}
+// ── Play-by-Play ──────────────────────────────────────────────────────────────
+function loadPlayByPlay() {
+    var year = document.getElementById('pbp-year').value;
+    var week = document.getElementById('pbp-week').value;
+    var spinner = document.getElementById('pbp-spinner');
+    var btn = document.getElementById('pbp-load-btn');
+    var liveBadge = document.getElementById('pbp-live-badge');
+
+    var url = '/api/stats/players/{{ player.id }}/play-by-play?year=' + year + '&week=' + week;
+
+    spinner.classList.remove('hidden');
+    btn.disabled = true;
+    liveBadge.classList.add('hidden');
+
+    fetch(url)
+        .then(function(resp) {
+            if (!resp.ok) {
+                return resp.json().then(function(e) { throw new Error(e.detail || 'Request failed'); });
+            }
+            return resp.json();
+        })
+        .then(function(data) {
+            renderPlayByPlay(data);
+            // Show live badge if data appears current (current year)
+            var now = new Date();
+            if (parseInt(year) === now.getFullYear()) {
+                liveBadge.classList.remove('hidden');
+                liveBadge.style.display = 'inline-flex';
+            }
+        })
+        .catch(function(err) {
+            document.getElementById('pbp-result').innerHTML =
+                '<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center">'
+                + '<p class="text-sm text-red-500">' + (err.message || 'Failed to load play-by-play data') + '</p>'
+                + '</div>';
+        })
+        .finally(function() {
+            spinner.classList.add('hidden');
+            btn.disabled = false;
+        });
+}
+
+function _pbpPlayTypeClass(playType) {
+    if (!playType) return 'bg-slate-100 text-slate-500';
+    switch (playType.toLowerCase()) {
+        case 'pass': return 'bg-blue-100 text-blue-700';
+        case 'run': return 'bg-field-100 text-field-700';
+        case 'punt': return 'bg-yellow-100 text-yellow-700';
+        case 'kickoff': return 'bg-orange-100 text-orange-700';
+        case 'field_goal': return 'bg-purple-100 text-purple-700';
+        case 'extra_point': return 'bg-purple-100 text-purple-700';
+        case 'no_play': return 'bg-slate-100 text-slate-400';
+        default: return 'bg-slate-100 text-slate-500';
+    }
+}
+
+function _fmtTime(gameSecondsRemaining) {
+    if (gameSecondsRemaining === null || gameSecondsRemaining === undefined) return '—';
+    // game_seconds_remaining counts down from 3600 (start of Q1) to 0 (end of Q4)
+    var total = Math.max(0, gameSecondsRemaining);
+    var qtr = 4 - Math.floor(total / 900);
+    if (qtr < 1) qtr = 1;
+    var secInQtr = total % 900;
+    var mm = Math.floor(secInQtr / 60);
+    var ss = Math.floor(secInQtr % 60);
+    return 'Q' + qtr + ' ' + mm + ':' + (ss < 10 ? '0' : '') + ss;
+}
+
+function renderPlayByPlay(data) {
+    var plays = data.plays || [];
+    var resultEl = document.getElementById('pbp-result');
+
+    if (!plays.length) {
+        resultEl.innerHTML =
+            '<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center">'
+            + '<p class="text-sm text-slate-400">No plays found for ' + data.player_name + ' in Week ' + data.week + ', ' + data.year + '</p>'
+            + '</div>';
+        return;
+    }
+
+    var rows = plays.map(function(p) {
+        var typeClass = _pbpPlayTypeClass(p.play_type);
+        var time = _fmtTime(p.game_seconds_remaining);
+        var yards = p.yards_gained !== null && p.yards_gained !== undefined ? p.yards_gained : '—';
+        var epa = p.epa !== null && p.epa !== undefined ? (p.epa > 0 ? '+' : '') + p.epa.toFixed(2) : '—';
+        var epaClass = p.epa > 0 ? 'text-field-600' : (p.epa < 0 ? 'text-red-500' : 'text-slate-400');
+        var desc = (p.desc || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        var td = p.touchdown ? ' <span class="ml-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-field-500 text-white">TD</span>' : '';
+        var sack = p.sack ? ' <span class="ml-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-500 text-white">SACK</span>' : '';
+        var interception = p.interception ? ' <span class="ml-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-600 text-white">INT</span>' : '';
+        var downStr = p.down ? p.down + '&' + (p.ydstogo || '?') : '';
+        return '<tr class="border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors">'
+            + '<td class="px-3 py-2.5 text-xs text-slate-500 whitespace-nowrap">' + time + '</td>'
+            + '<td class="px-3 py-2.5 text-xs text-slate-500 whitespace-nowrap">' + (downStr || '—') + '</td>'
+            + '<td class="px-3 py-2.5"><span class="px-2 py-0.5 rounded text-[10px] font-bold ' + typeClass + '">' + (p.play_type || '—').toUpperCase() + '</span></td>'
+            + '<td class="px-3 py-2.5 text-xs text-slate-700 max-w-xs">' + desc + td + sack + interception + '</td>'
+            + '<td class="px-3 py-2.5 text-xs text-right font-semibold text-slate-700">' + yards + '</td>'
+            + '<td class="px-3 py-2.5 text-xs text-right font-semibold ' + epaClass + '">' + epa + '</td>'
+            + '</tr>';
+    }).join('');
+
+    resultEl.innerHTML =
+        '<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-3 mb-3 flex items-center gap-4">'
+        + '<span class="text-sm font-semibold text-slate-700">' + data.player_name + '</span>'
+        + '<span class="text-sm text-slate-500">Week ' + data.week + ', ' + data.year + '</span>'
+        + '<span class="text-sm text-slate-400">' + data.total_plays + ' plays</span>'
+        + '</div>'
+        + '<div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">'
+        + '<div class="overflow-x-auto">'
+        + '<table class="w-full text-sm">'
+        + '<thead><tr class="bg-slate-50 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">'
+        + '<th class="px-3 py-3">Time</th>'
+        + '<th class="px-3 py-3">Down</th>'
+        + '<th class="px-3 py-3">Type</th>'
+        + '<th class="px-3 py-3">Description</th>'
+        + '<th class="px-3 py-3 text-right">Yards</th>'
+        + '<th class="px-3 py-3 text-right">EPA</th>'
+        + '</tr></thead>'
         + '<tbody>' + rows + '</tbody>'
         + '</table>'
         + '</div>'
