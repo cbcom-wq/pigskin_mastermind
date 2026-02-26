@@ -384,6 +384,9 @@ function clearRoutes() {
     _q('svg-endpoints').innerHTML = '';
     _q('svg-headshot').innerHTML = '';
     _q('svg-labels').innerHTML = '';
+    /* Remove old headshot motion paths from defs */
+    _q('route-svg').querySelectorAll('[id^="headshot-motion-path-"]').forEach(function(el) { el.remove(); });
+    _headshotCounter = 0;
 }
 
 function drawRoute(evt, animate, opacity) {
@@ -423,24 +426,33 @@ function drawRoute(evt, animate, opacity) {
         }
     });
 
-    /* Player position badge at route endpoint */
+    /* Headshot marker or position badge at route endpoint */
+    const headshotUrl = evt.player_headshot_url || '';
+    if (headshotUrl && opacity >= 0.8) {
+        drawHeadshotMarker(segs, losX, animate, headshotUrl, playerColor);
+    } else {
+        /* Fallback: position-colored badge */
+        const lastSeg = segs[segs.length - 1];
+        const ex = lateralToX(lastSeg.lateral);
+        const ey = depthToY(lastSeg.depth, losX);
+        const badgeG = svgEl('g', {});
+        badgeG.appendChild(svgEl('circle', {
+            cx: ex, cy: ey - 14, r: 8,
+            fill: playerColor, stroke: '#0f172a', 'stroke-width': 1, opacity: Math.max(opacity, 0.8),
+        }));
+        const posText = svgEl('text', {
+            x: ex, y: ey - 11, fill: '#ffffff', 'font-size': '6', 'text-anchor': 'middle',
+            'font-family': 'system-ui, sans-serif', 'font-weight': '700', opacity: Math.max(opacity, 0.8),
+        });
+        posText.textContent = (evt.player_position || '??').substring(0, 2);
+        badgeG.appendChild(posText);
+        endpointsG.appendChild(badgeG);
+    }
+
+    /* Endpoint marker */
     const lastSeg = segs[segs.length - 1];
     const ex = lateralToX(lastSeg.lateral);
     const ey = depthToY(lastSeg.depth, losX);
-
-    // Draw position-colored badge
-    const badgeG = svgEl('g', {});
-    badgeG.appendChild(svgEl('circle', {
-        cx: ex, cy: ey - 14, r: 8,
-        fill: playerColor, stroke: '#0f172a', 'stroke-width': 1, opacity: Math.max(opacity, 0.8),
-    }));
-    const posText = svgEl('text', {
-        x: ex, y: ey - 11, fill: '#ffffff', 'font-size': '6', 'text-anchor': 'middle',
-        'font-family': 'system-ui, sans-serif', 'font-weight': '700', opacity: Math.max(opacity, 0.8),
-    });
-    posText.textContent = (evt.player_position || '??').substring(0, 2);
-    badgeG.appendChild(posText);
-    endpointsG.appendChild(badgeG);
 
     if (rp.is_touchdown) {
         endpointsG.appendChild(svgEl('circle', {
@@ -501,6 +513,71 @@ function classifySegments(segs, rp, role) {
     }
     if (currentGroup && currentGroup.points.length >= 2) groups.push(currentGroup);
     return groups.filter(function(g) { return g.points.length >= 2; });
+}
+
+/* ── headshot marker ─────────────────────────────────────────────────── */
+
+let _headshotCounter = 0;
+
+/**
+ * Draw a player headshot at the tip of the route.
+ * Uses the player's headshot_url; ring color matches their position color.
+ */
+function drawHeadshotMarker(segs, losX, animate, headshotUrl, playerColor) {
+    const hsG = _q('svg-headshot');
+    if (!segs || segs.length < 2) return;
+
+    const R = 10;
+    const BORDER = 1.8;
+
+    const pathPoints = segs.map(function(s) {
+        return { x: lateralToX(s.lateral), y: depthToY(s.depth, losX) };
+    });
+    const pathD = pathPoints.map(function(p, i) {
+        return (i === 0 ? 'M' : 'L') + p.x.toFixed(1) + ',' + p.y.toFixed(1);
+    }).join(' ');
+
+    const g = svgEl('g', { class: 'headshot-marker' + (animate ? ' animate' : '') });
+
+    /* Border ring — colored by position */
+    g.appendChild(svgEl('circle', {
+        cx: 0, cy: 0, r: R + BORDER,
+        fill: '#0f172a', stroke: playerColor || '#3b82f6', 'stroke-width': BORDER,
+    }));
+
+    /* Clipped headshot image */
+    const img = document.createElementNS(SVG_NS, 'image');
+    img.setAttributeNS(XLINK_NS, 'href', headshotUrl);
+    img.setAttribute('x', String(-R));
+    img.setAttribute('y', String(-R));
+    img.setAttribute('width', String(R * 2));
+    img.setAttribute('height', String(R * 2));
+    img.setAttribute('clip-path', 'url(#headshot-clip)');
+    img.setAttribute('preserveAspectRatio', 'xMidYMid slice');
+    img.addEventListener('error', function() { g.style.display = 'none'; });
+    g.appendChild(img);
+
+    if (animate) {
+        _headshotCounter++;
+        const motionId = 'headshot-motion-path-' + _headshotCounter;
+        const defsPath = svgEl('path', { d: pathD, id: motionId });
+        _q('route-svg').querySelector('defs').appendChild(defsPath);
+
+        const animMotion = document.createElementNS(SVG_NS, 'animateMotion');
+        animMotion.setAttribute('dur', '0.7s');
+        animMotion.setAttribute('fill', 'freeze');
+        animMotion.setAttribute('calcMode', 'linear');
+
+        const mpath = document.createElementNS(SVG_NS, 'mpath');
+        mpath.setAttributeNS(XLINK_NS, 'href', '#' + motionId);
+        animMotion.appendChild(mpath);
+        g.appendChild(animMotion);
+    } else {
+        const last = pathPoints[pathPoints.length - 1];
+        g.setAttribute('transform', 'translate(' + last.x.toFixed(1) + ',' + last.y.toFixed(1) + ')');
+    }
+
+    hsG.appendChild(g);
 }
 
 /* ── all-routes overlay ─────────────────────────────────────────────── */

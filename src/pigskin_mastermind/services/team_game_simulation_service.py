@@ -91,6 +91,7 @@ class TeamGameSimulationService:
                 "position": player.position,
                 "nfl_team": player.nfl_team,
                 "color": _POSITION_COLORS.get(player.position, "#94a3b8"),
+                "headshot_url": getattr(player, "headshot_url", None) or "",
                 "total_events": 0,
                 "stats": {},
             }
@@ -169,6 +170,7 @@ class TeamGameSimulationService:
                 event["player_color"] = _POSITION_COLORS.get(
                     player.position, "#94a3b8"
                 )
+                event["player_headshot_url"] = getattr(player, "headshot_url", None) or ""
                 event["_original_index"] = orig_idx
                 all_events.append(event)
 
