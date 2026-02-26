@@ -1,6 +1,8 @@
 """Auto-derive projection criteria from stored stats with manual override support."""
 
 import math
+from collections import defaultdict
+from datetime import datetime
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
@@ -49,6 +51,8 @@ class ProjectionCriteriaBuilder:
         Returns:
             WeeklyProjectionCriteria populated from stats.
         """
+        self._ensure_team_stats(year)
+
         player = self.db.query(DBPlayer).filter_by(id=player_id).first()
         if not player:
             raise ValueError(f"Player {player_id} not found")
@@ -151,6 +155,7 @@ class ProjectionCriteriaBuilder:
 
         # Use previous year's stats for yearly projection
         prev_year = year - 1
+        self._ensure_team_stats(prev_year)
         season = (
             self.db.query(DBPlayerSeasonStats)
             .filter_by(player_id=player_id, year=prev_year)
@@ -640,3 +645,240 @@ class ProjectionCriteriaBuilder:
             return 50.0
 
         return max(0, min(100, sum(levels) / len(levels)))
+
+    # ── Team stats population from game logs ─────────────────────────────
+
+    def _ensure_team_stats(self, year: int) -> None:
+        """Lazily populate DBNFLTeamStats from game logs if no data exists for the year."""
+        existing = (
+            self.db.query(DBNFLTeamStats)
+            .filter_by(year=year)
+            .first()
+        )
+        if existing:
+            return
+
+        # Check we actually have game logs to compute from
+        log_count = (
+            self.db.query(DBPlayerGameLog)
+            .filter_by(year=year)
+            .count()
+        )
+        if log_count == 0:
+            return
+
+        self._populate_team_offense_stats(year)
+        self.db.flush()
+        self._populate_defense_allowed(year)
+        self.db.flush()
+        self._populate_defense_rankings(year)
+        self.db.flush()
+
+    def _populate_team_offense_stats(self, year: int) -> None:
+        """Aggregate game logs into team offense stats (weekly + season)."""
+        logs = (
+            self.db.query(
+                DBPlayer.nfl_team,
+                DBPlayerGameLog.week,
+                func.sum(DBPlayerGameLog.pass_yd).label('pass_yd'),
+                func.sum(DBPlayerGameLog.rush_yd).label('rush_yd'),
+                func.sum(DBPlayerGameLog.pass_td).label('pass_td'),
+                func.sum(DBPlayerGameLog.rush_td).label('rush_td'),
+                func.sum(DBPlayerGameLog.rec_td).label('rec_td'),
+                func.sum(DBPlayerGameLog.fantasy_points).label('fpts'),
+            )
+            .join(DBPlayer, DBPlayerGameLog.player_id == DBPlayer.id)
+            .filter(DBPlayerGameLog.year == year)
+            .group_by(DBPlayer.nfl_team, DBPlayerGameLog.week)
+            .all()
+        )
+
+        # Per-team season accumulators
+        team_season: Dict[str, Dict[str, int]] = defaultdict(
+            lambda: {'pass_yards': 0, 'rush_yards': 0, 'points_scored': 0}
+        )
+
+        for row in logs:
+            nfl_team = row.nfl_team
+            if not nfl_team:
+                continue
+
+            pass_yds = int(row.pass_yd or 0)
+            rush_yds = int(row.rush_yd or 0)
+            total_yds = pass_yds + rush_yds
+            # Approximate NFL points: unique TDs × 7 (including XP).
+            # pass_td and rec_td overlap (same play), so take max.
+            pass_tds = int(row.pass_td or 0)
+            rec_tds = int(row.rec_td or 0)
+            rush_tds = int(row.rush_td or 0)
+            unique_pass_tds = max(pass_tds, rec_tds)
+            points = (unique_pass_tds + rush_tds) * 7
+
+            # Upsert weekly row
+            weekly_stat = (
+                self.db.query(DBNFLTeamStats)
+                .filter_by(nfl_team=nfl_team, year=year, week=row.week)
+                .first()
+            )
+            if not weekly_stat:
+                weekly_stat = DBNFLTeamStats(
+                    nfl_team=nfl_team, year=year, week=row.week
+                )
+                self.db.add(weekly_stat)
+
+            weekly_stat.pass_yards = pass_yds
+            weekly_stat.rush_yards = rush_yds
+            weekly_stat.total_yards = total_yds
+            weekly_stat.points_scored = points
+            weekly_stat.source = 'computed_from_game_logs'
+            weekly_stat.updated_at = datetime.utcnow()
+
+            # Accumulate for season totals
+            team_season[nfl_team]['pass_yards'] += pass_yds
+            team_season[nfl_team]['rush_yards'] += rush_yds
+            team_season[nfl_team]['points_scored'] += points
+
+        # Create season aggregate rows (week=None)
+        for nfl_team, totals in team_season.items():
+            season_stat = (
+                self.db.query(DBNFLTeamStats)
+                .filter_by(nfl_team=nfl_team, year=year, week=None)
+                .first()
+            )
+            if not season_stat:
+                season_stat = DBNFLTeamStats(
+                    nfl_team=nfl_team, year=year, week=None
+                )
+                self.db.add(season_stat)
+
+            season_stat.pass_yards = totals['pass_yards']
+            season_stat.rush_yards = totals['rush_yards']
+            season_stat.total_yards = totals['pass_yards'] + totals['rush_yards']
+            season_stat.points_scored = totals['points_scored']
+            season_stat.source = 'computed_from_game_logs'
+            season_stat.updated_at = datetime.utcnow()
+
+    def _populate_defense_allowed(self, year: int) -> None:
+        """Compute what each defense allowed from game logs (weekly + season)."""
+        logs = (
+            self.db.query(
+                DBPlayerGameLog.opponent,
+                DBPlayerGameLog.week,
+                func.sum(DBPlayerGameLog.pass_yd).label('pass_yd'),
+                func.sum(DBPlayerGameLog.rush_yd).label('rush_yd'),
+                func.sum(DBPlayerGameLog.pass_td).label('pass_td'),
+                func.sum(DBPlayerGameLog.rush_td).label('rush_td'),
+                func.sum(DBPlayerGameLog.rec_td).label('rec_td'),
+            )
+            .filter(
+                DBPlayerGameLog.year == year,
+                DBPlayerGameLog.opponent.isnot(None),
+            )
+            .group_by(DBPlayerGameLog.opponent, DBPlayerGameLog.week)
+            .all()
+        )
+
+        # Accumulate season defense totals
+        def_season: Dict[str, Dict[str, int]] = defaultdict(
+            lambda: {'pass_yards_allowed': 0, 'rush_yards_allowed': 0, 'points_allowed': 0}
+        )
+
+        for row in logs:
+            opp = row.opponent
+            if not opp:
+                continue
+
+            pass_yds = int(row.pass_yd or 0)
+            rush_yds = int(row.rush_yd or 0)
+            pass_tds = int(row.pass_td or 0)
+            rec_tds = int(row.rec_td or 0)
+            rush_tds = int(row.rush_td or 0)
+            unique_pass_tds = max(pass_tds, rec_tds)
+            points_allowed = (unique_pass_tds + rush_tds) * 7
+
+            # Update or create weekly defense row
+            weekly_stat = (
+                self.db.query(DBNFLTeamStats)
+                .filter_by(nfl_team=opp, year=year, week=row.week)
+                .first()
+            )
+            if not weekly_stat:
+                weekly_stat = DBNFLTeamStats(
+                    nfl_team=opp, year=year, week=row.week
+                )
+                self.db.add(weekly_stat)
+
+            weekly_stat.pass_yards_allowed = pass_yds
+            weekly_stat.rush_yards_allowed = rush_yds
+            weekly_stat.points_allowed = points_allowed
+            weekly_stat.source = weekly_stat.source or 'computed_from_game_logs'
+            weekly_stat.updated_at = datetime.utcnow()
+
+            def_season[opp]['pass_yards_allowed'] += pass_yds
+            def_season[opp]['rush_yards_allowed'] += rush_yds
+            def_season[opp]['points_allowed'] += points_allowed
+
+        # Update season aggregate rows
+        for opp, totals in def_season.items():
+            season_stat = (
+                self.db.query(DBNFLTeamStats)
+                .filter_by(nfl_team=opp, year=year, week=None)
+                .first()
+            )
+            if not season_stat:
+                season_stat = DBNFLTeamStats(
+                    nfl_team=opp, year=year, week=None
+                )
+                self.db.add(season_stat)
+
+            season_stat.pass_yards_allowed = totals['pass_yards_allowed']
+            season_stat.rush_yards_allowed = totals['rush_yards_allowed']
+            season_stat.points_allowed = totals['points_allowed']
+            season_stat.source = season_stat.source or 'computed_from_game_logs'
+            season_stat.updated_at = datetime.utcnow()
+
+    def _populate_defense_rankings(self, year: int) -> None:
+        """Compute positional defense rankings from fantasy points allowed."""
+        for position in ('QB', 'RB', 'WR', 'TE'):
+            pos_lower = position.lower()
+            rank_field = f'def_rank_vs_{pos_lower}'
+
+            # Sum fantasy points scored against each opponent by this position
+            fpts_by_opp = (
+                self.db.query(
+                    DBPlayerGameLog.opponent,
+                    func.sum(DBPlayerGameLog.fantasy_points).label('total_fpts'),
+                )
+                .join(DBPlayer, DBPlayerGameLog.player_id == DBPlayer.id)
+                .filter(
+                    DBPlayerGameLog.year == year,
+                    DBPlayer.position == position,
+                    DBPlayerGameLog.opponent.isnot(None),
+                )
+                .group_by(DBPlayerGameLog.opponent)
+                .all()
+            )
+
+            if not fpts_by_opp:
+                continue
+
+            # Sort ascending: fewest fantasy points allowed = rank 1 (best defense)
+            sorted_opps = sorted(fpts_by_opp, key=lambda x: x.total_fpts or 0)
+
+            for rank, row in enumerate(sorted_opps, 1):
+                season_stat = (
+                    self.db.query(DBNFLTeamStats)
+                    .filter_by(nfl_team=row.opponent, year=year, week=None)
+                    .first()
+                )
+                if not season_stat:
+                    season_stat = DBNFLTeamStats(
+                        nfl_team=row.opponent, year=year, week=None
+                    )
+                    self.db.add(season_stat)
+
+                setattr(season_stat, rank_field, rank)
+                season_stat.source = season_stat.source or 'computed_from_game_logs'
+                season_stat.updated_at = datetime.utcnow()
+
+            self.db.flush()

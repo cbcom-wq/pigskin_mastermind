@@ -583,3 +583,469 @@ class TestMomentumComposite:
         # blended = 20*0.6 + 14.3*0.4 = 12 + 5.71 ≈ 17.7
         assert momentum > 0
         assert momentum == pytest.approx(17.7, rel=0.05)
+
+
+# ── Tests for auto-computed team stats from game logs ───────────────────
+
+
+class TestPopulateTeamOffenseStats:
+    """Test _populate_team_offense_stats aggregation."""
+
+    def test_weekly_rows_created(self, db):
+        """Each team-week should get a DBNFLTeamStats row."""
+        team = DBTeam(team_id="toff1", name="OffTeam", owner="O")
+        db.add(team)
+        db.flush()
+
+        qb = DBPlayer(player_id="offqb", name="QB1", position="QB",
+                       nfl_team="BAL", team_id=team.id, stats={})
+        rb = DBPlayer(player_id="offrb", name="RB1", position="RB",
+                      nfl_team="BAL", team_id=team.id, stats={})
+        db.add_all([qb, rb])
+        db.flush()
+
+        # Week 1 game logs
+        db.add(DBPlayerGameLog(
+            player_id=qb.id, year=2024, week=1, opponent="PIT",
+            pass_yd=250, pass_td=2, rush_yd=30, rush_td=0,
+            fantasy_points=22.0,
+        ))
+        db.add(DBPlayerGameLog(
+            player_id=rb.id, year=2024, week=1, opponent="PIT",
+            pass_yd=0, pass_td=0, rush_yd=100, rush_td=1,
+            rec_yd=40, rec_td=0, fantasy_points=18.0,
+        ))
+        # Week 2 game logs
+        db.add(DBPlayerGameLog(
+            player_id=qb.id, year=2024, week=2, opponent="CIN",
+            pass_yd=300, pass_td=3, rush_yd=15, rush_td=1,
+            fantasy_points=30.0,
+        ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        builder._populate_team_offense_stats(2024)
+        db.flush()
+
+        # Week 1: pass_yards=250+0=250, rush_yards=30+100=130
+        w1 = db.query(DBNFLTeamStats).filter_by(
+            nfl_team="BAL", year=2024, week=1
+        ).first()
+        assert w1 is not None
+        assert w1.pass_yards == 250
+        assert w1.rush_yards == 130
+        assert w1.total_yards == 380
+        # points: max(pass_td=2, rec_td=0)=2, rush_td=0+1=1 → (2+1)*7=21
+        assert w1.points_scored == 21
+
+        # Week 2: only QB
+        w2 = db.query(DBNFLTeamStats).filter_by(
+            nfl_team="BAL", year=2024, week=2
+        ).first()
+        assert w2 is not None
+        assert w2.pass_yards == 300
+        assert w2.rush_yards == 15
+        # points: max(pass_td=3, rec_td=0)=3, rush_td=1 → (3+1)*7=28
+        assert w2.points_scored == 28
+
+    def test_season_aggregate_created(self, db):
+        """Season aggregate row (week=None) should sum across all weeks."""
+        team = DBTeam(team_id="toff2", name="OffTeam2", owner="O")
+        db.add(team)
+        db.flush()
+
+        qb = DBPlayer(player_id="offqb2", name="QB2", position="QB",
+                       nfl_team="KC", team_id=team.id, stats={})
+        db.add(qb)
+        db.flush()
+
+        for wk in range(1, 4):
+            db.add(DBPlayerGameLog(
+                player_id=qb.id, year=2024, week=wk, opponent=f"OPP{wk}",
+                pass_yd=200 + wk * 10, pass_td=2, rush_yd=20,
+                fantasy_points=20.0,
+            ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        builder._populate_team_offense_stats(2024)
+        db.flush()
+
+        season = db.query(DBNFLTeamStats).filter_by(
+            nfl_team="KC", year=2024, week=None
+        ).first()
+        assert season is not None
+        # pass_yards = 210 + 220 + 230 = 660
+        assert season.pass_yards == 660
+        # rush_yards = 20 * 3 = 60
+        assert season.rush_yards == 60
+        assert season.total_yards == 720
+        assert season.source == 'computed_from_game_logs'
+
+
+class TestPopulateDefenseAllowed:
+    """Test _populate_defense_allowed aggregation."""
+
+    def test_defense_allowed_from_opponent_field(self, db):
+        """Defense allowed should aggregate stats against each opponent."""
+        team = DBTeam(team_id="tdef1", name="DefTeam", owner="O")
+        db.add(team)
+        db.flush()
+
+        qb = DBPlayer(player_id="defqb", name="QB", position="QB",
+                       nfl_team="BAL", team_id=team.id, stats={})
+        db.add(qb)
+        db.flush()
+
+        # Two games against PIT defense
+        db.add(DBPlayerGameLog(
+            player_id=qb.id, year=2024, week=1, opponent="PIT",
+            pass_yd=250, pass_td=2, rush_yd=30, rush_td=0,
+            fantasy_points=22.0,
+        ))
+        db.add(DBPlayerGameLog(
+            player_id=qb.id, year=2024, week=10, opponent="PIT",
+            pass_yd=200, pass_td=1, rush_yd=40, rush_td=1,
+            fantasy_points=18.0,
+        ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        builder._populate_defense_allowed(2024)
+        db.flush()
+
+        # Season aggregate for PIT defense
+        pit_season = db.query(DBNFLTeamStats).filter_by(
+            nfl_team="PIT", year=2024, week=None
+        ).first()
+        assert pit_season is not None
+        assert pit_season.pass_yards_allowed == 450  # 250 + 200
+        assert pit_season.rush_yards_allowed == 70  # 30 + 40
+
+    def test_weekly_defense_rows(self, db):
+        """Each week should have a defense-allowed row for the opponent."""
+        team = DBTeam(team_id="tdef2", name="DefTeam2", owner="O")
+        db.add(team)
+        db.flush()
+
+        rb = DBPlayer(player_id="defrb", name="RB", position="RB",
+                      nfl_team="MIN", team_id=team.id, stats={})
+        db.add(rb)
+        db.flush()
+
+        db.add(DBPlayerGameLog(
+            player_id=rb.id, year=2024, week=5, opponent="GB",
+            rush_yd=120, rush_td=2, fantasy_points=25.0,
+        ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        builder._populate_defense_allowed(2024)
+        db.flush()
+
+        gb_wk5 = db.query(DBNFLTeamStats).filter_by(
+            nfl_team="GB", year=2024, week=5
+        ).first()
+        assert gb_wk5 is not None
+        assert gb_wk5.rush_yards_allowed == 120
+        assert gb_wk5.points_allowed == 14  # 2 rush_td * 7
+
+
+class TestPopulateDefenseRankings:
+    """Test _populate_defense_rankings positional ranking computation."""
+
+    def test_rankings_ordered_correctly(self, db):
+        """Teams allowing fewer fantasy points should rank lower (better defense)."""
+        team = DBTeam(team_id="trank1", name="RankTeam", owner="O")
+        db.add(team)
+        db.flush()
+
+        qb1 = DBPlayer(player_id="rqb1", name="QB1", position="QB",
+                        nfl_team="BAL", team_id=team.id, stats={})
+        qb2 = DBPlayer(player_id="rqb2", name="QB2", position="QB",
+                        nfl_team="KC", team_id=team.id, stats={})
+        db.add_all([qb1, qb2])
+        db.flush()
+
+        # QB1 (BAL) scores big against CIN, less against PIT
+        for wk in range(1, 9):
+            db.add(DBPlayerGameLog(
+                player_id=qb1.id, year=2024, week=wk,
+                opponent="CIN" if wk <= 4 else "PIT",
+                pass_yd=300, pass_td=3,
+                fantasy_points=30.0 if wk <= 4 else 15.0,
+            ))
+        # QB2 (KC) scores medium against CIN and PIT
+        for wk in range(1, 5):
+            db.add(DBPlayerGameLog(
+                player_id=qb2.id, year=2024, week=wk,
+                opponent="CIN" if wk <= 2 else "PIT",
+                pass_yd=250, pass_td=2,
+                fantasy_points=20.0,
+            ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        builder._populate_defense_rankings(2024)
+        db.flush()
+
+        # Total fantasy points allowed to QBs:
+        # CIN: 30*4 + 20*2 = 160
+        # PIT: 15*4 + 20*2 = 100
+        # PIT allows fewer → rank 1 (better defense), CIN → rank 2
+        pit = db.query(DBNFLTeamStats).filter_by(
+            nfl_team="PIT", year=2024, week=None
+        ).first()
+        cin = db.query(DBNFLTeamStats).filter_by(
+            nfl_team="CIN", year=2024, week=None
+        ).first()
+
+        assert pit is not None
+        assert cin is not None
+        assert pit.def_rank_vs_qb == 1
+        assert cin.def_rank_vs_qb == 2
+
+    def test_multiple_position_rankings(self, db):
+        """Rankings should be independent per position."""
+        team = DBTeam(team_id="trank2", name="RankTeam2", owner="O")
+        db.add(team)
+        db.flush()
+
+        qb = DBPlayer(player_id="mrqb", name="QB", position="QB",
+                       nfl_team="BAL", team_id=team.id, stats={})
+        rb = DBPlayer(player_id="mrrb", name="RB", position="RB",
+                      nfl_team="BAL", team_id=team.id, stats={})
+        db.add_all([qb, rb])
+        db.flush()
+
+        # vs DEN: QB does well, RB does poorly
+        db.add(DBPlayerGameLog(
+            player_id=qb.id, year=2024, week=1, opponent="DEN",
+            pass_yd=350, pass_td=4, fantasy_points=35.0,
+        ))
+        db.add(DBPlayerGameLog(
+            player_id=rb.id, year=2024, week=1, opponent="DEN",
+            rush_yd=40, rush_td=0, fantasy_points=6.0,
+        ))
+        # vs LV: QB does poorly, RB does well
+        db.add(DBPlayerGameLog(
+            player_id=qb.id, year=2024, week=2, opponent="LV",
+            pass_yd=150, pass_td=1, fantasy_points=12.0,
+        ))
+        db.add(DBPlayerGameLog(
+            player_id=rb.id, year=2024, week=2, opponent="LV",
+            rush_yd=150, rush_td=2, fantasy_points=28.0,
+        ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        builder._populate_defense_rankings(2024)
+        db.flush()
+
+        den = db.query(DBNFLTeamStats).filter_by(
+            nfl_team="DEN", year=2024, week=None
+        ).first()
+        lv = db.query(DBNFLTeamStats).filter_by(
+            nfl_team="LV", year=2024, week=None
+        ).first()
+
+        # QB: DEN allowed 35, LV allowed 12 → LV rank 1 (better), DEN rank 2
+        assert lv.def_rank_vs_qb == 1
+        assert den.def_rank_vs_qb == 2
+        # RB: DEN allowed 6, LV allowed 28 → DEN rank 1 (better), LV rank 2
+        assert den.def_rank_vs_rb == 1
+        assert lv.def_rank_vs_rb == 2
+
+
+class TestEnsureTeamStats:
+    """Test the lazy _ensure_team_stats trigger."""
+
+    def test_skips_when_data_exists(self, db, sample_data):
+        """Should not re-compute if DBNFLTeamStats already has data for the year."""
+        builder = ProjectionCriteriaBuilder(db)
+        # sample_data already creates DBNFLTeamStats for KC 2024
+        existing = db.query(DBNFLTeamStats).filter_by(year=2024).count()
+        builder._ensure_team_stats(2024)
+        after = db.query(DBNFLTeamStats).filter_by(year=2024).count()
+        # Should not create additional rows
+        assert after == existing
+
+    def test_populates_when_empty(self, db):
+        """Should auto-populate when no DBNFLTeamStats exist for the year."""
+        team = DBTeam(team_id="tens1", name="EnsTeam", owner="O")
+        db.add(team)
+        db.flush()
+
+        qb = DBPlayer(player_id="ensqb", name="QB", position="QB",
+                       nfl_team="SF", team_id=team.id, stats={})
+        db.add(qb)
+        db.flush()
+
+        db.add(DBPlayerGameLog(
+            player_id=qb.id, year=2024, week=1, opponent="SEA",
+            pass_yd=300, pass_td=3, rush_yd=20, fantasy_points=28.0,
+        ))
+        db.add(DBPlayerGameLog(
+            player_id=qb.id, year=2024, week=2, opponent="ARI",
+            pass_yd=280, pass_td=2, rush_yd=15, fantasy_points=22.0,
+        ))
+        db.commit()
+
+        # Verify no team stats exist
+        assert db.query(DBNFLTeamStats).filter_by(year=2024).count() == 0
+
+        builder = ProjectionCriteriaBuilder(db)
+        builder._ensure_team_stats(2024)
+        db.flush()
+
+        # Should now have team stats
+        count = db.query(DBNFLTeamStats).filter_by(year=2024).count()
+        assert count > 0
+
+        # SF should have offense stats
+        sf_season = db.query(DBNFLTeamStats).filter_by(
+            nfl_team="SF", year=2024, week=None
+        ).first()
+        assert sf_season is not None
+        assert sf_season.pass_yards == 580  # 300 + 280
+        assert sf_season.total_yards > 0
+
+        # SEA and ARI should have defense data
+        sea = db.query(DBNFLTeamStats).filter_by(
+            nfl_team="SEA", year=2024, week=None
+        ).first()
+        assert sea is not None
+        assert sea.def_rank_vs_qb is not None
+
+    def test_does_nothing_with_no_game_logs(self, db):
+        """Should not create any rows if there are no game logs."""
+        builder = ProjectionCriteriaBuilder(db)
+        builder._ensure_team_stats(2024)
+        assert db.query(DBNFLTeamStats).filter_by(year=2024).count() == 0
+
+
+class TestBuilderUsesComputedTeamStats:
+    """Integration test: builder criteria reflect computed team stats."""
+
+    def test_weekly_team_offense_not_default(self, db):
+        """team_offense_level should not be 50.0 when game logs exist."""
+        team = DBTeam(team_id="tint1", name="IntTeam", owner="O")
+        db.add(team)
+        db.flush()
+
+        qb = DBPlayer(player_id="intqb", name="IntQB", position="QB",
+                       nfl_team="DAL", team_id=team.id,
+                       stats={'age': 27})
+        db.add(qb)
+        db.flush()
+
+        # Create a second team to establish ranking context
+        qb2 = DBPlayer(player_id="intqb2", name="IntQB2", position="QB",
+                        nfl_team="NYG", team_id=team.id,
+                        stats={'age': 25})
+        db.add(qb2)
+        db.flush()
+
+        # Season stats for both
+        db.add(DBPlayerSeasonStats(
+            player_id=qb.id, year=2024, games_played=16,
+            pass_att=500, fantasy_points_total=350.0, fantasy_points_avg=21.875,
+        ))
+        db.add(DBPlayerSeasonStats(
+            player_id=qb2.id, year=2024, games_played=16,
+            pass_att=450, fantasy_points_total=200.0, fantasy_points_avg=12.5,
+        ))
+
+        # Game logs — DAL QB scores more than NYG QB
+        for wk in range(1, 9):
+            db.add(DBPlayerGameLog(
+                player_id=qb.id, year=2024, week=wk,
+                opponent="PHI" if wk <= 4 else "WAS",
+                pass_yd=300, pass_td=3, rush_yd=20,
+                fantasy_points=28.0,
+            ))
+            db.add(DBPlayerGameLog(
+                player_id=qb2.id, year=2024, week=wk,
+                opponent="PHI" if wk <= 4 else "WAS",
+                pass_yd=200, pass_td=1, rush_yd=10,
+                fantasy_points=14.0,
+            ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        criteria = builder.build_weekly_criteria(qb.id, week=5, year=2024)
+
+        # DAL has more yards/points than NYG → team_offense_level > 50
+        assert criteria.team_offense_level > 50.0
+
+    def test_weekly_opponent_defense_from_computed(self, db):
+        """opponent_defense_level and def_rank should use computed rankings."""
+        team = DBTeam(team_id="tint2", name="IntTeam2", owner="O")
+        db.add(team)
+        db.flush()
+
+        qb = DBPlayer(player_id="intqb3", name="QB3", position="QB",
+                       nfl_team="MIA", team_id=team.id,
+                       stats={'age': 26})
+        db.add(qb)
+        db.flush()
+
+        db.add(DBPlayerSeasonStats(
+            player_id=qb.id, year=2024, games_played=16,
+            pass_att=500, fantasy_points_total=300.0, fantasy_points_avg=18.75,
+        ))
+
+        # Game logs vs multiple opponents with different results
+        opponents = ["BUF", "NYJ", "NE"]
+        fpts = [30.0, 15.0, 22.0]
+        for wk, (opp, fp) in enumerate(zip(opponents, fpts), 1):
+            db.add(DBPlayerGameLog(
+                player_id=qb.id, year=2024, week=wk, opponent=opp,
+                pass_yd=250, pass_td=2, rush_yd=20,
+                fantasy_points=fp,
+            ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        # Week 2 opponent is NYJ (allowed 15.0 fpts — best defense)
+        criteria = builder.build_weekly_criteria(qb.id, week=2, year=2024)
+
+        # NYJ allowed least fpts → rank 1 → opponent_defense_level near 0
+        assert criteria.opposing_defense_vs_position_rank == 1
+        assert criteria.opponent_defense_level == pytest.approx(0.0, abs=1.0)
+
+    def test_momentum_works_with_computed_weekly_stats(self, db):
+        """Offensive momentum should work when weekly team stats are computed."""
+        team = DBTeam(team_id="tint3", name="IntTeam3", owner="O")
+        db.add(team)
+        db.flush()
+
+        qb = DBPlayer(player_id="intqb4", name="QB4", position="QB",
+                       nfl_team="HOU", team_id=team.id,
+                       stats={'age': 24})
+        db.add(qb)
+        db.flush()
+
+        db.add(DBPlayerSeasonStats(
+            player_id=qb.id, year=2024, games_played=8,
+            pass_att=250, fantasy_points_total=160.0, fantasy_points_avg=20.0,
+        ))
+
+        # First 4 weeks: low scoring; Last 4 weeks: high scoring
+        for wk in range(1, 9):
+            fpts = 10.0 if wk <= 4 else 30.0
+            yards = 150 if wk <= 4 else 350
+            db.add(DBPlayerGameLog(
+                player_id=qb.id, year=2024, week=wk,
+                opponent=f"T{wk}",
+                pass_yd=yards, pass_td=2 if wk <= 4 else 4,
+                rush_yd=20,
+                fantasy_points=fpts,
+            ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        criteria = builder.build_weekly_criteria(qb.id, week=8, year=2024)
+
+        # Recent weeks have higher scoring → positive momentum
+        assert criteria.offensive_momentum_score > 0
