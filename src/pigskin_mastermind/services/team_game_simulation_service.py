@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from pigskin_mastermind.models.database import (
     DBPlayer, DBTeam, DBWeeklyPlayerStats, DBWeeklyTeamStats,
+    DEFAULT_SCORING_SETTINGS,
 )
 from pigskin_mastermind.services.player_game_simulation_service import (
     PlayerGameSimulationService,
@@ -59,12 +60,14 @@ class TeamGameSimulationService:
         team_db_id: int,
         year: int,
         week: int,
+        scoring_settings: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """Build a unified team simulation for one week.
 
         Returns a payload with merged timeline events from all active players,
         each tagged with player identity.
         """
+        scoring = scoring_settings or DEFAULT_SCORING_SETTINGS
         team = self.db.query(DBTeam).filter_by(id=team_db_id).first()
         if not team:
             raise ValueError(f"Team with id={team_db_id} not found")
@@ -112,10 +115,10 @@ class TeamGameSimulationService:
             players_meta.append(meta)
 
         # Merge all events into unified timeline
-        merged_events = self._merge_events(player_sims, active_players)
+        merged_events = self._merge_events(player_sims, active_players, scoring)
 
         # Compute team totals from final snapshots
-        team_stats = self._compute_team_stats(merged_events, active_players)
+        team_stats = self._compute_team_stats(merged_events, active_players, scoring)
 
         return {
             "team_id": team_db_id,
@@ -126,6 +129,7 @@ class TeamGameSimulationService:
             "total_events": len(merged_events),
             "events": merged_events,
             "team_stats": team_stats,
+            "scoring_settings": scoring,
         }
 
     def _get_active_players(
@@ -157,6 +161,7 @@ class TeamGameSimulationService:
         self,
         player_sims: List[Dict[str, Any]],
         players: List[DBPlayer],
+        scoring: Dict[str, float],
     ) -> List[Dict[str, Any]]:
         """Merge events from all players into chronological order."""
         all_events: List[Dict[str, Any]] = []
@@ -186,8 +191,7 @@ class TeamGameSimulationService:
             # Build team running fantasy points
             pid = event["player_id"]
             snapshot = event.get("stats_snapshot", {})
-            # Approximate fantasy points from snapshot
-            fpts = self._estimate_fantasy_points(snapshot)
+            fpts = self._estimate_fantasy_points(snapshot, scoring)
             team_running[pid] = fpts
             event["team_fantasy_points"] = round(
                 sum(team_running.values()), 1
@@ -199,6 +203,7 @@ class TeamGameSimulationService:
         self,
         merged_events: List[Dict[str, Any]],
         players: List[DBPlayer],
+        scoring: Dict[str, float],
     ) -> Dict[str, Any]:
         """Compute team-level summary stats from final event snapshots."""
         # Collect the last snapshot per player
@@ -229,7 +234,7 @@ class TeamGameSimulationService:
             totals["total_tds"] += snap.get("total_tds", 0)
             totals["total_first_downs"] += snap.get("first_downs", 0)
             totals["total_epa"] += snap.get("total_epa", 0.0)
-            totals["total_fantasy_points"] += self._estimate_fantasy_points(snap)
+            totals["total_fantasy_points"] += self._estimate_fantasy_points(snap, scoring)
 
         totals["total_epa"] = round(totals["total_epa"], 2)
         totals["total_fantasy_points"] = round(totals["total_fantasy_points"], 1)
@@ -237,15 +242,21 @@ class TeamGameSimulationService:
         return totals
 
     @staticmethod
-    def _estimate_fantasy_points(snapshot: Dict[str, Any]) -> float:
-        """Rough PPR fantasy points estimate from a stats snapshot."""
+    def _estimate_fantasy_points(
+        snapshot: Dict[str, Any],
+        scoring: Optional[Dict[str, float]] = None,
+    ) -> float:
+        """Estimate fantasy points from a stats snapshot using scoring settings."""
+        s = scoring or DEFAULT_SCORING_SETTINGS
         pts = 0.0
-        pts += (snapshot.get("pass_yards", 0) or 0) * 0.04
-        pts += (snapshot.get("pass_tds", 0) or 0) * 4
-        pts += (snapshot.get("pass_interceptions", 0) or 0) * -2
-        pts += (snapshot.get("rush_yards", 0) or 0) * 0.1
-        pts += (snapshot.get("rush_tds", 0) or 0) * 6
-        pts += (snapshot.get("receptions", 0) or 0) * 1  # PPR
-        pts += (snapshot.get("rec_yards", 0) or 0) * 0.1
-        pts += (snapshot.get("rec_tds", 0) or 0) * 6
+        pts += (snapshot.get("pass_yards", 0) or 0) * s.get("pass_yd", 0.04)
+        pts += (snapshot.get("pass_tds", 0) or 0) * s.get("pass_td", 4)
+        pts += (snapshot.get("pass_interceptions", 0) or 0) * s.get("pass_int", -2)
+        pts += (snapshot.get("rush_yards", 0) or 0) * s.get("rush_yd", 0.1)
+        pts += (snapshot.get("rush_tds", 0) or 0) * s.get("rush_td", 6)
+        pts += (snapshot.get("receptions", 0) or 0) * s.get("rec", 0.5)
+        pts += (snapshot.get("rec_yards", 0) or 0) * s.get("rec_yd", 0.1)
+        pts += (snapshot.get("rec_tds", 0) or 0) * s.get("rec_td", 6)
+        pts += (snapshot.get("fumbles_lost", 0) or 0) * s.get("fumbles_lost", -2)
+        pts += (snapshot.get("two_pt_conversions", 0) or 0) * s.get("two_pt", 2)
         return round(pts, 1)

@@ -238,5 +238,29 @@ class DBLeague(Base):
     year = Column(Integer, nullable=False)
     espn_s2 = Column(String, nullable=True)
     swid = Column(String, nullable=True)
+    scoring_settings = Column(JSON, nullable=True)
     last_synced_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+DEFAULT_SCORING_SETTINGS = {
+    "pass_yd": 0.04,
+    "pass_td": 4,
+    "pass_int": -2,
+    "rush_yd": 0.1,
+    "rush_td": 6,
+    "rec": 0.5,
+    "rec_yd": 0.1,
+    "rec_td": 6,
+    "fumbles_lost": -2,
+    "two_pt": 2,
+}
+
+
+def get_scoring_settings(league: DBLeague = None) -> dict:
+    """Return scoring settings from a league, falling back to 0.5 PPR defaults."""
+    if league and league.scoring_settings:
+        merged = dict(DEFAULT_SCORING_SETTINGS)
+        merged.update(league.scoring_settings)
+        return merged
+    return dict(DEFAULT_SCORING_SETTINGS)

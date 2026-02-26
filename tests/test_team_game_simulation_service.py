@@ -365,8 +365,8 @@ class TestSortKeyForEvent:
 
 
 class TestEstimateFantasyPoints:
-    def test_ppr_scoring(self):
-        """Check PPR fantasy points calculation."""
+    def test_half_ppr_scoring_default(self):
+        """Check default 0.5 PPR fantasy points calculation."""
         pts = TeamGameSimulationService._estimate_fantasy_points({
             "pass_yards": 300,
             "pass_tds": 2,
@@ -375,7 +375,18 @@ class TestEstimateFantasyPoints:
             "rec_yards": 50,
             "rec_tds": 1,
         })
-        expected = 300 * 0.04 + 2 * 4 + 30 * 0.1 + 5 * 1 + 50 * 0.1 + 1 * 6
+        expected = 300 * 0.04 + 2 * 4 + 30 * 0.1 + 5 * 0.5 + 50 * 0.1 + 1 * 6
+        assert pts == round(expected, 1)
+
+    def test_custom_scoring(self):
+        """Check custom scoring settings are applied."""
+        custom = {"pass_yd": 0.05, "pass_td": 6, "rec": 1.0, "rec_yd": 0.1, "rec_td": 6,
+                  "rush_yd": 0.1, "rush_td": 6, "pass_int": -2, "fumbles_lost": -2, "two_pt": 2}
+        pts = TeamGameSimulationService._estimate_fantasy_points(
+            {"pass_yards": 200, "pass_tds": 1, "receptions": 3},
+            scoring=custom,
+        )
+        expected = 200 * 0.05 + 1 * 6 + 3 * 1.0
         assert pts == round(expected, 1)
 
     def test_empty_snapshot(self):

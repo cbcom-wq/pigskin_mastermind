@@ -20,12 +20,46 @@ from pigskin_mastermind.models.database import (
 )
 from pigskin_mastermind.services.espn_stats_mapper import map_espn_breakdown_to_stats
 
+# ESPN stat ID → internal scoring key mapping
+ESPN_STAT_ID_TO_SCORING_KEY = {
+    3: "pass_yd",
+    4: "pass_td",
+    20: "pass_int",
+    24: "rush_yd",
+    25: "rush_td",
+    41: "rec",
+    42: "rec_yd",
+    43: "rec_td",
+    72: "fumbles_lost",
+    62: "two_pt",
+}
+
 
 class ESPNSyncService:
     """Service for syncing data with ESPN Fantasy API"""
 
     def __init__(self, db: Session):
         self.db = db
+
+    @staticmethod
+    def extract_scoring_settings(espn_league) -> dict:
+        """Extract scoring settings from an ESPN League object.
+
+        Maps ESPN scoring_format stat IDs to our internal keys.
+        Returns a dict like {'pass_yd': 0.04, 'rec': 0.5, ...}.
+        """
+        settings = {}
+        scoring_format = getattr(
+            getattr(espn_league, "settings", None), "scoring_format", None
+        )
+        if not scoring_format:
+            return settings
+        for item in scoring_format:
+            stat_id = item.get("id")
+            if stat_id in ESPN_STAT_ID_TO_SCORING_KEY:
+                key = ESPN_STAT_ID_TO_SCORING_KEY[stat_id]
+                settings[key] = item.get("points", 0)
+        return settings
 
     def import_team(
         self,

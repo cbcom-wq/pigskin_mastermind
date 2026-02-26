@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 
 from pigskin_mastermind.api.database import get_db
-from pigskin_mastermind.models.database import DBPlayer, DBLeague
+from pigskin_mastermind.models.database import DBPlayer, DBLeague, DBTeam, get_scoring_settings
 from pigskin_mastermind.services.stats_service import StatsService
 from pigskin_mastermind.services.projection_criteria_builder import ProjectionCriteriaBuilder
 
@@ -193,9 +193,20 @@ async def get_player_game_simulation(
         PlayerGameSimulationService,
     )
 
+    # Resolve scoring settings from the player's league
+    player = db.query(DBPlayer).filter_by(id=player_id).first()
+    league = None
+    if player and player.team_id:
+        team = db.query(DBTeam).filter_by(id=player.team_id).first()
+        if team and team.league_id:
+            league = db.query(DBLeague).filter_by(league_id=team.league_id).first()
+    scoring = get_scoring_settings(league)
+
     service = PlayerGameSimulationService(db)
     try:
-        return service.build_simulation(player_db_id=player_id, year=year, week=week)
+        result = service.build_simulation(player_db_id=player_id, year=year, week=week)
+        result["scoring_settings"] = scoring
+        return result
     except ImportError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except ValueError as exc:
@@ -214,10 +225,18 @@ async def get_team_game_simulation(
         TeamGameSimulationService,
     )
 
+    # Resolve scoring settings from the team's league
+    team = db.query(DBTeam).filter_by(id=team_db_id).first()
+    league = None
+    if team and team.league_id:
+        league = db.query(DBLeague).filter_by(league_id=team.league_id).first()
+    scoring = get_scoring_settings(league)
+
     service = TeamGameSimulationService(db)
     try:
         return service.build_team_simulation(
-            team_db_id=team_db_id, year=year, week=week
+            team_db_id=team_db_id, year=year, week=week,
+            scoring_settings=scoring,
         )
     except ImportError as exc:
         raise HTTPException(status_code=503, detail=str(exc))

@@ -53,16 +53,8 @@ class Player:
             Calculated fantasy points
         """
         if scoring_settings is None:
-            # Default scoring settings
-            scoring_settings = {
-                'pass_yd': 0.04,
-                'pass_td': 4,
-                'rush_yd': 0.1,
-                'rush_td': 6,
-                'rec': 1,  # PPR
-                'rec_yd': 0.1,
-                'rec_td': 6,
-            }
+            from pigskin_mastermind.models.database import DEFAULT_SCORING_SETTINGS
+            scoring_settings = DEFAULT_SCORING_SETTINGS
         
         points = 0.0
         for stat, value in self.stats.items():

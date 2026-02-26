@@ -354,6 +354,7 @@ let simPlaying = false;
 let simSpeed = 1.0;
 let allRoutesMode = false;
 const simBaseDelay = 1400;
+let simScoringSettings = null;
 
 const VB_W = 400;
 const VB_H = 300;
@@ -912,6 +913,7 @@ async function loadSimulation() {
 
         simEvents = data.events || [];
         simPlayers = data.players || [];
+        simScoringSettings = data.scoring_settings || null;
         simCurrentIndex = 0;
         _q('sim-progress').max = String(Math.max(0, simEvents.length - 1));
         _q('sim-progress').value = '0';
@@ -950,15 +952,18 @@ const CONFETTI_COLORS = ['#fbbf24','#34d399','#60a5fa','#f472b6','#a78bfa','#fb9
 
 function estimatePlayFpts(snapshot, prevSnapshot) {
     function calc(s) {
+        const sc = simScoringSettings || {};
         let p = 0;
-        p += (_def(s.pass_yards, 0)) * 0.04;
-        p += (_def(s.pass_tds, 0)) * 4;
-        p += (_def(s.pass_interceptions, 0)) * -2;
-        p += (_def(s.rush_yards, 0)) * 0.1;
-        p += (_def(s.rush_tds, 0)) * 6;
-        p += (_def(s.receptions, 0)) * 1;
-        p += (_def(s.rec_yards, 0)) * 0.1;
-        p += (_def(s.rec_tds, 0)) * 6;
+        p += (_def(s.pass_yards, 0)) * (sc.pass_yd != null ? sc.pass_yd : 0.04);
+        p += (_def(s.pass_tds, 0)) * (sc.pass_td != null ? sc.pass_td : 4);
+        p += (_def(s.pass_interceptions, 0)) * (sc.pass_int != null ? sc.pass_int : -2);
+        p += (_def(s.rush_yards, 0)) * (sc.rush_yd != null ? sc.rush_yd : 0.1);
+        p += (_def(s.rush_tds, 0)) * (sc.rush_td != null ? sc.rush_td : 6);
+        p += (_def(s.receptions, 0)) * (sc.rec != null ? sc.rec : 0.5);
+        p += (_def(s.rec_yards, 0)) * (sc.rec_yd != null ? sc.rec_yd : 0.1);
+        p += (_def(s.rec_tds, 0)) * (sc.rec_td != null ? sc.rec_td : 6);
+        p += (_def(s.fumbles_lost, 0)) * (sc.fumbles_lost != null ? sc.fumbles_lost : -2);
+        p += (_def(s.two_pt_conversions, 0)) * (sc.two_pt != null ? sc.two_pt : 2);
         return p;
     }
     return Math.round((calc(snapshot || {}) - calc(prevSnapshot || {})) * 10) / 10;

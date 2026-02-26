@@ -7,9 +7,22 @@ from datetime import datetime
 import json
 
 from pigskin_mastermind.api.database import get_db
-from pigskin_mastermind.models.database import DBLeague, DBTeam
+from pigskin_mastermind.models.database import DBLeague, DBTeam, DEFAULT_SCORING_SETTINGS, get_scoring_settings
 
 router = APIRouter(prefix="/settings", tags=["settings"])
+
+SCORING_LABELS = {
+    "pass_yd": "Passing Yards (per yard)",
+    "pass_td": "Passing TD",
+    "pass_int": "Interception Thrown",
+    "rush_yd": "Rushing Yards (per yard)",
+    "rush_td": "Rushing TD",
+    "rec": "Reception",
+    "rec_yd": "Receiving Yards (per yard)",
+    "rec_td": "Receiving TD",
+    "fumbles_lost": "Fumble Lost",
+    "two_pt": "2-Point Conversion",
+}
 
 
 def _toast_response(message: str, type: str = "success"):
@@ -25,9 +38,19 @@ async def settings_page(request: Request, db: Session = Depends(get_db)):
     """ESPN settings page."""
     from pigskin_mastermind.api.main import templates
     leagues = db.query(DBLeague).order_by(DBLeague.created_at.desc()).all()
+    # Attach resolved scoring settings to each league for the template
+    leagues_scoring = {
+        league.id: get_scoring_settings(league) for league in leagues
+    }
     return templates.TemplateResponse(
         "settings/espn.html",
-        {"request": request, "leagues": leagues}
+        {
+            "request": request,
+            "leagues": leagues,
+            "leagues_scoring": leagues_scoring,
+            "scoring_labels": SCORING_LABELS,
+            "default_scoring": DEFAULT_SCORING_SETTINGS,
+        }
     )
 
 
@@ -122,6 +145,11 @@ async def sync_league(league_db_id: int, db: Session = Depends(get_db)):
             )
             count += 1
 
+        # Extract and save scoring settings from ESPN
+        scoring = sync_service.extract_scoring_settings(espn_league)
+        if scoring:
+            league.scoring_settings = scoring
+
         league.last_synced_at = datetime.utcnow()
         db.commit()
 
@@ -207,3 +235,29 @@ async def import_full_season(db: Session = Depends(get_db)):
         )
     except Exception as e:
         return _toast_response(f"Full-season import failed: {str(e)}", "error")
+
+
+@router.post("/scoring/{league_db_id}")
+async def save_scoring_settings(
+    league_db_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Save scoring settings for a league."""
+    league = db.query(DBLeague).filter_by(id=league_db_id).first()
+    if not league:
+        raise HTTPException(status_code=404, detail="League not found")
+
+    form = await request.form()
+    settings = {}
+    for key in DEFAULT_SCORING_SETTINGS:
+        val = form.get(key)
+        if val is not None:
+            try:
+                settings[key] = float(val)
+            except ValueError:
+                pass
+
+    league.scoring_settings = settings
+    db.commit()
+    return _toast_response("Scoring settings saved!", "success")
