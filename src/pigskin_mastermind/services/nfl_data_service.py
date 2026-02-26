@@ -2,8 +2,9 @@
 
 import csv
 import io
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from datetime import datetime
+import pandas as pd
 from sqlalchemy.orm import Session
 
 try:
@@ -14,6 +15,25 @@ except ImportError:
 from pigskin_mastermind.models.database import (
     DBPlayer, DBPlayerGameLog, DBPlayerSeasonStats, DBNFLTeamStats
 )
+
+# Columns to pull from the PBP dataset — keeps payload small
+_PBP_COLUMNS = [
+    'play_id', 'game_id', 'week', 'season',
+    'quarter_seconds_remaining', 'game_seconds_remaining',
+    'qtr', 'down', 'ydstogo', 'yardline_100',
+    'posteam', 'defteam',
+    'desc', 'play_type',
+    'yards_gained', 'air_yards', 'yards_after_catch',
+    'epa',
+    'passer_player_id', 'passer_player_name',
+    'rusher_player_id', 'rusher_player_name',
+    'receiver_player_id', 'receiver_player_name',
+    'sack', 'touchdown', 'interception',
+    'first_down_rush', 'first_down_pass',
+    'penalty', 'penalty_team', 'penalty_yards',
+    'total_home_score', 'total_away_score',
+    'home_team', 'away_team',
+]
 
 
 class NFLDataService:
@@ -312,6 +332,102 @@ class NFLDataService:
             db_player.updated_at = datetime.utcnow()
 
         self.db.commit()
+
+    def get_play_by_play(
+        self,
+        player_db_id: int,
+        year: int,
+        week: int,
+    ) -> List[Dict[str, Any]]:
+        """Return play-by-play entries involving *player_db_id* for a given week.
+
+        Queries ``nfl_data_py.import_pbp_data`` using a limited column set for
+        performance.  A player is considered *involved* in a play when their
+        GSIS id appears as passer, rusher, or receiver.
+
+        Live / in-progress games are supported: ``nfl_data_py`` pulls from the
+        NFL endpoint so data is as current as the upstream source.
+
+        Args:
+            player_db_id: The integer primary key of the ``DBPlayer`` record.
+            year: NFL season year (e.g. 2024).
+            week: Regular-season week number (1-18).
+
+        Returns:
+            List of dicts, one per play, sorted by ``game_seconds_remaining``
+            descending (earliest plays first).
+
+        Raises:
+            ImportError: If ``nfl_data_py`` is not installed.
+            ValueError: If the player is not found or has no GSIS id.
+        """
+        if nfl is None:
+            raise ImportError(
+                "nfl_data_py is not installed. Run: pip install nfl_data_py"
+            )
+
+        db_player = self.db.query(DBPlayer).filter_by(id=player_db_id).first()
+        if not db_player:
+            raise ValueError(f"Player with id={player_db_id} not found")
+
+        # Extract the raw GSIS id stored as "nfl_<gsis_id>"
+        player_id_str = db_player.player_id
+        if player_id_str.startswith("nfl_"):
+            gsis_id = player_id_str[4:]
+        else:
+            gsis_id = player_id_str
+
+        # Request only the columns we need; fall back to all if library raises
+        try:
+            df = nfl.import_pbp_data([year], columns=_PBP_COLUMNS, downcast=False)
+        except Exception:
+            df = nfl.import_pbp_data([year], downcast=False)
+
+        # Filter to the requested week
+        if 'week' in df.columns:
+            df = df[df['week'] == week]
+
+        if df.empty:
+            return []
+
+        # Filter to plays where this player is passer, rusher, or receiver
+        mask = (
+            (df.get('passer_player_id', '') == gsis_id)
+            | (df.get('rusher_player_id', '') == gsis_id)
+            | (df.get('receiver_player_id', '') == gsis_id)
+        )
+        player_df = df[mask]
+
+        if player_df.empty:
+            return []
+
+        # Sort: earliest plays first (highest game_seconds_remaining first)
+        if 'game_seconds_remaining' in player_df.columns:
+            player_df = player_df.sort_values(
+                'game_seconds_remaining', ascending=False
+            )
+
+        plays: List[Dict[str, Any]] = []
+        for _, row in player_df.iterrows():
+            play: Dict[str, Any] = {}
+            for col in player_df.columns:
+                val = row.get(col)
+                # Convert numpy/pandas scalar types to plain Python
+                if hasattr(val, 'item'):
+                    try:
+                        val = val.item()
+                    except (ValueError, AttributeError):
+                        val = None
+                # Replace NaN with None
+                try:
+                    if pd.isna(val):
+                        val = None
+                except (TypeError, ValueError):
+                    pass
+                play[col] = val
+            plays.append(play)
+
+        return plays
 
     def import_adp_from_csv(
         self,

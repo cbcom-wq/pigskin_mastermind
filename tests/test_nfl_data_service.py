@@ -291,3 +291,222 @@ class TestImportADPFromCSV:
         service = NFLDataService(db)
         count = service.import_adp_from_csv(str(csv_file), year=2024)
         assert count == 1
+
+
+def _make_pbp_df(gsis_id='GSIS001'):
+    """Create a minimal PBP DataFrame for testing."""
+    return pd.DataFrame([
+        {
+            'play_id': 1,
+            'game_id': 'test_game',
+            'week': 3,
+            'season': 2024,
+            'qtr': 1,
+            'down': 1,
+            'ydstogo': 10,
+            'yardline_100': 75,
+            'quarter_seconds_remaining': 600,
+            'game_seconds_remaining': 3000,
+            'posteam': 'KC',
+            'defteam': 'DEN',
+            'home_team': 'KC',
+            'away_team': 'DEN',
+            'desc': 'Test QB pass to Test WR for 12 yards',
+            'play_type': 'pass',
+            'yards_gained': 12,
+            'air_yards': 8.0,
+            'yards_after_catch': 4.0,
+            'epa': 0.5,
+            'passer_player_id': gsis_id,
+            'passer_player_name': 'Test QB',
+            'rusher_player_id': None,
+            'rusher_player_name': None,
+            'receiver_player_id': 'GSIS003',
+            'receiver_player_name': 'Test WR',
+            'sack': 0,
+            'touchdown': 0,
+            'interception': 0,
+            'first_down_rush': 0,
+            'first_down_pass': 1,
+            'penalty': 0,
+            'penalty_team': None,
+            'penalty_yards': 0,
+            'total_home_score': 7,
+            'total_away_score': 0,
+        },
+        {
+            'play_id': 2,
+            'game_id': 'test_game',
+            'week': 3,
+            'season': 2024,
+            'qtr': 2,
+            'down': 2,
+            'ydstogo': 5,
+            'yardline_100': 40,
+            'quarter_seconds_remaining': 300,
+            'game_seconds_remaining': 1800,
+            'posteam': 'KC',
+            'defteam': 'DEN',
+            'home_team': 'KC',
+            'away_team': 'DEN',
+            'desc': 'Test QB sacked for -7 yards',
+            'play_type': 'pass',
+            'yards_gained': -7,
+            'air_yards': None,
+            'yards_after_catch': None,
+            'epa': -1.2,
+            'passer_player_id': gsis_id,
+            'passer_player_name': 'Test QB',
+            'rusher_player_id': None,
+            'rusher_player_name': None,
+            'receiver_player_id': None,
+            'receiver_player_name': None,
+            'sack': 1,
+            'touchdown': 0,
+            'interception': 0,
+            'first_down_rush': 0,
+            'first_down_pass': 0,
+            'penalty': 0,
+            'penalty_team': None,
+            'penalty_yards': 0,
+            'total_home_score': 7,
+            'total_away_score': 0,
+        },
+        # A play NOT involving the player
+        {
+            'play_id': 3,
+            'game_id': 'test_game',
+            'week': 3,
+            'season': 2024,
+            'qtr': 3,
+            'down': 1,
+            'ydstogo': 10,
+            'yardline_100': 60,
+            'quarter_seconds_remaining': 800,
+            'game_seconds_remaining': 900,
+            'posteam': 'DEN',
+            'defteam': 'KC',
+            'home_team': 'KC',
+            'away_team': 'DEN',
+            'desc': 'Other RB runs for 5 yards',
+            'play_type': 'run',
+            'yards_gained': 5,
+            'air_yards': None,
+            'yards_after_catch': None,
+            'epa': 0.1,
+            'passer_player_id': None,
+            'passer_player_name': None,
+            'rusher_player_id': 'OTHER_PLAYER',
+            'rusher_player_name': 'Other RB',
+            'receiver_player_id': None,
+            'receiver_player_name': None,
+            'sack': 0,
+            'touchdown': 0,
+            'interception': 0,
+            'first_down_rush': 0,
+            'first_down_pass': 0,
+            'penalty': 0,
+            'penalty_team': None,
+            'penalty_yards': 0,
+            'total_home_score': 7,
+            'total_away_score': 7,
+        },
+    ])
+
+
+class TestGetPlayByPlay:
+    def _seed_player(self, db, gsis_id='GSIS001'):
+        player = DBPlayer(
+            player_id=f"nfl_{gsis_id}",
+            name='Test QB',
+            position='QB',
+            nfl_team='KC',
+        )
+        db.add(player)
+        db.commit()
+        return player
+
+    def test_returns_only_player_plays(self, db):
+        player = self._seed_player(db)
+        nfl_data_service_module.nfl.import_pbp_data.return_value = _make_pbp_df('GSIS001')
+
+        service = NFLDataService(db)
+        plays = service.get_play_by_play(player.id, year=2024, week=3)
+
+        # Only plays 1 and 2 involve GSIS001; play 3 involves a different player
+        assert len(plays) == 2
+        play_ids = {p['play_id'] for p in plays}
+        assert play_ids == {1, 2}
+
+    def test_sorted_earliest_first(self, db):
+        player = self._seed_player(db)
+        nfl_data_service_module.nfl.import_pbp_data.return_value = _make_pbp_df('GSIS001')
+
+        service = NFLDataService(db)
+        plays = service.get_play_by_play(player.id, year=2024, week=3)
+
+        # game_seconds_remaining: play 1 = 3000 > play 2 = 1800 → play 1 first
+        assert plays[0]['play_id'] == 1
+        assert plays[1]['play_id'] == 2
+
+    def test_empty_when_no_matching_plays(self, db):
+        player = self._seed_player(db, gsis_id='NOBODY')
+        nfl_data_service_module.nfl.import_pbp_data.return_value = _make_pbp_df('GSIS001')
+
+        service = NFLDataService(db)
+        plays = service.get_play_by_play(player.id, year=2024, week=3)
+
+        assert plays == []
+
+    def test_empty_when_wrong_week(self, db):
+        player = self._seed_player(db)
+        nfl_data_service_module.nfl.import_pbp_data.return_value = _make_pbp_df('GSIS001')
+
+        service = NFLDataService(db)
+        plays = service.get_play_by_play(player.id, year=2024, week=99)
+
+        assert plays == []
+
+    def test_raises_value_error_for_unknown_player(self, db):
+        service = NFLDataService(db)
+        with pytest.raises(ValueError, match="not found"):
+            service.get_play_by_play(player_db_id=9999, year=2024, week=1)
+
+    def test_raises_import_error_when_nfl_missing(self, db):
+        player = self._seed_player(db)
+        original = nfl_data_service_module.nfl
+        nfl_data_service_module.nfl = None
+        try:
+            service = NFLDataService(db)
+            with pytest.raises(ImportError, match="nfl_data_py"):
+                service.get_play_by_play(player.id, year=2024, week=1)
+        finally:
+            nfl_data_service_module.nfl = original
+
+    def test_nan_values_converted_to_none(self, db):
+        player = self._seed_player(db)
+        nfl_data_service_module.nfl.import_pbp_data.return_value = _make_pbp_df('GSIS001')
+
+        service = NFLDataService(db)
+        plays = service.get_play_by_play(player.id, year=2024, week=3)
+
+        # air_yards for the sack play (play_id=2) was None in the fixture;
+        # it must come back as Python None, not float NaN.
+        sack_play = next(p for p in plays if p['play_id'] == 2)
+        assert sack_play['air_yards'] is None
+
+    def test_player_id_without_nfl_prefix(self, db):
+        """Players stored without 'nfl_' prefix should still resolve."""
+        player = DBPlayer(
+            player_id='GSIS001',  # no nfl_ prefix
+            name='Test QB',
+            position='QB',
+            nfl_team='KC',
+        )
+        db.add(player)
+        db.commit()
+        nfl_data_service_module.nfl.import_pbp_data.return_value = _make_pbp_df('GSIS001')
+
+        service = NFLDataService(db)
+        plays = service.get_play_by_play(player.id, year=2024, week=3)
+        assert len(plays) == 2
