@@ -1,11 +1,10 @@
 {% extends "base.html" %}
 
-{% block title %}{{ player.name }} Game Simulation — Pigskin Mastermind{% endblock %}
-{% block page_title %}Game Simulation{% endblock %}
+{% block title %}{{ team.name }} Team Simulation — Pigskin Mastermind{% endblock %}
+{% block page_title %}Team Simulation{% endblock %}
 
 {% block content %}
 <style>
-    /* ── Route-chart field ─────────────────────────────────────────────── */
     .route-field-wrapper {
         perspective: 900px;
         perspective-origin: 50% 100%;
@@ -21,7 +20,6 @@
     .route-field-svg {
         background: #1a2a1a;
     }
-    /* route line styles */
     .route-line {
         fill: none;
         stroke-width: 1.6;
@@ -33,8 +31,6 @@
     .route-line.incomplete-segment { stroke: #9ca3af; stroke-dasharray: 4 3; }
     .route-line.sack-segment    { stroke: #ef4444; stroke-dasharray: 3 2; }
     .route-line.rush-segment    { stroke: #facc15; }
-
-    /* animate drawing */
     .route-line.animate-draw {
         stroke-dasharray: var(--route-len, 500);
         stroke-dashoffset: var(--route-len, 500);
@@ -43,55 +39,33 @@
     @keyframes drawRoute {
         to { stroke-dashoffset: 0; }
     }
-
-    .route-endpoint {
-        transition: opacity 0.3s ease;
-    }
-
-    /* Headshot marker at route tip */
-    .headshot-marker {
-        filter: drop-shadow(0 0 4px rgba(59,130,246,0.5));
-        transition: opacity 0.3s ease;
-    }
+    .route-endpoint { transition: opacity 0.3s ease; }
+    .headshot-marker { filter: drop-shadow(0 0 4px rgba(59,130,246,0.5)); transition: opacity 0.3s ease; }
     @keyframes headshotPulse {
         0%, 100% { filter: drop-shadow(0 0 4px rgba(59,130,246,0.5)); }
         50% { filter: drop-shadow(0 0 8px rgba(59,130,246,0.8)); }
     }
-    .headshot-marker.animate {
-        animation: headshotPulse 1.2s ease-in-out infinite;
-    }
-
-    /* Legend chip */
-    .legend-chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 10px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-    }
-    .legend-chip .swatch {
-        width: 18px;
-        height: 3px;
-        border-radius: 2px;
-    }
+    .headshot-marker.animate { animation: headshotPulse 1.2s ease-in-out infinite; }
+    .legend-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    .legend-chip .swatch { width: 18px; height: 3px; border-radius: 2px; }
+    .roster-player { transition: all 0.2s ease; }
+    .roster-player.active-player { background-color: #f0fdf4; border-color: #22c55e; }
 </style>
 
 <div class="max-w-7xl mx-auto space-y-5">
-    <a href="/players/{{ player.id }}{% if back_url %}?back={{ back_url | urlencode }}{% endif %}"
+    <a href="{{ back_url or '/teams/' ~ team.id }}"
        class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 transition-colors">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
-        Back to Player Profile
+        Back to Team
     </a>
 
     <!-- Header -->
     <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
         <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
             <div>
-                <p class="text-xs font-semibold uppercase tracking-wider text-slate-400">Entertainment Simulation</p>
-                <h2 class="text-2xl font-bold text-slate-800 mt-1">{{ player.name }}</h2>
-                <p class="text-sm text-slate-500">{{ player.position }} · {{ player.nfl_team }}</p>
+                <p class="text-xs font-semibold uppercase tracking-wider text-slate-400">Team Entertainment Simulation</p>
+                <h2 class="text-2xl font-bold text-slate-800 mt-1">{{ team.name }}</h2>
+                <p class="text-sm text-slate-500">Week {{ week }} · {{ roster|selectattr('is_active')|list|length }} Active Players</p>
             </div>
             <div class="flex flex-wrap items-end gap-3">
                 <div class="flex flex-col gap-1">
@@ -101,7 +75,7 @@
                 </div>
                 <div class="flex flex-col gap-1">
                     <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Week</label>
-                    <input id="sim-week" type="number" min="1" max="22" value="{{ default_week }}"
+                    <input id="sim-week" type="number" min="1" max="22" value="{{ week }}"
                            class="w-20 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-pigskin-400">
                 </div>
                 <button id="sim-load-btn" onclick="loadSimulation()"
@@ -110,18 +84,15 @@
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
                         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                     </svg>
-                    Load Simulation
+                    Load Team Simulation
                 </button>
-                <span id="sim-live-badge" class="hidden items-center gap-1 px-2 py-1 rounded-full bg-field-100 text-field-700 text-xs font-semibold">
-                    <span class="w-2 h-2 rounded-full bg-field-500 animate-pulse inline-block"></span>
-                    Live-capable
-                </span>
             </div>
         </div>
     </div>
 
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        <div class="lg:col-span-2 space-y-4">
+    <div class="grid grid-cols-1 lg:grid-cols-4 gap-5">
+        <!-- Field + Controls (3 cols) -->
+        <div class="lg:col-span-3 space-y-4">
             <!-- Route chart field -->
             <div class="bg-slate-900 rounded-xl shadow-sm border border-slate-700 p-4">
                 <div class="flex items-center justify-between mb-3">
@@ -157,22 +128,15 @@
                                 <marker id="arrow-red" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
                                     <path d="M0,0 L6,2 L0,4" fill="#ef4444"/>
                                 </marker>
-                                <!-- Headshot clip path and pattern -->
                                 <clipPath id="headshot-clip">
                                     <circle cx="0" cy="0" r="10"/>
                                 </clipPath>
                             </defs>
-                            <!-- Field background & lines (drawn by JS) -->
                             <g id="svg-field-bg"></g>
-                            <!-- LOS -->
                             <g id="svg-los-group"></g>
-                            <!-- Route traces -->
                             <g id="svg-routes"></g>
-                            <!-- Player marker / endpoints -->
                             <g id="svg-endpoints"></g>
-                            <!-- Headshot marker -->
                             <g id="svg-headshot"></g>
-                            <!-- Labels -->
                             <g id="svg-labels"></g>
                         </svg>
                     </div>
@@ -189,13 +153,6 @@
                         <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="none" stroke="#3b82f6" stroke-width="2"/><circle cx="7" cy="7" r="2" fill="#3b82f6"/></svg>
                         Touchdown
                     </span>
-                    <span class="legend-chip text-slate-500"><span class="swatch bg-blue-500 rounded"></span> LOS</span>
-                    {% if player.headshot_url %}
-                    <span class="legend-chip text-slate-500">
-                        <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="none" stroke="#3b82f6" stroke-width="1.5"/><circle cx="7" cy="7" r="4" fill="#64748b"/></svg>
-                        Player
-                    </span>
-                    {% endif %}
                 </div>
             </div>
 
@@ -229,7 +186,7 @@
 
             <!-- Play description -->
             <div id="sim-current-play" class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 text-sm text-slate-500">
-                Select year/week and load a simulation.
+                Select year/week and load a team simulation.
             </div>
 
             <!-- Play Timeline table -->
@@ -242,6 +199,7 @@
                         <thead>
                             <tr class="bg-slate-50 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
                                 <th class="px-3 py-2">#</th>
+                                <th class="px-3 py-2">Player</th>
                                 <th class="px-3 py-2">Time</th>
                                 <th class="px-3 py-2">Type</th>
                                 <th class="px-3 py-2">Description</th>
@@ -249,17 +207,25 @@
                             </tr>
                         </thead>
                         <tbody id="sim-play-table-body">
-                            <tr><td colspan="5" class="px-4 py-6 text-center text-sm text-slate-400">No simulation loaded yet</td></tr>
+                            <tr><td colspan="6" class="px-4 py-6 text-center text-sm text-slate-400">No simulation loaded yet</td></tr>
                         </tbody>
                     </table>
                 </div>
             </div>
         </div>
 
-        <!-- Sidebar -->
+        <!-- Sidebar (1 col) -->
         <div class="space-y-4">
+            <!-- Team Fantasy Points -->
             <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-                <h3 class="text-sm font-semibold text-slate-700 mb-3">Stat Accumulator</h3>
+                <h3 class="text-sm font-semibold text-slate-700 mb-3">Team Fantasy Points</h3>
+                <p id="stat-team-fpts" class="text-3xl font-bold text-field-700">0.0</p>
+                <p class="text-xs text-slate-400 mt-1">PPR Scoring</p>
+            </div>
+
+            <!-- Team Stat Accumulator -->
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                <h3 class="text-sm font-semibold text-slate-700 mb-3">Team Stats</h3>
                 <div class="grid grid-cols-2 gap-2.5 text-sm">
                     <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">Plays</p><p id="stat-total-plays" class="font-bold text-slate-800">0</p></div>
                     <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">TDs</p><p id="stat-total-tds" class="font-bold text-field-700">0</p></div>
@@ -267,24 +233,30 @@
                     <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">Rush Yds</p><p id="stat-rush-yards" class="font-bold text-slate-800">0</p></div>
                     <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">Rec Yds</p><p id="stat-rec-yards" class="font-bold text-slate-800">0</p></div>
                     <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">1st Downs</p><p id="stat-first-downs" class="font-bold text-slate-800">0</p></div>
-                    <div class="rounded-lg bg-slate-50 p-2.5 col-span-2"><p class="text-[10px] text-slate-400 uppercase">Cumulative EPA</p><p id="stat-total-epa" class="font-bold text-slate-800">0.00</p></div>
                 </div>
             </div>
 
+            <!-- Active Roster -->
             <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-                <h3 class="text-sm font-semibold text-slate-700 mb-3">Game Snapshot</h3>
-                <div class="flex items-center justify-between text-sm">
-                    <div>
-                        <p id="sim-away-team" class="font-semibold text-slate-700">AWAY</p>
-                        <p id="sim-away-score" class="text-2xl font-bold text-slate-800">—</p>
+                <h3 class="text-sm font-semibold text-slate-700 mb-3">Active Roster</h3>
+                <div id="roster-sidebar" class="space-y-1.5 max-h-96 overflow-y-auto">
+                    {% for p in roster if p.is_active %}
+                    <div id="roster-player-{{ p.id }}" class="roster-player flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-transparent text-sm">
+                        <span class="inline-flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold text-white"
+                              style="background-color: {{ {'QB':'#ef4444','RB':'#22c55e','WR':'#3b82f6','TE':'#f59e0b','K':'#8b5cf6','DEF':'#64748b','DST':'#64748b'}.get(p.position, '#94a3b8') }}">
+                            {{ p.position[:2] }}
+                        </span>
+                        <div class="min-w-0 flex-1">
+                            <p class="font-medium text-slate-700 truncate text-xs">{{ p.name }}</p>
+                            <p class="text-[10px] text-slate-400">{{ p.nfl_team }}</p>
+                        </div>
+                        <span id="roster-fpts-{{ p.id }}" class="text-xs font-semibold text-slate-500">0.0</span>
                     </div>
-                    <span class="text-slate-300 text-xl font-light">-</span>
-                    <div class="text-right">
-                        <p id="sim-home-team" class="font-semibold text-slate-700">HOME</p>
-                        <p id="sim-home-score" class="text-2xl font-bold text-slate-800">—</p>
-                    </div>
+                    {% endfor %}
+                    {% if not roster|selectattr('is_active')|list %}
+                    <p class="text-xs text-slate-400 text-center py-2">No active players</p>
+                    {% endif %}
                 </div>
-                <p id="sim-meta" class="mt-3 text-xs text-slate-400">No game loaded</p>
             </div>
         </div>
     </div>
@@ -294,19 +266,21 @@
 {% block extra_js %}
 <script>
 /* =====================================================================
-   Route-Chart Play Viewer
-   =====================================================================
-   Renders an SVG-based route chart with a behind-LOS perspective view.
-   Each play draws route segments (white = pre-catch, green = YAC,
-   grey dashed = incomplete, yellow = rush, red dashed = sack).
+   Team Game Simulation Viewer
    ===================================================================== */
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const XLINK_NS = 'http://www.w3.org/1999/xlink';
-const PLAYER_HEADSHOT_URL = '{{ player.headshot_url|default("", true) }}';
+const TEAM_DB_ID = {{ team.id }};
 
-/* -- state ------------------------------------------------------------ */
+/* Position colors matching the service */
+const POSITION_COLORS = {
+    'QB': '#ef4444', 'RB': '#22c55e', 'WR': '#3b82f6',
+    'TE': '#f59e0b', 'K': '#8b5cf6', 'DEF': '#64748b', 'DST': '#64748b',
+};
+
 let simEvents = [];
+let simPlayers = [];
 let simCurrentIndex = 0;
 let simTimer = null;
 let simPlaying = false;
@@ -314,16 +288,11 @@ let simSpeed = 1.0;
 let allRoutesMode = false;
 const simBaseDelay = 1400;
 
-/* SVG viewBox dimensions */
 const VB_W = 400;
 const VB_H = 300;
-
-/* Field mapping: depth (0-100 field%) → SVG Y (top = upfield, bottom = LOS) */
-/* We show ~40 yards of depth: LOS sits at bottom, +40 yds at top */
 const FIELD_DEPTH_YARDS = 40;
 const FIELD_TOP_Y = 20;
 const FIELD_BOT_Y = 280;
-/* lateral (0-100 field%) → SVG X */
 const FIELD_LEFT_X = 30;
 const FIELD_RIGHT_X = 370;
 
@@ -332,10 +301,6 @@ function _def(v, fb) { return v === null || v === undefined ? fb : v; }
 
 /* ── coordinate helpers ─────────────────────────────────────────────── */
 
-/**
- * Convert a depth value (field-% relative to LOS) to SVG Y.
- * 0 = LOS (bottom of chart), positive = upfield (towards top).
- */
 function depthToY(depthPct, losX) {
     const yardsBeyond = depthPct - losX;
     const frac = yardsBeyond / FIELD_DEPTH_YARDS;
@@ -346,7 +311,7 @@ function lateralToX(lateralPct) {
     return FIELD_LEFT_X + (lateralPct / 100) * (FIELD_RIGHT_X - FIELD_LEFT_X);
 }
 
-/* ── SVG element factories ──────────────────────────────────────────── */
+/* ── SVG helpers ─────────────────────────────────────────────────────── */
 
 function svgEl(tag, attrs) {
     const el = document.createElementNS(SVG_NS, tag);
@@ -357,11 +322,7 @@ function svgEl(tag, attrs) {
 function buildFieldBackground(losFieldX) {
     const g = _q('svg-field-bg');
     g.innerHTML = '';
-
-    /* Dark green field rect */
     g.appendChild(svgEl('rect', {x:0, y:0, width: VB_W, height: VB_H, fill:'#1a2a1a'}));
-
-    /* Yard-line stripes every 5 yards (visible window) */
     const losYard = losFieldX;
     const startYard = Math.floor((losYard - 5) / 5) * 5;
     const endYard = losYard + FIELD_DEPTH_YARDS + 5;
@@ -374,7 +335,6 @@ function buildFieldBackground(losFieldX) {
             stroke: isTen ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.1)',
             'stroke-width': isTen ? 0.6 : 0.3,
         }));
-
         if (isTen) {
             const displayYd = yd > 50 ? (100 - yd) : yd;
             if (displayYd >= 0 && displayYd <= 50) {
@@ -383,8 +343,7 @@ function buildFieldBackground(losFieldX) {
                         x: x, y: y + 3,
                         fill: 'rgba(255,255,255,0.35)',
                         'font-size': '8', 'text-anchor': anchor,
-                        'font-family': 'system-ui, sans-serif',
-                        'font-weight': '700',
+                        'font-family': 'system-ui, sans-serif', 'font-weight': '700',
                     });
                     t.textContent = displayYd;
                     return t;
@@ -394,8 +353,6 @@ function buildFieldBackground(losFieldX) {
             }
         }
     }
-
-    /* Sideline borders */
     g.appendChild(svgEl('line', {x1: FIELD_LEFT_X, y1:0, x2: FIELD_LEFT_X, y2: VB_H, stroke:'rgba(255,255,255,0.08)', 'stroke-width':1}));
     g.appendChild(svgEl('line', {x1: FIELD_RIGHT_X, y1:0, x2: FIELD_RIGHT_X, y2: VB_H, stroke:'rgba(255,255,255,0.08)', 'stroke-width':1}));
 }
@@ -410,8 +367,7 @@ function drawLOS(losFieldX) {
     }));
     const makeLosLabel = function(x, anchor) {
         const t = svgEl('text', {
-            x: x, y: y + 12,
-            fill: '#3b82f6', 'font-size': '8', 'text-anchor': anchor,
+            x: x, y: y + 12, fill: '#3b82f6', 'font-size': '8', 'text-anchor': anchor,
             'font-family': 'system-ui, sans-serif', 'font-weight': '700',
         });
         t.textContent = 'LOS';
@@ -430,9 +386,6 @@ function clearRoutes() {
     _q('svg-labels').innerHTML = '';
 }
 
-/**
- * Draw a single play's route_path onto the SVG.
- */
 function drawRoute(evt, animate, opacity) {
     const rp = evt.route_path;
     if (!rp || !rp.segments || rp.segments.length < 2) return;
@@ -442,6 +395,7 @@ function drawRoute(evt, animate, opacity) {
     const labelsG = _q('svg-labels');
     const losX = evt.start_x;
     const segs = rp.segments;
+    const playerColor = evt.player_color || '#94a3b8';
 
     const groups = classifySegments(segs, rp, evt.role);
 
@@ -459,7 +413,6 @@ function drawRoute(evt, animate, opacity) {
         if (group.marker) attrs['marker-end'] = 'url(#' + group.marker + ')';
 
         const polyline = svgEl('polyline', attrs);
-
         if (animate) {
             routesG.appendChild(polyline);
             const len = polyline.getTotalLength ? polyline.getTotalLength() : 500;
@@ -470,88 +423,70 @@ function drawRoute(evt, animate, opacity) {
         }
     });
 
-    /* Headshot marker at the route tip */
-    if (PLAYER_HEADSHOT_URL && opacity >= 1.0) {
-        drawHeadshotMarker(segs, losX, animate);
-    }
-
-    /* Endpoint marker */
+    /* Player position badge at route endpoint */
     const lastSeg = segs[segs.length - 1];
     const ex = lateralToX(lastSeg.lateral);
     const ey = depthToY(lastSeg.depth, losX);
 
+    // Draw position-colored badge
+    const badgeG = svgEl('g', {});
+    badgeG.appendChild(svgEl('circle', {
+        cx: ex, cy: ey - 14, r: 8,
+        fill: playerColor, stroke: '#0f172a', 'stroke-width': 1, opacity: Math.max(opacity, 0.8),
+    }));
+    const posText = svgEl('text', {
+        x: ex, y: ey - 11, fill: '#ffffff', 'font-size': '6', 'text-anchor': 'middle',
+        'font-family': 'system-ui, sans-serif', 'font-weight': '700', opacity: Math.max(opacity, 0.8),
+    });
+    posText.textContent = (evt.player_position || '??').substring(0, 2);
+    badgeG.appendChild(posText);
+    endpointsG.appendChild(badgeG);
+
     if (rp.is_touchdown) {
         endpointsG.appendChild(svgEl('circle', {
-            cx: ex, cy: ey, r: 6,
-            fill: 'none', stroke: '#3b82f6', 'stroke-width': 2, opacity: opacity,
+            cx: ex, cy: ey, r: 6, fill: 'none', stroke: '#3b82f6', 'stroke-width': 2, opacity: opacity,
             class: 'route-endpoint',
         }));
         endpointsG.appendChild(svgEl('circle', {
-            cx: ex, cy: ey, r: 2.5,
-            fill: '#3b82f6', opacity: opacity,
-            class: 'route-endpoint',
+            cx: ex, cy: ey, r: 2.5, fill: '#3b82f6', opacity: opacity, class: 'route-endpoint',
         }));
-        labelsG.appendChild((() => {
-            const t = svgEl('text', {
-                x: ex, y: ey - 10,
-                fill: '#3b82f6', 'font-size': '8', 'text-anchor': 'middle',
-                'font-family': 'system-ui, sans-serif', 'font-weight': '700',
-                opacity: opacity, class: 'route-endpoint',
-            });
-            t.textContent = 'TD';
-            return t;
-        })());
+        const td = svgEl('text', {
+            x: ex, y: ey + 18, fill: '#3b82f6', 'font-size': '8', 'text-anchor': 'middle',
+            'font-family': 'system-ui, sans-serif', 'font-weight': '700', opacity: opacity,
+        });
+        td.textContent = 'TD';
+        labelsG.appendChild(td);
     } else if (rp.is_sack) {
-        endpointsG.appendChild(svgEl('text', {
-            x: ex, y: ey + 3,
-            fill: '#ef4444', 'font-size': '10', 'text-anchor': 'middle',
-            'font-family': 'system-ui, sans-serif', 'font-weight': '900',
-            opacity: opacity, class: 'route-endpoint',
-        })).textContent = '✕';
+        const sack = svgEl('text', {
+            x: ex, y: ey + 3, fill: '#ef4444', 'font-size': '10', 'text-anchor': 'middle',
+            'font-family': 'system-ui, sans-serif', 'font-weight': '900', opacity: opacity,
+        });
+        sack.textContent = '✕';
+        endpointsG.appendChild(sack);
     } else {
         const dotColor = rp.is_complete ? '#22c55e' : (evt.role === 'rush' ? '#facc15' : '#9ca3af');
         endpointsG.appendChild(svgEl('circle', {
-            cx: ex, cy: ey, r: 3,
-            fill: dotColor, opacity: opacity,
-            class: 'route-endpoint',
+            cx: ex, cy: ey, r: 3, fill: dotColor, opacity: opacity, class: 'route-endpoint',
         }));
     }
 }
 
-/**
- * Break segments into CSS-classified polyline groups.
- */
 function classifySegments(segs, rp, role) {
     const groups = [];
     let currentGroup = null;
-
     for (let i = 0; i < segs.length; i++) {
         const seg = segs[i];
         let cssClass, marker;
-
-        if (role === 'rush') {
-            cssClass = 'rush-segment';
-            marker = 'arrow-yellow';
-        } else if (rp.is_sack && (seg.type === 'sack_end' || (i > 0 && segs[i-1].type === 'drop'))) {
-            cssClass = 'sack-segment';
-            marker = 'arrow-red';
-        } else if (seg.type === 'catch_end') {
+        if (role === 'rush') { cssClass = 'rush-segment'; marker = 'arrow-yellow'; }
+        else if (rp.is_sack && (seg.type === 'sack_end' || (i > 0 && segs[i-1].type === 'drop'))) { cssClass = 'sack-segment'; marker = 'arrow-red'; }
+        else if (seg.type === 'catch_end') {
             if (currentGroup) groups.push(currentGroup);
-            currentGroup = {
-                cssClass: 'yac-segment',
-                marker: 'arrow-green',
-                points: [segs[i - 1], seg],
-            };
+            currentGroup = { cssClass: 'yac-segment', marker: 'arrow-green', points: [segs[i - 1], seg] };
             groups.push(currentGroup);
             currentGroup = null;
             continue;
-        } else if (!rp.is_complete && !rp.is_sack && role !== 'rush') {
-            cssClass = 'incomplete-segment';
-            marker = 'arrow-grey';
-        } else {
-            cssClass = 'route-segment';
-            marker = 'arrow-white';
-        }
+        } else if (!rp.is_complete && !rp.is_sack && role !== 'rush') { cssClass = 'incomplete-segment'; marker = 'arrow-grey'; }
+        else { cssClass = 'route-segment'; marker = 'arrow-white'; }
 
         if (currentGroup && currentGroup.cssClass === cssClass) {
             currentGroup.points.push(seg);
@@ -559,91 +494,13 @@ function classifySegments(segs, rp, role) {
         } else {
             if (currentGroup) groups.push(currentGroup);
             currentGroup = {
-                cssClass: cssClass,
-                marker: marker,
+                cssClass: cssClass, marker: marker,
                 points: i > 0 && (!currentGroup || currentGroup.cssClass !== cssClass) ? [segs[i-1], seg] : [seg],
             };
         }
     }
     if (currentGroup && currentGroup.points.length >= 2) groups.push(currentGroup);
-
     return groups.filter(function(g) { return g.points.length >= 2; });
-}
-
-/* ── headshot marker ─────────────────────────────────────────────────── */
-
-/**
- * Draw the player headshot at the tip of the route.
- * When `animate` is true, the headshot travels along the full route path.
- */
-function drawHeadshotMarker(segs, losX, animate) {
-    const hsG = _q('svg-headshot');
-    hsG.innerHTML = '';
-    if (!segs || segs.length < 2) return;
-
-    const R = 10;          /* radius of headshot circle */
-    const BORDER = 1.8;    /* ring stroke width */
-
-    /* Build an SVG <path> d-string from all segments */
-    const pathPoints = segs.map(function(s) {
-        return { x: lateralToX(s.lateral), y: depthToY(s.depth, losX) };
-    });
-    const pathD = pathPoints.map(function(p, i) {
-        return (i === 0 ? 'M' : 'L') + p.x.toFixed(1) + ',' + p.y.toFixed(1);
-    }).join(' ');
-
-    /* Container group — will be positioned at the endpoint (or animated) */
-    const g = svgEl('g', { class: 'headshot-marker' + (animate ? ' animate' : '') });
-
-    /* Border ring */
-    g.appendChild(svgEl('circle', {
-        cx: 0, cy: 0, r: R + BORDER,
-        fill: '#0f172a', stroke: '#3b82f6', 'stroke-width': BORDER,
-    }));
-
-    /* Clipped headshot image */
-    const img = document.createElementNS(SVG_NS, 'image');
-    img.setAttributeNS(XLINK_NS, 'href', PLAYER_HEADSHOT_URL);
-    img.setAttribute('x', String(-R));
-    img.setAttribute('y', String(-R));
-    img.setAttribute('width', String(R * 2));
-    img.setAttribute('height', String(R * 2));
-    img.setAttribute('clip-path', 'url(#headshot-clip)');
-    img.setAttribute('preserveAspectRatio', 'xMidYMid slice');
-    /* Fallback: hide if image fails to load */
-    img.addEventListener('error', function() { g.style.display = 'none'; });
-    g.appendChild(img);
-
-    if (animate) {
-        /* Animate headshot along the route path */
-        const motionPath = svgEl('path', { d: pathD, fill: 'none', stroke: 'none' });
-        g.appendChild(motionPath);
-
-        const animMotion = document.createElementNS(SVG_NS, 'animateMotion');
-        animMotion.setAttribute('dur', '0.7s');
-        animMotion.setAttribute('fill', 'freeze');
-        animMotion.setAttribute('calcMode', 'linear');
-
-        /* Use mpath to reference the route path */
-        const mpath = document.createElementNS(SVG_NS, 'mpath');
-
-        /* We need an in-defs path for mpath to reference */
-        const defsPath = svgEl('path', { d: pathD, id: 'headshot-motion-path' });
-        /* Remove any previous motion path from defs */
-        const oldMotionPath = document.getElementById('headshot-motion-path');
-        if (oldMotionPath) oldMotionPath.remove();
-        _q('route-svg').querySelector('defs').appendChild(defsPath);
-
-        mpath.setAttributeNS(XLINK_NS, 'href', '#headshot-motion-path');
-        animMotion.appendChild(mpath);
-        g.appendChild(animMotion);
-    } else {
-        /* Static: place at endpoint */
-        const last = pathPoints[pathPoints.length - 1];
-        g.setAttribute('transform', 'translate(' + last.x.toFixed(1) + ',' + last.y.toFixed(1) + ')');
-    }
-
-    hsG.appendChild(g);
 }
 
 /* ── all-routes overlay ─────────────────────────────────────────────── */
@@ -668,10 +525,7 @@ function drawAllRoutes() {
     clearRoutes();
     buildFieldBackground(refLos);
     drawLOS(refLos);
-
-    simEvents.forEach(function(evt) {
-        drawRoute(evt, false, 0.7);
-    });
+    simEvents.forEach(function(evt) { drawRoute(evt, false, 0.5); });
 }
 
 function toggleFlatView() {
@@ -699,23 +553,81 @@ function resetStats() {
     ['stat-total-plays','stat-total-tds','stat-pass-yards','stat-rush-yards','stat-rec-yards','stat-first-downs'].forEach(function(id) {
         _q(id).textContent = '0';
     });
-    _q('stat-total-epa').textContent = '0.00';
+    _q('stat-team-fpts').textContent = '0.0';
+    // Reset per-player fpts in sidebar
+    document.querySelectorAll('[id^="roster-fpts-"]').forEach(function(el) {
+        el.textContent = '0.0';
+    });
 }
 
-function updateStats(snapshot) {
-    _q('stat-total-plays').textContent = _def(snapshot.total_plays, 0);
-    _q('stat-total-tds').textContent = _def(snapshot.total_tds, 0);
-    _q('stat-pass-yards').textContent = _def(snapshot.pass_yards, 0);
-    _q('stat-rush-yards').textContent = _def(snapshot.rush_yards, 0);
-    _q('stat-rec-yards').textContent = _def(snapshot.rec_yards, 0);
-    _q('stat-first-downs').textContent = _def(snapshot.first_downs, 0);
-    _q('stat-total-epa').textContent = _def(snapshot.total_epa, 0).toFixed(2);
+function updateStats(evt) {
+    const snapshot = evt.stats_snapshot || {};
+    // We accumulate across all players — use team_fantasy_points from the merged event
+    _q('stat-team-fpts').textContent = _def(evt.team_fantasy_points, 0).toFixed(1);
+
+    // Per-player running fantasy points: sum last seen snapshot per player
+    const playerFpts = {};
+    for (let i = 0; i <= simCurrentIndex; i++) {
+        const e = simEvents[i];
+        const pid = e.player_id;
+        const snap = e.stats_snapshot || {};
+        // Rough PPR estimate for display
+        let pts = 0;
+        pts += (_def(snap.pass_yards, 0)) * 0.04;
+        pts += (_def(snap.pass_tds, 0)) * 4;
+        pts += (_def(snap.pass_interceptions, 0)) * -2;
+        pts += (_def(snap.rush_yards, 0)) * 0.1;
+        pts += (_def(snap.rush_tds, 0)) * 6;
+        pts += (_def(snap.receptions, 0)) * 1;
+        pts += (_def(snap.rec_yards, 0)) * 0.1;
+        pts += (_def(snap.rec_tds, 0)) * 6;
+        playerFpts[pid] = pts;
+    }
+
+    // Update sidebar
+    for (const [pid, pts] of Object.entries(playerFpts)) {
+        const el = _q('roster-fpts-' + pid);
+        if (el) el.textContent = pts.toFixed(1);
+    }
+
+    // Team-wide snapshot aggregation: use the current event's snapshot for that player
+    // We need cumulative across all players
+    let totalPlays = 0, totalTds = 0, passYds = 0, rushYds = 0, recYds = 0, firstDowns = 0;
+    const lastSnapshots = {};
+    for (let i = 0; i <= simCurrentIndex; i++) {
+        lastSnapshots[simEvents[i].player_id] = simEvents[i].stats_snapshot || {};
+    }
+    for (const snap of Object.values(lastSnapshots)) {
+        totalPlays += _def(snap.total_plays, 0);
+        totalTds += _def(snap.total_tds, 0);
+        passYds += _def(snap.pass_yards, 0);
+        rushYds += _def(snap.rush_yards, 0);
+        recYds += _def(snap.rec_yards, 0);
+        firstDowns += _def(snap.first_downs, 0);
+    }
+    _q('stat-total-plays').textContent = totalPlays;
+    _q('stat-total-tds').textContent = totalTds;
+    _q('stat-pass-yards').textContent = passYds;
+    _q('stat-rush-yards').textContent = rushYds;
+    _q('stat-rec-yards').textContent = recYds;
+    _q('stat-first-downs').textContent = firstDowns;
+}
+
+function highlightRosterPlayer(playerId) {
+    document.querySelectorAll('.roster-player').forEach(function(el) {
+        el.classList.remove('active-player');
+    });
+    const active = _q('roster-player-' + playerId);
+    if (active) {
+        active.classList.add('active-player');
+        active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
 }
 
 function renderTimeline(events) {
     const body = _q('sim-play-table-body');
     if (!events.length) {
-        body.innerHTML = '<tr><td colspan="5" class="px-4 py-6 text-center text-sm text-slate-400">No player-involved plays found for this game</td></tr>';
+        body.innerHTML = '<tr><td colspan="6" class="px-4 py-6 text-center text-sm text-slate-400">No plays found</td></tr>';
         return;
     }
     body.innerHTML = events.map(function(e, i) {
@@ -726,11 +638,13 @@ function renderTimeline(events) {
                 ? 'bg-field-100 text-field-700'
                 : 'bg-slate-100 text-slate-600';
         const y = e.yards_gained > 0 ? '+' + e.yards_gained : e.yards_gained;
+        const playerColor = e.player_color || '#94a3b8';
         return '<tr id="sim-row-' + i + '" class="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer" onclick="jumpToPlay(' + i + ')">'
             + '<td class="px-3 py-2 text-xs text-slate-500">' + (i + 1) + '</td>'
+            + '<td class="px-3 py-2 text-xs"><span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full inline-block" style="background:' + playerColor + '"></span>' + (e.player_name || '—') + '</span></td>'
             + '<td class="px-3 py-2 text-xs text-slate-500">' + (e.time_label || '—') + '</td>'
             + '<td class="px-3 py-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold ' + pclass + '">' + ptype + '</span></td>'
-            + '<td class="px-3 py-2 text-xs text-slate-700">' + ((e.description || '—').replace(/</g, '&lt;').replace(/>/g, '&gt;')) + '</td>'
+            + '<td class="px-3 py-2 text-xs text-slate-700 max-w-[200px] truncate">' + ((e.description || '—').replace(/</g, '&lt;').replace(/>/g, '&gt;')) + '</td>'
             + '<td class="px-3 py-2 text-xs text-right font-semibold text-slate-700">' + y + '</td>'
             + '</tr>';
     }).join('');
@@ -762,16 +676,19 @@ function applyFrame(index, instant) {
     }
 
     const yards = e.yards_gained > 0 ? '+' + e.yards_gained : e.yards_gained;
+    const playerColor = e.player_color || '#94a3b8';
 
     const badgeParts = [];
-    if (e.badges.touchdown) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-field-600 text-white text-[10px] font-bold">TD</span>');
-    if (e.badges.first_down) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-blue-600 text-white text-[10px] font-bold">1D</span>');
-    if (e.badges.turnover) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold">TURNOVER</span>');
-    if (e.badges.big_play) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-pigskin-500 text-white text-[10px] font-bold">BIG PLAY</span>');
+    if (e.badges && e.badges.touchdown) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-field-600 text-white text-[10px] font-bold">TD</span>');
+    if (e.badges && e.badges.first_down) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-blue-600 text-white text-[10px] font-bold">1D</span>');
+    if (e.badges && e.badges.turnover) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold">TURNOVER</span>');
+    if (e.badges && e.badges.big_play) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-pigskin-500 text-white text-[10px] font-bold">BIG PLAY</span>');
 
     _q('sim-current-play').innerHTML =
         '<div class="flex flex-wrap items-center gap-2 mb-1">'
         + '<span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Play ' + (index + 1) + ' of ' + simEvents.length + '</span>'
+        + '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold text-white" style="background:' + playerColor + '">'
+        + (e.player_position || '') + ' · ' + (e.player_name || 'Unknown') + '</span>'
         + '<span class="text-xs text-slate-400">' + (e.time_label || '—') + '</span>'
         + '<span class="text-xs text-slate-400">' + (e.down_distance || '—') + '</span>'
         + '<span class="px-2 py-0.5 rounded text-[10px] font-bold ' + (e.role === 'pass' ? 'bg-blue-100 text-blue-700' : e.role === 'rush' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700') + '">'
@@ -779,16 +696,15 @@ function applyFrame(index, instant) {
         + badgeParts.join('')
         + '</div>'
         + '<p class="text-sm text-slate-700">' + ((e.description || 'No description').replace(/</g, '&lt;').replace(/>/g, '&gt;')) + '</p>'
-        + '<p class="mt-2 text-xs text-slate-500">EPA: <span class="' + (e.epa >= 0 ? 'text-field-700' : 'text-red-500') + ' font-semibold">' + (e.epa >= 0 ? '+' : '') + e.epa.toFixed(2) + '</span></p>';
+        + '<p class="mt-2 text-xs text-slate-500">EPA: <span class="' + ((e.epa || 0) >= 0 ? 'text-field-700' : 'text-red-500') + ' font-semibold">' + ((e.epa || 0) >= 0 ? '+' : '') + (e.epa || 0).toFixed(2) + '</span>'
+        + ' · Team FPTS: <span class="font-semibold text-field-700">' + _def(e.team_fantasy_points, 0).toFixed(1) + '</span></p>';
 
-    updateStats(e.stats_snapshot || {});
+    updateStats(e);
+    highlightRosterPlayer(e.player_id);
     _q('sim-progress').value = String(index);
     updateActiveRow(index);
     _q('btn-prev').disabled = index === 0;
     _q('btn-next').disabled = index >= simEvents.length - 1;
-
-    if (e.home_score !== null && e.home_score !== undefined) _q('sim-home-score').textContent = e.home_score;
-    if (e.away_score !== null && e.away_score !== undefined) _q('sim-away-score').textContent = e.away_score;
 }
 
 function playSimulation() {
@@ -839,42 +755,31 @@ async function loadSimulation() {
     const btn = _q('sim-load-btn');
     spinner.classList.remove('hidden');
     btn.disabled = true;
-    _q('sim-live-badge').classList.add('hidden');
 
     try {
-        const resp = await fetch('/api/stats/players/{{ player.id }}/game-simulation?year=' + year + '&week=' + week);
+        const resp = await fetch('/api/stats/teams/' + TEAM_DB_ID + '/game-simulation?year=' + year + '&week=' + week);
         if (!resp.ok) {
             const err = await resp.json();
-            throw new Error(err.detail || 'Failed to load simulation');
+            throw new Error(err.detail || 'Failed to load team simulation');
         }
         const data = await resp.json();
 
         simEvents = data.events || [];
+        simPlayers = data.players || [];
         simCurrentIndex = 0;
         _q('sim-progress').max = String(Math.max(0, simEvents.length - 1));
         _q('sim-progress').value = '0';
         setControlsEnabled(simEvents.length > 0);
 
-        const game = data.game_summary || {};
-        _q('sim-home-team').textContent = game.home_team || 'HOME';
-        _q('sim-away-team').textContent = game.away_team || 'AWAY';
-        _q('sim-home-score').textContent = _def(game.home_score, '—');
-        _q('sim-away-score').textContent = _def(game.away_score, '—');
-        _q('sim-meta').textContent = 'Week ' + data.week + ', ' + data.year + ' · ' + data.total_events + ' player-involved plays';
-
         renderTimeline(simEvents);
+
         if (simEvents.length > 0) {
             applyFrame(0, true);
         } else {
             clearRoutes();
             buildFieldBackground(25);
             drawLOS(25);
-            _q('sim-current-play').textContent = 'No player-involved plays available for this game.';
-        }
-
-        if (parseInt(year, 10) === new Date().getFullYear()) {
-            _q('sim-live-badge').classList.remove('hidden');
-            _q('sim-live-badge').style.display = 'inline-flex';
+            _q('sim-current-play').textContent = 'No plays found for this team/week combination.';
         }
     } catch (err) {
         simEvents = [];
@@ -883,8 +788,8 @@ async function loadSimulation() {
         clearRoutes();
         buildFieldBackground(25);
         drawLOS(25);
-        _q('sim-current-play').innerHTML = '<p class="text-sm text-red-500">' + (err.message || 'Failed to load simulation') + '</p>';
-        if (typeof showToast === 'function') showToast(err.message || 'Failed to load simulation', 'error');
+        _q('sim-current-play').innerHTML = '<p class="text-sm text-red-500">' + (err.message || 'Failed to load team simulation') + '</p>';
+        if (typeof showToast === 'function') showToast(err.message || 'Failed to load', 'error');
     } finally {
         spinner.classList.add('hidden');
         btn.disabled = false;
@@ -894,6 +799,5 @@ async function loadSimulation() {
 /* ── init ──────────────────────────────────────────────────────────── */
 buildFieldBackground(25);
 drawLOS(25);
-setControlsEnabled(false);
 </script>
 {% endblock %}

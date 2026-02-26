@@ -1,5 +1,8 @@
 """Teams routes: listing, CRUD, detail page."""
 
+from datetime import datetime
+from typing import Optional
+
 from fastapi import APIRouter, Depends, Request, Form, Query
 from fastapi.responses import RedirectResponse, HTMLResponse
 from sqlalchemy.orm import Session
@@ -7,7 +10,7 @@ import uuid
 import json
 
 from pigskin_mastermind.api.database import get_db
-from pigskin_mastermind.models.database import DBTeam, DBPlayer, DBWeeklyTeamStats, DBWeeklyPlayerStats
+from pigskin_mastermind.models.database import DBTeam, DBPlayer, DBLeague, DBWeeklyTeamStats, DBWeeklyPlayerStats
 
 router = APIRouter(prefix="/teams", tags=["teams"])
 
@@ -140,3 +143,71 @@ async def delete_team(team_db_id: int, db: Session = Depends(get_db)):
         db.delete(team)
         db.commit()
     return _toast_response("Team deleted", "info")
+
+
+@router.get("/{team_db_id}/simulation")
+async def team_simulation_page(
+    request: Request,
+    team_db_id: int,
+    week: int = Query(..., ge=1, le=22),
+    back: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Full-page team game simulation view for one week."""
+    from pigskin_mastermind.api.main import templates
+
+    team = db.query(DBTeam).filter(DBTeam.id == team_db_id).first()
+    if not team:
+        return RedirectResponse(url="/teams", status_code=303)
+
+    # Determine year from league or fallback to current
+    default_year = datetime.utcnow().year
+    if team.league_id:
+        league = db.query(DBLeague).filter_by(league_id=team.league_id).first()
+        if league and league.year:
+            default_year = league.year
+
+    # Get active players for the roster sidebar
+    active_players = []
+    weekly_team = (
+        db.query(DBWeeklyTeamStats)
+        .filter_by(team_id=team_db_id, week=week)
+        .first()
+    )
+    if weekly_team:
+        rows = (
+            db.query(DBWeeklyPlayerStats, DBPlayer)
+            .join(DBPlayer, DBWeeklyPlayerStats.player_id == DBPlayer.id)
+            .filter(DBWeeklyPlayerStats.weekly_team_stats_id == weekly_team.id)
+            .all()
+        )
+        active_players = [
+            {
+                "id": player.id,
+                "name": player.name,
+                "position": player.position,
+                "nfl_team": player.nfl_team,
+                "headshot_url": player.headshot_url,
+                "slot_position": wp.slot_position,
+                "is_active": wp.slot_position not in _BENCH_SLOTS,
+            }
+            for wp, player in sorted(
+                rows,
+                key=lambda r: (
+                    1 if r[0].slot_position in _BENCH_SLOTS else 0,
+                    _POSITION_ORDER.get(r[1].position, 7),
+                ),
+            )
+        ]
+
+    return templates.TemplateResponse(
+        "teams/simulation.html",
+        {
+            "request": request,
+            "team": team,
+            "week": week,
+            "default_year": default_year,
+            "roster": active_players,
+            "back_url": back,
+        },
+    )

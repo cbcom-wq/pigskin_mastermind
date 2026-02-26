@@ -202,6 +202,29 @@ async def get_player_game_simulation(
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+@router.get("/teams/{team_db_id}/game-simulation")
+async def get_team_game_simulation(
+    team_db_id: int,
+    year: int = Query(..., description="NFL season year, e.g. 2024"),
+    week: int = Query(..., ge=1, le=22, description="Week number"),
+    db: Session = Depends(get_db),
+):
+    """Fetch animation-ready game simulation for an entire team's week."""
+    from pigskin_mastermind.services.team_game_simulation_service import (
+        TeamGameSimulationService,
+    )
+
+    service = TeamGameSimulationService(db)
+    try:
+        return service.build_team_simulation(
+            team_db_id=team_db_id, year=year, week=week
+        )
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
 @router.get("/players/{player_id}/projection")
 async def get_auto_projection(
     player_id: int,
