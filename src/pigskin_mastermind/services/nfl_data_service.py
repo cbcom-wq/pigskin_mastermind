@@ -26,6 +26,9 @@ _PBP_COLUMNS = [
     'receiver_player_id', 'receiver_player_name',
     'complete_pass', 'sack', 'touchdown', 'interception',
     'first_down_rush', 'first_down_pass',
+    'pass_location', 'pass_length',
+    'run_location', 'run_gap',
+    'shotgun', 'qb_dropback', 'qb_scramble',
     'penalty', 'penalty_team', 'penalty_yards',
     'total_home_score', 'total_away_score',
     'home_team', 'away_team',
@@ -439,6 +442,14 @@ class NFLDataService:
                 except (TypeError, ValueError):
                     pass
                 play[col] = val
+            if row.get('passer_player_id') == gsis_id:
+                play['player_role'] = 'pass'
+            elif row.get('rusher_player_id') == gsis_id:
+                play['player_role'] = 'rush'
+            elif row.get('receiver_player_id') == gsis_id:
+                play['player_role'] = 'receive'
+            else:
+                play['player_role'] = 'unknown'
             plays.append(play)
 
         # ── Game summary ─────────────────────────────────────────────────────────

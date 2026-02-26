@@ -1,5 +1,6 @@
 """Player search and listing API routes."""
 
+from datetime import datetime
 from fastapi import APIRouter, Depends, Request, Query
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
@@ -79,6 +80,33 @@ async def player_detail_page(
             "game_logs": game_logs,
             "trend": trend,
             "fantasy_team": fantasy_team,
+        },
+    )
+
+
+@router.get("/players/{player_id}/simulation")
+async def player_simulation_page(
+    request: Request,
+    player_id: int,
+    year: Optional[int] = Query(None),
+    week: Optional[int] = Query(None, ge=1, le=22),
+    db: Session = Depends(get_db),
+):
+    """Full-page player game simulation view."""
+    from pigskin_mastermind.api.main import templates
+
+    player = db.query(DBPlayer).filter_by(id=player_id).first()
+    if not player:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse("/players", status_code=302)
+
+    return templates.TemplateResponse(
+        "players/simulation.html",
+        {
+            "request": request,
+            "player": player,
+            "default_year": year or datetime.utcnow().year,
+            "default_week": week or 1,
         },
     )
 

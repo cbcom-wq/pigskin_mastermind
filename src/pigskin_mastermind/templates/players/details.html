@@ -329,12 +329,12 @@
             <div class="flex flex-wrap items-end gap-3">
                 <div class="flex flex-col gap-1">
                     <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Year</label>
-                    <input id="pbp-year" type="number" min="2000" max="2030" value="2024"
+                    <input id="pbp-year" type="number" min="2000" max="2030" value="2024" oninput="updatePbpSimulationLink()"
                         class="w-24 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-pigskin-400">
                 </div>
                 <div class="flex flex-col gap-1">
                     <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Week</label>
-                    <input id="pbp-week" type="number" min="1" max="22" value="1"
+                    <input id="pbp-week" type="number" min="1" max="22" value="1" oninput="updatePbpSimulationLink()"
                         class="w-20 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-pigskin-400">
                 </div>
                 <button onclick="loadPlayByPlay()" id="pbp-load-btn"
@@ -345,6 +345,10 @@
                     </svg>
                     Load Plays
                 </button>
+                <a id="pbp-sim-link" href="/players/{{ player.id }}/simulation?year=2024&week=1"
+                   class="inline-flex items-center gap-2 px-5 py-2 border border-slate-200 hover:bg-slate-50 text-slate-700 text-sm font-semibold rounded-lg transition-colors">
+                    Run Simulation
+                </a>
                 <span id="pbp-live-badge" class="hidden items-center gap-1 px-2 py-1 rounded-full bg-field-100 text-field-700 text-xs font-semibold">
                     <span class="w-2 h-2 rounded-full bg-field-500 animate-pulse inline-block"></span>
                     Live
@@ -544,6 +548,16 @@ function renderProjectionResult(data) {
         + '</div>';
 }
 // ── Play-by-Play ──────────────────────────────────────────────────────────────
+function updatePbpSimulationLink() {
+    var yearEl = document.getElementById('pbp-year');
+    var weekEl = document.getElementById('pbp-week');
+    var link = document.getElementById('pbp-sim-link');
+    if (!yearEl || !weekEl || !link) return;
+    var year = yearEl.value || '2024';
+    var week = weekEl.value || '1';
+    link.href = '/players/{{ player.id }}/simulation?year=' + encodeURIComponent(year) + '&week=' + encodeURIComponent(week);
+}
+
 function loadPlayByPlay() {
     var year = document.getElementById('pbp-year').value;
     var week = document.getElementById('pbp-week').value;
@@ -552,6 +566,7 @@ function loadPlayByPlay() {
     var liveBadge = document.getElementById('pbp-live-badge');
 
     var url = '/api/stats/players/{{ player.id }}/play-by-play?year=' + year + '&week=' + week;
+    updatePbpSimulationLink();
 
     spinner.classList.remove('hidden');
     btn.disabled = true;
@@ -740,5 +755,6 @@ function renderPlayByPlay(data) {
         + '</div>'
         + '</div>';
 }
+updatePbpSimulationLink();
 </script>
 {% endblock %}

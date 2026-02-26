@@ -92,6 +92,7 @@ class TestPlayerDetailPage:
         assert b"Season Stats" in response.content
         assert b"Game Logs" in response.content
         assert b"Projections" in response.content
+        assert b"Run Simulation" in response.content
 
     def test_player_detail_redirects_for_unknown(self):
         response = client.get("/players/99999", follow_redirects=False)
@@ -252,3 +253,50 @@ class TestPlayerSearchAPI:
         assert response.status_code == 200
         assert b"Test WR" in response.content
         assert b"Test QB" not in response.content
+
+
+class TestPlayerGameSimulation:
+    def test_player_simulation_page_loads(self, player_with_stats):
+        response = client.get(f"/players/{player_with_stats.id}/simulation")
+        assert response.status_code == 200
+        assert b"Entertainment Simulation" in response.content
+        assert b"Load Simulation" in response.content
+
+    def test_player_simulation_page_redirects_for_unknown(self):
+        response = client.get("/players/99999/simulation", follow_redirects=False)
+        assert response.status_code == 302
+        assert "/players" in response.headers["location"]
+
+    def test_player_simulation_api_returns_payload(self, player_with_stats, monkeypatch):
+        from pigskin_mastermind.services import player_game_simulation_service as sim_module
+
+        def _fake_build(self, player_db_id, year, week):
+            return {
+                "player_id": player_db_id,
+                "player_name": "Test QB",
+                "year": year,
+                "week": week,
+                "total_events": 1,
+                "game_summary": {"home_team": "KC", "away_team": "DEN"},
+                "player_stats": {},
+                "events": [
+                    {
+                        "index": 0,
+                        "play_id": 1,
+                        "description": "Test play",
+                        "start_x": 25.0,
+                        "end_x": 35.0,
+                        "stats_snapshot": {"total_plays": 1, "total_tds": 0, "total_epa": 0.2},
+                    }
+                ],
+            }
+
+        monkeypatch.setattr(sim_module.PlayerGameSimulationService, "build_simulation", _fake_build)
+
+        response = client.get(
+            f"/api/stats/players/{player_with_stats.id}/game-simulation?year=2024&week=1"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["player_id"] == player_with_stats.id
+        assert data["total_events"] == 1

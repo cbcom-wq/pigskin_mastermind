@@ -1,0 +1,790 @@
+{% extends "base.html" %}
+
+{% block title %}{{ player.name }} Game Simulation — Pigskin Mastermind{% endblock %}
+{% block page_title %}Game Simulation{% endblock %}
+
+{% block content %}
+<style>
+    /* ── Route-chart field ─────────────────────────────────────────────── */
+    .route-field-wrapper {
+        perspective: 900px;
+        perspective-origin: 50% 100%;
+    }
+    .route-field-inner {
+        transform: rotateX(28deg);
+        transform-origin: 50% 100%;
+        transition: transform 0.4s ease;
+    }
+    .route-field-inner.flat-view {
+        transform: rotateX(0deg);
+    }
+    .route-field-svg {
+        background: #1a2a1a;
+    }
+    /* route line styles */
+    .route-line {
+        fill: none;
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+    }
+    .route-line.route-segment   { stroke: #ffffff; }
+    .route-line.yac-segment     { stroke: #22c55e; }
+    .route-line.incomplete-segment { stroke: #9ca3af; stroke-dasharray: 4 3; }
+    .route-line.sack-segment    { stroke: #ef4444; stroke-dasharray: 3 2; }
+    .route-line.rush-segment    { stroke: #facc15; }
+
+    /* animate drawing */
+    .route-line.animate-draw {
+        stroke-dasharray: var(--route-len, 500);
+        stroke-dashoffset: var(--route-len, 500);
+        animation: drawRoute 0.7s ease forwards;
+    }
+    @keyframes drawRoute {
+        to { stroke-dashoffset: 0; }
+    }
+
+    .route-endpoint {
+        transition: opacity 0.3s ease;
+    }
+
+    /* Legend chip */
+    .legend-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .legend-chip .swatch {
+        width: 18px;
+        height: 3px;
+        border-radius: 2px;
+    }
+</style>
+
+<div class="max-w-7xl mx-auto space-y-5">
+    <a href="/players/{{ player.id }}"
+       class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 transition-colors">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+        Back to Player Profile
+    </a>
+
+    <!-- Header -->
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+        <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+            <div>
+                <p class="text-xs font-semibold uppercase tracking-wider text-slate-400">Entertainment Simulation</p>
+                <h2 class="text-2xl font-bold text-slate-800 mt-1">{{ player.name }}</h2>
+                <p class="text-sm text-slate-500">{{ player.position }} · {{ player.nfl_team }}</p>
+            </div>
+            <div class="flex flex-wrap items-end gap-3">
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Year</label>
+                    <input id="sim-year" type="number" min="2000" max="2030" value="{{ default_year }}"
+                           class="w-24 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-pigskin-400">
+                </div>
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Week</label>
+                    <input id="sim-week" type="number" min="1" max="22" value="{{ default_week }}"
+                           class="w-20 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-pigskin-400">
+                </div>
+                <button id="sim-load-btn" onclick="loadSimulation()"
+                        class="inline-flex items-center gap-2 px-5 py-2 bg-pigskin-500 hover:bg-pigskin-600 text-white text-sm font-semibold rounded-lg transition-colors">
+                    <svg id="sim-load-spinner" class="hidden animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    Load Simulation
+                </button>
+                <span id="sim-live-badge" class="hidden items-center gap-1 px-2 py-1 rounded-full bg-field-100 text-field-700 text-xs font-semibold">
+                    <span class="w-2 h-2 rounded-full bg-field-500 animate-pulse inline-block"></span>
+                    Live-capable
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <div class="lg:col-span-2 space-y-4">
+            <!-- Route chart field -->
+            <div class="bg-slate-900 rounded-xl shadow-sm border border-slate-700 p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-xs uppercase tracking-wider font-semibold text-slate-400">Route Chart</h3>
+                    <div class="flex items-center gap-3">
+                        <button id="btn-all-routes" onclick="toggleAllRoutes()"
+                                class="px-3 py-1 text-[10px] font-bold uppercase tracking-wider rounded border border-slate-600 text-slate-400 hover:text-white hover:border-slate-400 transition-colors">
+                            All Routes
+                        </button>
+                        <button id="btn-flat-view" onclick="toggleFlatView()"
+                                class="px-3 py-1 text-[10px] font-bold uppercase tracking-wider rounded border border-slate-600 text-slate-400 hover:text-white hover:border-slate-400 transition-colors">
+                            Flat View
+                        </button>
+                    </div>
+                </div>
+
+                <div class="route-field-wrapper">
+                    <div id="route-field-inner" class="route-field-inner">
+                        <svg id="route-svg" class="route-field-svg w-full rounded-lg" viewBox="0 0 400 300" preserveAspectRatio="xMidYMid meet">
+                            <defs>
+                                <marker id="arrow-green" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+                                    <path d="M0,0 L6,2 L0,4" fill="#22c55e"/>
+                                </marker>
+                                <marker id="arrow-white" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+                                    <path d="M0,0 L6,2 L0,4" fill="#ffffff"/>
+                                </marker>
+                                <marker id="arrow-yellow" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+                                    <path d="M0,0 L6,2 L0,4" fill="#facc15"/>
+                                </marker>
+                                <marker id="arrow-grey" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+                                    <path d="M0,0 L6,2 L0,4" fill="#9ca3af"/>
+                                </marker>
+                                <marker id="arrow-red" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+                                    <path d="M0,0 L6,2 L0,4" fill="#ef4444"/>
+                                </marker>
+                            </defs>
+                            <!-- Field background & lines (drawn by JS) -->
+                            <g id="svg-field-bg"></g>
+                            <!-- LOS -->
+                            <g id="svg-los-group"></g>
+                            <!-- Route traces -->
+                            <g id="svg-routes"></g>
+                            <!-- Player marker / endpoints -->
+                            <g id="svg-endpoints"></g>
+                            <!-- Labels -->
+                            <g id="svg-labels"></g>
+                        </svg>
+                    </div>
+                </div>
+
+                <!-- Legend -->
+                <div class="flex flex-wrap items-center gap-4 mt-3">
+                    <span class="legend-chip text-slate-500"><span class="swatch bg-white rounded"></span> Route</span>
+                    <span class="legend-chip text-slate-500"><span class="swatch bg-gray-400 rounded" style="background: repeating-linear-gradient(90deg, #9ca3af 0 4px, transparent 4px 7px);"></span> Incomplete</span>
+                    <span class="legend-chip text-slate-500"><span class="swatch bg-green-500 rounded"></span> After Catch</span>
+                    <span class="legend-chip text-slate-500"><span class="swatch bg-yellow-400 rounded"></span> Rush</span>
+                    <span class="legend-chip text-slate-500"><span class="swatch bg-red-400 rounded" style="background: repeating-linear-gradient(90deg, #ef4444 0 3px, transparent 3px 5px);"></span> Sack</span>
+                    <span class="legend-chip text-slate-500">
+                        <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="none" stroke="#3b82f6" stroke-width="2"/><circle cx="7" cy="7" r="2" fill="#3b82f6"/></svg>
+                        Touchdown
+                    </span>
+                    <span class="legend-chip text-slate-500"><span class="swatch bg-blue-500 rounded"></span> LOS</span>
+                </div>
+            </div>
+
+            <!-- Controls -->
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div class="flex items-center gap-2">
+                        <button id="btn-prev" onclick="stepBackward()" disabled
+                                class="px-3 py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-50">◀ Prev</button>
+                        <button id="btn-play" onclick="playSimulation()" disabled
+                                class="px-4 py-2 text-xs font-semibold rounded-lg bg-field-600 hover:bg-field-700 text-white disabled:opacity-50">Play</button>
+                        <button id="btn-pause" onclick="pauseSimulation()" disabled
+                                class="px-4 py-2 text-xs font-semibold rounded-lg bg-slate-400 text-white disabled:opacity-50">Pause</button>
+                        <button id="btn-next" onclick="stepForward()" disabled
+                                class="px-3 py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-50">Next ▶</button>
+                        <button id="btn-reset" onclick="resetSimulation()" disabled
+                                class="px-3 py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-50">Reset</button>
+                    </div>
+                    <div class="flex items-center gap-3 w-full sm:w-auto">
+                        <label for="sim-speed" class="text-xs font-semibold uppercase tracking-wider text-slate-500">Speed</label>
+                        <input id="sim-speed" type="range" min="0.5" max="3" step="0.5" value="1"
+                               onchange="setSpeed(this.value)" class="w-32">
+                        <span id="sim-speed-label" class="text-xs font-semibold text-slate-600 w-10">1.0x</span>
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <input id="sim-progress" type="range" min="0" max="0" value="0" disabled
+                           oninput="jumpToPlay(this.value)" class="w-full">
+                </div>
+            </div>
+
+            <!-- Play description -->
+            <div id="sim-current-play" class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 text-sm text-slate-500">
+                Select year/week and load a simulation.
+            </div>
+
+            <!-- Play Timeline table -->
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                <div class="px-4 py-3 border-b border-slate-100">
+                    <h3 class="text-xs uppercase tracking-wider font-semibold text-slate-500">Play Timeline</h3>
+                </div>
+                <div class="overflow-x-auto max-h-80">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="bg-slate-50 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                                <th class="px-3 py-2">#</th>
+                                <th class="px-3 py-2">Time</th>
+                                <th class="px-3 py-2">Type</th>
+                                <th class="px-3 py-2">Description</th>
+                                <th class="px-3 py-2 text-right">Yds</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sim-play-table-body">
+                            <tr><td colspan="5" class="px-4 py-6 text-center text-sm text-slate-400">No simulation loaded yet</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="space-y-4">
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                <h3 class="text-sm font-semibold text-slate-700 mb-3">Stat Accumulator</h3>
+                <div class="grid grid-cols-2 gap-2.5 text-sm">
+                    <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">Plays</p><p id="stat-total-plays" class="font-bold text-slate-800">0</p></div>
+                    <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">TDs</p><p id="stat-total-tds" class="font-bold text-field-700">0</p></div>
+                    <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">Pass Yds</p><p id="stat-pass-yards" class="font-bold text-slate-800">0</p></div>
+                    <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">Rush Yds</p><p id="stat-rush-yards" class="font-bold text-slate-800">0</p></div>
+                    <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">Rec Yds</p><p id="stat-rec-yards" class="font-bold text-slate-800">0</p></div>
+                    <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">1st Downs</p><p id="stat-first-downs" class="font-bold text-slate-800">0</p></div>
+                    <div class="rounded-lg bg-slate-50 p-2.5 col-span-2"><p class="text-[10px] text-slate-400 uppercase">Cumulative EPA</p><p id="stat-total-epa" class="font-bold text-slate-800">0.00</p></div>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                <h3 class="text-sm font-semibold text-slate-700 mb-3">Game Snapshot</h3>
+                <div class="flex items-center justify-between text-sm">
+                    <div>
+                        <p id="sim-away-team" class="font-semibold text-slate-700">AWAY</p>
+                        <p id="sim-away-score" class="text-2xl font-bold text-slate-800">—</p>
+                    </div>
+                    <span class="text-slate-300 text-xl font-light">-</span>
+                    <div class="text-right">
+                        <p id="sim-home-team" class="font-semibold text-slate-700">HOME</p>
+                        <p id="sim-home-score" class="text-2xl font-bold text-slate-800">—</p>
+                    </div>
+                </div>
+                <p id="sim-meta" class="mt-3 text-xs text-slate-400">No game loaded</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+/* =====================================================================
+   Route-Chart Play Viewer
+   =====================================================================
+   Renders an SVG-based route chart with a behind-LOS perspective view.
+   Each play draws route segments (white = pre-catch, green = YAC,
+   grey dashed = incomplete, yellow = rush, red dashed = sack).
+   ===================================================================== */
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/* -- state ------------------------------------------------------------ */
+let simEvents = [];
+let simCurrentIndex = 0;
+let simTimer = null;
+let simPlaying = false;
+let simSpeed = 1.0;
+let allRoutesMode = false;
+const simBaseDelay = 1400;
+
+/* SVG viewBox dimensions */
+const VB_W = 400;
+const VB_H = 300;
+
+/* Field mapping: depth (0-100 field%) → SVG Y (top = upfield, bottom = LOS) */
+/* We show ~40 yards of depth: LOS sits at bottom, +40 yds at top */
+const FIELD_DEPTH_YARDS = 40;
+const FIELD_TOP_Y = 20;
+const FIELD_BOT_Y = 280;
+/* lateral (0-100 field%) → SVG X */
+const FIELD_LEFT_X = 30;
+const FIELD_RIGHT_X = 370;
+
+function _q(id) { return document.getElementById(id); }
+function _def(v, fb) { return v === null || v === undefined ? fb : v; }
+
+/* ── coordinate helpers ─────────────────────────────────────────────── */
+
+/**
+ * Convert a depth value (field-% relative to LOS) to SVG Y.
+ * 0 = LOS (bottom of chart), positive = upfield (towards top).
+ */
+function depthToY(depthPct, losX) {
+    const yardsBeyond = depthPct - losX;
+    const frac = yardsBeyond / FIELD_DEPTH_YARDS;
+    return FIELD_BOT_Y - frac * (FIELD_BOT_Y - FIELD_TOP_Y);
+}
+
+function lateralToX(lateralPct) {
+    return FIELD_LEFT_X + (lateralPct / 100) * (FIELD_RIGHT_X - FIELD_LEFT_X);
+}
+
+/* ── SVG element factories ──────────────────────────────────────────── */
+
+function svgEl(tag, attrs) {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
+    return el;
+}
+
+function buildFieldBackground(losFieldX) {
+    const g = _q('svg-field-bg');
+    g.innerHTML = '';
+
+    /* Dark green field rect */
+    g.appendChild(svgEl('rect', {x:0, y:0, width: VB_W, height: VB_H, fill:'#1a2a1a'}));
+
+    /* Yard-line stripes every 5 yards (visible window) */
+    const losYard = losFieldX;
+    const startYard = Math.floor((losYard - 5) / 5) * 5;
+    const endYard = losYard + FIELD_DEPTH_YARDS + 5;
+    for (let yd = startYard; yd <= endYard; yd += 5) {
+        const y = depthToY(yd, losFieldX);
+        if (y < 0 || y > VB_H) continue;
+        const isTen = (yd % 10 === 0);
+        g.appendChild(svgEl('line', {
+            x1: FIELD_LEFT_X, y1: y, x2: FIELD_RIGHT_X, y2: y,
+            stroke: isTen ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.1)',
+            'stroke-width': isTen ? 0.6 : 0.3,
+        }));
+
+        if (isTen) {
+            const displayYd = yd > 50 ? (100 - yd) : yd;
+            if (displayYd >= 0 && displayYd <= 50) {
+                const makeLabel = function(x, anchor) {
+                    const t = svgEl('text', {
+                        x: x, y: y + 3,
+                        fill: 'rgba(255,255,255,0.35)',
+                        'font-size': '8', 'text-anchor': anchor,
+                        'font-family': 'system-ui, sans-serif',
+                        'font-weight': '700',
+                    });
+                    t.textContent = displayYd;
+                    return t;
+                };
+                g.appendChild(makeLabel(FIELD_LEFT_X - 4, 'end'));
+                g.appendChild(makeLabel(FIELD_RIGHT_X + 4, 'start'));
+            }
+        }
+    }
+
+    /* Sideline borders */
+    g.appendChild(svgEl('line', {x1: FIELD_LEFT_X, y1:0, x2: FIELD_LEFT_X, y2: VB_H, stroke:'rgba(255,255,255,0.08)', 'stroke-width':1}));
+    g.appendChild(svgEl('line', {x1: FIELD_RIGHT_X, y1:0, x2: FIELD_RIGHT_X, y2: VB_H, stroke:'rgba(255,255,255,0.08)', 'stroke-width':1}));
+}
+
+function drawLOS(losFieldX) {
+    const g = _q('svg-los-group');
+    g.innerHTML = '';
+    const y = FIELD_BOT_Y;
+    g.appendChild(svgEl('line', {
+        x1: FIELD_LEFT_X - 8, y1: y, x2: FIELD_RIGHT_X + 8, y2: y,
+        stroke: '#3b82f6', 'stroke-width': 1.5, opacity: 0.9,
+    }));
+    const makeLosLabel = function(x, anchor) {
+        const t = svgEl('text', {
+            x: x, y: y + 12,
+            fill: '#3b82f6', 'font-size': '8', 'text-anchor': anchor,
+            'font-family': 'system-ui, sans-serif', 'font-weight': '700',
+        });
+        t.textContent = 'LOS';
+        return t;
+    };
+    g.appendChild(makeLosLabel(FIELD_LEFT_X - 8, 'end'));
+    g.appendChild(makeLosLabel(FIELD_RIGHT_X + 8, 'start'));
+}
+
+/* ── route drawing ──────────────────────────────────────────────────── */
+
+function clearRoutes() {
+    _q('svg-routes').innerHTML = '';
+    _q('svg-endpoints').innerHTML = '';
+    _q('svg-labels').innerHTML = '';
+}
+
+/**
+ * Draw a single play's route_path onto the SVG.
+ */
+function drawRoute(evt, animate, opacity) {
+    const rp = evt.route_path;
+    if (!rp || !rp.segments || rp.segments.length < 2) return;
+
+    const routesG = _q('svg-routes');
+    const endpointsG = _q('svg-endpoints');
+    const labelsG = _q('svg-labels');
+    const losX = evt.start_x;
+    const segs = rp.segments;
+
+    const groups = classifySegments(segs, rp, evt.role);
+
+    groups.forEach(function(group) {
+        if (group.points.length < 2) return;
+        const pts = group.points.map(function(s) {
+            return lateralToX(s.lateral).toFixed(1) + ',' + depthToY(s.depth, losX).toFixed(1);
+        }).join(' ');
+
+        const attrs = {
+            points: pts,
+            class: 'route-line ' + group.cssClass,
+            opacity: opacity,
+        };
+        if (group.marker) attrs['marker-end'] = 'url(#' + group.marker + ')';
+
+        const polyline = svgEl('polyline', attrs);
+
+        if (animate) {
+            routesG.appendChild(polyline);
+            const len = polyline.getTotalLength ? polyline.getTotalLength() : 500;
+            polyline.style.setProperty('--route-len', len);
+            polyline.classList.add('animate-draw');
+        } else {
+            routesG.appendChild(polyline);
+        }
+    });
+
+    /* Endpoint marker */
+    const lastSeg = segs[segs.length - 1];
+    const ex = lateralToX(lastSeg.lateral);
+    const ey = depthToY(lastSeg.depth, losX);
+
+    if (rp.is_touchdown) {
+        endpointsG.appendChild(svgEl('circle', {
+            cx: ex, cy: ey, r: 6,
+            fill: 'none', stroke: '#3b82f6', 'stroke-width': 2, opacity: opacity,
+            class: 'route-endpoint',
+        }));
+        endpointsG.appendChild(svgEl('circle', {
+            cx: ex, cy: ey, r: 2.5,
+            fill: '#3b82f6', opacity: opacity,
+            class: 'route-endpoint',
+        }));
+        labelsG.appendChild((() => {
+            const t = svgEl('text', {
+                x: ex, y: ey - 10,
+                fill: '#3b82f6', 'font-size': '8', 'text-anchor': 'middle',
+                'font-family': 'system-ui, sans-serif', 'font-weight': '700',
+                opacity: opacity, class: 'route-endpoint',
+            });
+            t.textContent = 'TD';
+            return t;
+        })());
+    } else if (rp.is_sack) {
+        endpointsG.appendChild(svgEl('text', {
+            x: ex, y: ey + 3,
+            fill: '#ef4444', 'font-size': '10', 'text-anchor': 'middle',
+            'font-family': 'system-ui, sans-serif', 'font-weight': '900',
+            opacity: opacity, class: 'route-endpoint',
+        })).textContent = '✕';
+    } else {
+        const dotColor = rp.is_complete ? '#22c55e' : (evt.role === 'rush' ? '#facc15' : '#9ca3af');
+        endpointsG.appendChild(svgEl('circle', {
+            cx: ex, cy: ey, r: 3,
+            fill: dotColor, opacity: opacity,
+            class: 'route-endpoint',
+        }));
+    }
+}
+
+/**
+ * Break segments into CSS-classified polyline groups.
+ */
+function classifySegments(segs, rp, role) {
+    const groups = [];
+    let currentGroup = null;
+
+    for (let i = 0; i < segs.length; i++) {
+        const seg = segs[i];
+        let cssClass, marker;
+
+        if (role === 'rush') {
+            cssClass = 'rush-segment';
+            marker = 'arrow-yellow';
+        } else if (rp.is_sack && (seg.type === 'sack_end' || (i > 0 && segs[i-1].type === 'drop'))) {
+            cssClass = 'sack-segment';
+            marker = 'arrow-red';
+        } else if (seg.type === 'catch_end') {
+            if (currentGroup) groups.push(currentGroup);
+            currentGroup = {
+                cssClass: 'yac-segment',
+                marker: 'arrow-green',
+                points: [segs[i - 1], seg],
+            };
+            groups.push(currentGroup);
+            currentGroup = null;
+            continue;
+        } else if (!rp.is_complete && !rp.is_sack && role !== 'rush') {
+            cssClass = 'incomplete-segment';
+            marker = 'arrow-grey';
+        } else {
+            cssClass = 'route-segment';
+            marker = 'arrow-white';
+        }
+
+        if (currentGroup && currentGroup.cssClass === cssClass) {
+            currentGroup.points.push(seg);
+            currentGroup.marker = marker;
+        } else {
+            if (currentGroup) groups.push(currentGroup);
+            currentGroup = {
+                cssClass: cssClass,
+                marker: marker,
+                points: i > 0 && (!currentGroup || currentGroup.cssClass !== cssClass) ? [segs[i-1], seg] : [seg],
+            };
+        }
+    }
+    if (currentGroup && currentGroup.points.length >= 2) groups.push(currentGroup);
+
+    return groups.filter(function(g) { return g.points.length >= 2; });
+}
+
+/* ── all-routes overlay ─────────────────────────────────────────────── */
+
+function toggleAllRoutes() {
+    allRoutesMode = !allRoutesMode;
+    const btn = _q('btn-all-routes');
+    if (allRoutesMode) {
+        btn.classList.add('border-white', 'text-white');
+        btn.classList.remove('border-slate-600', 'text-slate-400');
+        drawAllRoutes();
+    } else {
+        btn.classList.remove('border-white', 'text-white');
+        btn.classList.add('border-slate-600', 'text-slate-400');
+        if (simEvents.length) applyFrame(simCurrentIndex, true);
+    }
+}
+
+function drawAllRoutes() {
+    if (!simEvents.length) return;
+    const refLos = simEvents[0].start_x;
+    clearRoutes();
+    buildFieldBackground(refLos);
+    drawLOS(refLos);
+
+    simEvents.forEach(function(evt) {
+        drawRoute(evt, false, 0.7);
+    });
+}
+
+function toggleFlatView() {
+    const inner = _q('route-field-inner');
+    const btn = _q('btn-flat-view');
+    inner.classList.toggle('flat-view');
+    if (inner.classList.contains('flat-view')) {
+        btn.classList.add('border-white', 'text-white');
+        btn.classList.remove('border-slate-600', 'text-slate-400');
+    } else {
+        btn.classList.remove('border-white', 'text-white');
+        btn.classList.add('border-slate-600', 'text-slate-400');
+    }
+}
+
+/* ── playback controls ───────────────────────────────────────────── */
+
+function setControlsEnabled(enabled) {
+    ['btn-prev', 'btn-play', 'btn-pause', 'btn-next', 'btn-reset', 'sim-progress'].forEach(function(id) {
+        _q(id).disabled = !enabled;
+    });
+}
+
+function resetStats() {
+    ['stat-total-plays','stat-total-tds','stat-pass-yards','stat-rush-yards','stat-rec-yards','stat-first-downs'].forEach(function(id) {
+        _q(id).textContent = '0';
+    });
+    _q('stat-total-epa').textContent = '0.00';
+}
+
+function updateStats(snapshot) {
+    _q('stat-total-plays').textContent = _def(snapshot.total_plays, 0);
+    _q('stat-total-tds').textContent = _def(snapshot.total_tds, 0);
+    _q('stat-pass-yards').textContent = _def(snapshot.pass_yards, 0);
+    _q('stat-rush-yards').textContent = _def(snapshot.rush_yards, 0);
+    _q('stat-rec-yards').textContent = _def(snapshot.rec_yards, 0);
+    _q('stat-first-downs').textContent = _def(snapshot.first_downs, 0);
+    _q('stat-total-epa').textContent = _def(snapshot.total_epa, 0).toFixed(2);
+}
+
+function renderTimeline(events) {
+    const body = _q('sim-play-table-body');
+    if (!events.length) {
+        body.innerHTML = '<tr><td colspan="5" class="px-4 py-6 text-center text-sm text-slate-400">No player-involved plays found for this game</td></tr>';
+        return;
+    }
+    body.innerHTML = events.map(function(e, i) {
+        const ptype = (e.play_type || '—').toUpperCase();
+        const pclass = e.play_type === 'pass'
+            ? 'bg-blue-100 text-blue-700'
+            : e.play_type === 'run'
+                ? 'bg-field-100 text-field-700'
+                : 'bg-slate-100 text-slate-600';
+        const y = e.yards_gained > 0 ? '+' + e.yards_gained : e.yards_gained;
+        return '<tr id="sim-row-' + i + '" class="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer" onclick="jumpToPlay(' + i + ')">'
+            + '<td class="px-3 py-2 text-xs text-slate-500">' + (i + 1) + '</td>'
+            + '<td class="px-3 py-2 text-xs text-slate-500">' + (e.time_label || '—') + '</td>'
+            + '<td class="px-3 py-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold ' + pclass + '">' + ptype + '</span></td>'
+            + '<td class="px-3 py-2 text-xs text-slate-700">' + ((e.description || '—').replace(/</g, '&lt;').replace(/>/g, '&gt;')) + '</td>'
+            + '<td class="px-3 py-2 text-xs text-right font-semibold text-slate-700">' + y + '</td>'
+            + '</tr>';
+    }).join('');
+}
+
+function updateActiveRow(index) {
+    simEvents.forEach(function(_, i) {
+        const row = _q('sim-row-' + i);
+        if (!row) return;
+        row.classList.toggle('bg-field-50', i === index);
+    });
+}
+
+function applyFrame(index, instant) {
+    if (!simEvents.length) return;
+    if (index < 0) index = 0;
+    if (index >= simEvents.length) index = simEvents.length - 1;
+    simCurrentIndex = index;
+
+    const e = simEvents[index];
+
+    if (allRoutesMode) {
+        drawAllRoutes();
+    } else {
+        clearRoutes();
+        buildFieldBackground(e.start_x);
+        drawLOS(e.start_x);
+        drawRoute(e, !instant, 1.0);
+    }
+
+    const yards = e.yards_gained > 0 ? '+' + e.yards_gained : e.yards_gained;
+
+    const badgeParts = [];
+    if (e.badges.touchdown) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-field-600 text-white text-[10px] font-bold">TD</span>');
+    if (e.badges.first_down) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-blue-600 text-white text-[10px] font-bold">1D</span>');
+    if (e.badges.turnover) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold">TURNOVER</span>');
+    if (e.badges.big_play) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-pigskin-500 text-white text-[10px] font-bold">BIG PLAY</span>');
+
+    _q('sim-current-play').innerHTML =
+        '<div class="flex flex-wrap items-center gap-2 mb-1">'
+        + '<span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Play ' + (index + 1) + ' of ' + simEvents.length + '</span>'
+        + '<span class="text-xs text-slate-400">' + (e.time_label || '—') + '</span>'
+        + '<span class="text-xs text-slate-400">' + (e.down_distance || '—') + '</span>'
+        + '<span class="px-2 py-0.5 rounded text-[10px] font-bold ' + (e.role === 'pass' ? 'bg-blue-100 text-blue-700' : e.role === 'rush' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700') + '">'
+        + (e.role || 'play').toUpperCase() + ' · ' + yards + ' yds</span>'
+        + badgeParts.join('')
+        + '</div>'
+        + '<p class="text-sm text-slate-700">' + ((e.description || 'No description').replace(/</g, '&lt;').replace(/>/g, '&gt;')) + '</p>'
+        + '<p class="mt-2 text-xs text-slate-500">EPA: <span class="' + (e.epa >= 0 ? 'text-field-700' : 'text-red-500') + ' font-semibold">' + (e.epa >= 0 ? '+' : '') + e.epa.toFixed(2) + '</span></p>';
+
+    updateStats(e.stats_snapshot || {});
+    _q('sim-progress').value = String(index);
+    updateActiveRow(index);
+    _q('btn-prev').disabled = index === 0;
+    _q('btn-next').disabled = index >= simEvents.length - 1;
+
+    if (e.home_score !== null && e.home_score !== undefined) _q('sim-home-score').textContent = e.home_score;
+    if (e.away_score !== null && e.away_score !== undefined) _q('sim-away-score').textContent = e.away_score;
+}
+
+function playSimulation() {
+    if (!simEvents.length || simPlaying) return;
+    simPlaying = true;
+    _q('btn-play').disabled = true;
+    _q('btn-pause').disabled = false;
+    simTimer = setInterval(function() {
+        if (simCurrentIndex >= simEvents.length - 1) { pauseSimulation(); return; }
+        applyFrame(simCurrentIndex + 1, false);
+    }, simBaseDelay / simSpeed);
+}
+
+function pauseSimulation() {
+    simPlaying = false;
+    _q('btn-play').disabled = !simEvents.length;
+    _q('btn-pause').disabled = true;
+    if (simTimer) { clearInterval(simTimer); simTimer = null; }
+}
+
+function stepForward() { if (!simEvents.length) return; pauseSimulation(); applyFrame(simCurrentIndex + 1, false); }
+function stepBackward() { if (!simEvents.length) return; pauseSimulation(); applyFrame(simCurrentIndex - 1, false); }
+function resetSimulation() { if (!simEvents.length) return; pauseSimulation(); allRoutesMode = false; _q('btn-all-routes').classList.remove('border-white','text-white'); _q('btn-all-routes').classList.add('border-slate-600','text-slate-400'); applyFrame(0, true); }
+
+function jumpToPlay(value) {
+    if (!simEvents.length) return;
+    pauseSimulation();
+    allRoutesMode = false;
+    _q('btn-all-routes').classList.remove('border-white','text-white');
+    _q('btn-all-routes').classList.add('border-slate-600','text-slate-400');
+    applyFrame(parseInt(value, 10) || 0, true);
+}
+
+function setSpeed(value) {
+    simSpeed = parseFloat(value);
+    _q('sim-speed-label').textContent = simSpeed.toFixed(1) + 'x';
+    if (simPlaying) { pauseSimulation(); playSimulation(); }
+}
+
+async function loadSimulation() {
+    pauseSimulation();
+    resetStats();
+    allRoutesMode = false;
+
+    const year = _q('sim-year').value;
+    const week = _q('sim-week').value;
+    const spinner = _q('sim-load-spinner');
+    const btn = _q('sim-load-btn');
+    spinner.classList.remove('hidden');
+    btn.disabled = true;
+    _q('sim-live-badge').classList.add('hidden');
+
+    try {
+        const resp = await fetch('/api/stats/players/{{ player.id }}/game-simulation?year=' + year + '&week=' + week);
+        if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.detail || 'Failed to load simulation');
+        }
+        const data = await resp.json();
+
+        simEvents = data.events || [];
+        simCurrentIndex = 0;
+        _q('sim-progress').max = String(Math.max(0, simEvents.length - 1));
+        _q('sim-progress').value = '0';
+        setControlsEnabled(simEvents.length > 0);
+
+        const game = data.game_summary || {};
+        _q('sim-home-team').textContent = game.home_team || 'HOME';
+        _q('sim-away-team').textContent = game.away_team || 'AWAY';
+        _q('sim-home-score').textContent = _def(game.home_score, '—');
+        _q('sim-away-score').textContent = _def(game.away_score, '—');
+        _q('sim-meta').textContent = 'Week ' + data.week + ', ' + data.year + ' · ' + data.total_events + ' player-involved plays';
+
+        renderTimeline(simEvents);
+        if (simEvents.length > 0) {
+            applyFrame(0, true);
+        } else {
+            clearRoutes();
+            buildFieldBackground(25);
+            drawLOS(25);
+            _q('sim-current-play').textContent = 'No player-involved plays available for this game.';
+        }
+
+        if (parseInt(year, 10) === new Date().getFullYear()) {
+            _q('sim-live-badge').classList.remove('hidden');
+            _q('sim-live-badge').style.display = 'inline-flex';
+        }
+    } catch (err) {
+        simEvents = [];
+        setControlsEnabled(false);
+        renderTimeline([]);
+        clearRoutes();
+        buildFieldBackground(25);
+        drawLOS(25);
+        _q('sim-current-play').innerHTML = '<p class="text-sm text-red-500">' + (err.message || 'Failed to load simulation') + '</p>';
+        if (typeof showToast === 'function') showToast(err.message || 'Failed to load simulation', 'error');
+    } finally {
+        spinner.classList.add('hidden');
+        btn.disabled = false;
+    }
+}
+
+/* ── init ──────────────────────────────────────────────────────────── */
+buildFieldBackground(25);
+drawLOS(25);
+setControlsEnabled(false);
+</script>
+{% endblock %}
