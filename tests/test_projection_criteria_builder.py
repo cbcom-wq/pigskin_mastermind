@@ -143,10 +143,11 @@ class TestBuildWeeklyCriteria:
         with pytest.raises(ValueError, match="Player 999 not found"):
             builder.build_weekly_criteria(999, week=1, year=2024)
 
-    def test_snap_pct_as_touch_percentage(self, db, sample_data):
+    def test_touch_share_as_touch_percentage(self, db, sample_data):
         builder = ProjectionCriteriaBuilder(db)
         criteria = builder.build_weekly_criteria(sample_data.id, week=10, year=2024)
-        assert criteria.positional_touch_percentage == pytest.approx(95.0, rel=0.01)
+        # QB with 500 pass_att — only QB on team so 100% of pass attempts
+        assert criteria.positional_touch_percentage == pytest.approx(100.0, rel=0.01)
 
 
 class TestBuildYearlyCriteria:
@@ -210,11 +211,14 @@ class TestOpponentDefenseLevel:
         expected = ((5 - 1) / 31) * 100
         assert criteria.opponent_defense_level == pytest.approx(expected, rel=0.01)
 
-    def test_yearly_criteria_keeps_neutral_50(self, db, sample_data):
-        """build_yearly_criteria should keep opponent_defense_level at 50 (no single opponent)."""
+    def test_yearly_criteria_uses_schedule_defense(self, db, sample_data):
+        """build_yearly_criteria should use schedule-averaged opponent defense level."""
         builder = ProjectionCriteriaBuilder(db)
         criteria = builder.build_yearly_criteria(sample_data.id, year=2025)
-        assert criteria.opponent_defense_level == 50.0
+        # Only OPP10 has def_rank_vs_qb=5 → level = ((5-1)/31)*100 ≈ 12.9
+        # Other opponents have no data, so average is based on OPP10 only
+        expected = ((5 - 1) / 31) * 100
+        assert criteria.opponent_defense_level == pytest.approx(expected, rel=0.01)
 
 
 class TestTrendScoreConfidence:
@@ -288,3 +292,294 @@ class TestInjuryRisk:
         builder = ProjectionCriteriaBuilder(db)
         risk = builder._compute_injury_risk(player)
         assert risk == 5.0
+
+
+class TestTouchShare:
+    def test_qb_touch_share(self, db, sample_data):
+        """QB touch share = pass_att / team_total_pass_att."""
+        builder = ProjectionCriteriaBuilder(db)
+        share = builder._compute_touch_share(sample_data.id, 'QB', 'KC', 2024)
+        # Only QB on team with 500 pass_att → 100%
+        assert share == pytest.approx(100.0, rel=0.01)
+
+    def test_wr_touch_share(self, db):
+        """WR touch share = targets / team_total_targets."""
+        team = DBTeam(team_id="t3", name="Team3", owner="Owner3")
+        db.add(team)
+        db.flush()
+
+        wr1 = DBPlayer(player_id="wr1", name="WR1", position="WR",
+                        nfl_team="BUF", team_id=team.id, stats={})
+        wr2 = DBPlayer(player_id="wr2", name="WR2", position="WR",
+                        nfl_team="BUF", team_id=team.id, stats={})
+        db.add_all([wr1, wr2])
+        db.flush()
+
+        db.add(DBPlayerSeasonStats(
+            player_id=wr1.id, year=2024, games_played=16,
+            targets=120, fantasy_points_total=200.0, fantasy_points_avg=12.5,
+        ))
+        db.add(DBPlayerSeasonStats(
+            player_id=wr2.id, year=2024, games_played=16,
+            targets=80, fantasy_points_total=120.0, fantasy_points_avg=7.5,
+        ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        share = builder._compute_touch_share(wr1.id, 'WR', 'BUF', 2024)
+        # 120 / (120 + 80) = 60%
+        assert share == pytest.approx(60.0, rel=0.01)
+
+    def test_fallback_to_snap_pct(self, db):
+        """Falls back to snap_pct when no team data available."""
+        team = DBTeam(team_id="t4", name="Team4", owner="Owner4")
+        db.add(team)
+        db.flush()
+
+        player = DBPlayer(player_id="fb1", name="Fallback", position="K",
+                          nfl_team="NYJ", team_id=team.id, stats={})
+        db.add(player)
+        db.flush()
+
+        db.add(DBPlayerSeasonStats(
+            player_id=player.id, year=2024, games_played=16,
+            snap_pct=0.85,
+        ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        share = builder._compute_touch_share(player.id, 'K', 'NYJ', 2024)
+        assert share == pytest.approx(85.0, rel=0.01)
+
+
+class TestSkillComposite:
+    def test_composite_considers_multiple_factors(self, db, sample_data):
+        """Skill composite should use points, efficiency, consistency, volume."""
+        builder = ProjectionCriteriaBuilder(db)
+        skill = builder._compute_skill_composite(sample_data.id, 'QB', 2024)
+        # Single player = 0th percentile for all rank-based metrics (no one below),
+        # but consistency should contribute positively
+        assert 0 <= skill <= 100
+
+    def test_composite_higher_for_better_player(self, db):
+        """Better player should have higher composite skill."""
+        team = DBTeam(team_id="t5", name="Team5", owner="Owner5")
+        db.add(team)
+        db.flush()
+
+        p1 = DBPlayer(player_id="sk1", name="Star", position="RB",
+                       nfl_team="DAL", team_id=team.id, stats={})
+        p2 = DBPlayer(player_id="sk2", name="Backup", position="RB",
+                       nfl_team="DAL", team_id=team.id, stats={})
+        db.add_all([p1, p2])
+        db.flush()
+
+        db.add(DBPlayerSeasonStats(
+            player_id=p1.id, year=2024, games_played=16,
+            rush_att=250, targets=60, fantasy_points_total=280.0,
+            fantasy_points_avg=17.5, fantasy_points_per_touch=0.9,
+        ))
+        db.add(DBPlayerSeasonStats(
+            player_id=p2.id, year=2024, games_played=16,
+            rush_att=80, targets=20, fantasy_points_total=80.0,
+            fantasy_points_avg=5.0, fantasy_points_per_touch=0.8,
+        ))
+        for w in range(1, 17):
+            db.add(DBPlayerGameLog(player_id=p1.id, year=2024, week=w,
+                                   fantasy_points=17.5))
+            db.add(DBPlayerGameLog(player_id=p2.id, year=2024, week=w,
+                                   fantasy_points=5.0))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        skill_star = builder._compute_skill_composite(p1.id, 'RB', 2024)
+        skill_backup = builder._compute_skill_composite(p2.id, 'RB', 2024)
+        assert skill_star > skill_backup
+
+
+class TestPositionEfficiency:
+    def test_qb_efficiency(self, db, sample_data):
+        """QB efficiency uses pass_att + rush_att as denominator."""
+        builder = ProjectionCriteriaBuilder(db)
+        eff = builder._compute_position_efficiency(sample_data.id, 'QB', 2024)
+        # 350 / (500 + 50) = 0.636
+        assert eff == pytest.approx(0.636, rel=0.01)
+
+    def test_wr_efficiency(self, db):
+        """WR efficiency uses targets as denominator."""
+        team = DBTeam(team_id="t6", name="Team6", owner="Owner6")
+        db.add(team)
+        db.flush()
+
+        wr = DBPlayer(player_id="we1", name="WR Eff", position="WR",
+                       nfl_team="MIA", team_id=team.id, stats={})
+        db.add(wr)
+        db.flush()
+
+        db.add(DBPlayerSeasonStats(
+            player_id=wr.id, year=2024, games_played=16,
+            targets=150, rec=100, fantasy_points_total=240.0,
+            fantasy_points_avg=15.0,
+        ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        eff = builder._compute_position_efficiency(wr.id, 'WR', 2024)
+        # 240 / 150 = 1.6
+        assert eff == pytest.approx(1.6, rel=0.01)
+
+
+class TestMultiSeasonAvg:
+    def test_weighted_average_across_seasons(self, db):
+        """Multi-season average should weight recent seasons more."""
+        team = DBTeam(team_id="t7", name="Team7", owner="Owner7")
+        db.add(team)
+        db.flush()
+
+        player = DBPlayer(player_id="ms1", name="Multi", position="QB",
+                          nfl_team="LAR", team_id=team.id, stats={})
+        db.add(player)
+        db.flush()
+
+        # 3 seasons of data
+        db.add(DBPlayerSeasonStats(
+            player_id=player.id, year=2024, games_played=17,
+            fantasy_points_total=340.0, fantasy_points_avg=20.0,
+        ))
+        db.add(DBPlayerSeasonStats(
+            player_id=player.id, year=2023, games_played=16,
+            fantasy_points_total=256.0, fantasy_points_avg=16.0,
+        ))
+        db.add(DBPlayerSeasonStats(
+            player_id=player.id, year=2022, games_played=17,
+            fantasy_points_total=170.0, fantasy_points_avg=10.0,
+        ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        avg = builder._compute_weighted_historical_avg(player.id, target_year=2025)
+        # 20.0 * 0.6 + 16.0 * 0.3 + 10.0 * 0.1 = 12.0 + 4.8 + 1.0 = 17.8
+        assert avg == pytest.approx(17.8, rel=0.01)
+
+    def test_skips_seasons_with_few_games(self, db):
+        """Seasons with < 6 games should be skipped."""
+        team = DBTeam(team_id="t8", name="Team8", owner="Owner8")
+        db.add(team)
+        db.flush()
+
+        player = DBPlayer(player_id="ms2", name="Injured", position="RB",
+                          nfl_team="CHI", team_id=team.id, stats={})
+        db.add(player)
+        db.flush()
+
+        db.add(DBPlayerSeasonStats(
+            player_id=player.id, year=2024, games_played=17,
+            fantasy_points_total=340.0, fantasy_points_avg=20.0,
+        ))
+        db.add(DBPlayerSeasonStats(
+            player_id=player.id, year=2023, games_played=3,  # too few
+            fantasy_points_total=60.0, fantasy_points_avg=20.0,
+        ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        avg = builder._compute_weighted_historical_avg(player.id, target_year=2025)
+        # Only 2024 counts (weight=0.6), normalized: 20.0 * 0.6 / 0.6 = 20.0
+        assert avg == pytest.approx(20.0, rel=0.01)
+
+
+class TestInjuryHistory:
+    def test_healthy_with_good_history(self, db):
+        """Healthy player with full seasons should have low risk."""
+        team = DBTeam(team_id="t9", name="Team9", owner="Owner9")
+        db.add(team)
+        db.flush()
+
+        player = DBPlayer(player_id="ih1", name="Durable", position="WR",
+                          nfl_team="PHI", team_id=team.id, stats={})
+        db.add(player)
+        db.flush()
+
+        for yr in [2022, 2023, 2024]:
+            db.add(DBPlayerSeasonStats(
+                player_id=player.id, year=yr, games_played=17,
+            ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        risk = builder._compute_injury_risk(player, player.id)
+        # status=5.0 * 0.7 + history=(1-17/17)*100*0.3 = 3.5 + 0 = 3.5
+        assert risk == pytest.approx(3.5, rel=0.01)
+
+    def test_healthy_with_injury_history(self, db):
+        """Healthy player with missed games should have elevated risk."""
+        team = DBTeam(team_id="t10", name="Team10", owner="Owner10")
+        db.add(team)
+        db.flush()
+
+        player = DBPlayer(player_id="ih2", name="Fragile", position="RB",
+                          nfl_team="SEA", team_id=team.id, stats={})
+        db.add(player)
+        db.flush()
+
+        # Average 10 games per season
+        for yr in [2022, 2023, 2024]:
+            db.add(DBPlayerSeasonStats(
+                player_id=player.id, year=yr, games_played=10,
+            ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        risk = builder._compute_injury_risk(player, player.id)
+        # status=5 * 0.7 + (1-10/17)*100 * 0.3 = 3.5 + 12.35 ≈ 15.85
+        expected = 5.0 * 0.7 + (1 - 10 / 17) * 100 * 0.3
+        assert risk == pytest.approx(expected, rel=0.01)
+
+
+class TestScheduleDefenseLevel:
+    def test_schedule_avg_with_mixed_opponents(self, db, sample_data):
+        """Schedule defense should average available opponent data."""
+        builder = ProjectionCriteriaBuilder(db)
+        level = builder._compute_schedule_defense_level(sample_data.id, 'QB', 2024)
+        # Only OPP10 has def_rank_vs_qb=5 → ((5-1)/31)*100 ≈ 12.9
+        expected = ((5 - 1) / 31) * 100
+        assert level == pytest.approx(expected, rel=0.01)
+
+    def test_no_opponent_data_returns_neutral(self, db):
+        """No game logs → neutral 50.0."""
+        team = DBTeam(team_id="t11", name="Team11", owner="Owner11")
+        db.add(team)
+        db.flush()
+
+        player = DBPlayer(player_id="sd1", name="NoGames", position="WR",
+                          nfl_team="ATL", team_id=team.id, stats={})
+        db.add(player)
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        level = builder._compute_schedule_defense_level(player.id, 'WR', 2024)
+        assert level == 50.0
+
+
+class TestMomentumComposite:
+    def test_momentum_blends_points_and_yards(self, db):
+        """Momentum should blend points (60%) and yards (40%) deviations."""
+        # Set up team with weekly stats where recent weeks are above average
+        for wk in range(1, 9):
+            pts = 20 if wk <= 4 else 30
+            yds = 300 if wk <= 4 else 400
+            db.add(DBNFLTeamStats(
+                nfl_team="MOM", year=2024, week=wk,
+                points_scored=pts, total_yards=yds,
+            ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        momentum = builder._compute_momentum("MOM", 2024, num_weeks=4)
+
+        # Recent 4 weeks (5-8): pts=30, yds=400
+        # Season avg: pts=25, yds=350
+        # pts_dev = ((30-25)/25)*100 = 20%, yds_dev = ((400-350)/350)*100 ≈ 14.3%
+        # blended = 20*0.6 + 14.3*0.4 = 12 + 5.71 ≈ 17.7
+        assert momentum > 0
+        assert momentum == pytest.approx(17.7, rel=0.05)
