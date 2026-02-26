@@ -62,9 +62,11 @@ async def team_players_for_trade(
 
     html_parts = []
     for p in players:
+        img_html = f'<img src="{p.headshot_url}" alt="" class="w-7 h-7 rounded-full object-cover bg-slate-200 flex-shrink-0" onerror="this.style.display=\'none\'" />' if p.headshot_url else ''
         html_parts.append(
             f'<div class="flex items-center justify-between p-2 rounded-lg hover:bg-slate-50 transition-colors">'
             f'  <div class="flex items-center gap-2">'
+            f'    {img_html}'
             f'    <span class="inline-flex items-center justify-center w-9 h-5 rounded text-[10px] font-bold badge-{p.position.lower()}">{p.position}</span>'
             f'    <div>'
             f'      <p class="text-sm font-medium text-slate-700">{p.name}</p>'

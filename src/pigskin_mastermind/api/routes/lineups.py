@@ -23,7 +23,8 @@ def _db_team_to_domain(db_team, db_players):
             team=p.nfl_team,
             projected_points=p.projected_points,
             actual_points=p.actual_points,
-            stats=p.stats or {}
+            stats=p.stats or {},
+            headshot_url=p.headshot_url,
         )
         for p in db_players
     ]

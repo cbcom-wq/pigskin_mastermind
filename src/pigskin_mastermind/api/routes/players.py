@@ -135,9 +135,15 @@ async def search_players(
         team_name = ""
         if p.team:
             team_name = p.team.name
+        img_html = ''
+        if p.headshot_url:
+            img_html = f'<img src="{p.headshot_url}" alt="" class="w-8 h-8 rounded-full object-cover bg-slate-100" onerror="this.style.display=\'none\'" />'
+        else:
+            img_html = '<div class="w-8 h-8 rounded-full bg-slate-200"></div>'
         html_parts.append(
             f'<a href="/players/{p.id}" class="flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 transition-colors cursor-pointer">'
             f'  <div class="flex items-center gap-3">'
+            f'    {img_html}'
             f'    <span class="inline-flex items-center justify-center w-10 h-6 rounded text-xs font-bold badge-{p.position.lower()}">{p.position}</span>'
             f'    <div>'
             f'      <p class="text-sm font-medium text-slate-800">{p.name}</p>'
@@ -162,9 +168,11 @@ def _render_trade_search_results(players):
 
     html_parts = []
     for p in players:
+        img_html = f'<img src="{p.headshot_url}" alt="" class="w-7 h-7 rounded-full object-cover bg-slate-200 flex-shrink-0" onerror="this.style.display=\'none\'" />' if p.headshot_url else ''
         html_parts.append(
             f'<div class="flex items-center justify-between p-2 rounded-lg hover:bg-slate-50 transition-colors">'
             f'  <div class="flex items-center gap-2">'
+            f'    {img_html}'
             f'    <span class="inline-flex items-center justify-center w-9 h-5 rounded text-[10px] font-bold badge-{p.position.lower()}">{p.position}</span>'
             f'    <div>'
             f'      <p class="text-sm font-medium text-slate-700">{p.name}</p>'
@@ -211,9 +219,12 @@ async def list_players(
     html_parts = []
     for p in players:
         team_name = p.team.name if p.team else "—"
+        img_html = ''
+        if p.headshot_url:
+            img_html = f'<img src="{p.headshot_url}" alt="" class="w-8 h-8 rounded-full object-cover bg-slate-100 inline-block mr-2 align-middle" onerror="this.style.display=\'none\'" />'
         html_parts.append(
             f'<tr class="hover:bg-slate-50 transition-colors cursor-pointer" onclick="window.location=\'/players/{p.id}\'" >'
-            f'  <td class="px-6 py-3 text-sm font-medium"><a href="/players/{p.id}" class="text-field-700 hover:text-field-900 hover:underline">{p.name}</a></td>'
+            f'  <td class="px-6 py-3 text-sm font-medium">{img_html}<a href="/players/{p.id}" class="text-field-700 hover:text-field-900 hover:underline">{p.name}</a></td>'
             f'  <td class="px-6 py-3">'
             f'    <span class="inline-flex items-center justify-center w-10 h-6 rounded text-xs font-bold badge-{p.position.lower()}">{p.position}</span>'
             f'  </td>'

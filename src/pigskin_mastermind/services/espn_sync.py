@@ -104,6 +104,17 @@ class ESPNSyncService:
         db_player.stats = getattr(espn_player, 'stats', {})
         db_player.team_id = team_db_id
 
+        # Set headshot URL from ESPN CDN (only if not already set by nfl_data_py)
+        if not db_player.headshot_url:
+            espn_id = espn_player.playerId
+            if espn_player.position == 'D/ST' or espn_player.position == 'DEF':
+                # Use ESPN team logo for defenses
+                pro_team_id = getattr(espn_player, 'proTeamId', None)
+                if pro_team_id:
+                    db_player.headshot_url = f"https://a.espncdn.com/i/teamlogos/nfl/500/{espn_player.proTeam.lower()}.png"
+            else:
+                db_player.headshot_url = f"https://a.espncdn.com/i/headshots/nfl/players/full/{espn_id}.png"
+
         return db_player
 
     def sync_team(self, team_db_id: int) -> DBTeam:
@@ -709,16 +720,26 @@ class ESPNSyncService:
             db_player.stats = merged
             self.db.flush()
 
+        # Extract schedule for opponent info
+        schedule = getattr(espn_player, 'schedule', {})
+
         # Now parse the updated JSON into structured tables for this player
-        return self._populate_single_player_stats(db_player, year)
+        return self._populate_single_player_stats(db_player, year, schedule=schedule)
 
     def _populate_single_player_stats(
         self,
         player: DBPlayer,
         year: int,
+        schedule: Optional[Dict] = None,
     ) -> Dict[str, int]:
         """Parse the raw stats JSON for a single player into game logs and
         season stats rows.
+
+        Args:
+            player: The DB player record.
+            year: Season year.
+            schedule: Optional ESPN schedule dict mapping week str to
+                      ``{'team': 'OPP', 'date': datetime}``.
 
         Returns:
             Dict with 'game_logs' and 'season_stats' counts.
@@ -753,6 +774,12 @@ class ESPNSyncService:
                     player_id=player.id, year=year, week=week_num,
                 )
                 self.db.add(game_log)
+
+            # Set opponent from schedule if available
+            if schedule and week_key in schedule:
+                game_log.opponent = schedule[week_key].get('team', '')
+            elif schedule and str(week_num) in schedule:
+                game_log.opponent = schedule[str(week_num)].get('team', '')
 
             game_log.pass_att = parsed.get('pass_att', 0)
             game_log.pass_cmp = parsed.get('pass_cmp', 0)
@@ -876,6 +903,14 @@ class ESPNSyncService:
         # Update team_id only if provided (rostered player)
         if team_db_id is not None:
             db_player.team_id = team_db_id
+
+        # Set headshot URL from ESPN CDN (only if not already set by nfl_data_py)
+        if not db_player.headshot_url:
+            espn_id = espn_player.playerId
+            if espn_player.position == 'D/ST' or espn_player.position == 'DEF':
+                db_player.headshot_url = f"https://a.espncdn.com/i/teamlogos/nfl/500/{espn_player.proTeam.lower()}.png"
+            else:
+                db_player.headshot_url = f"https://a.espncdn.com/i/headshots/nfl/players/full/{espn_id}.png"
 
         return db_player
 

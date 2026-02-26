@@ -1,6 +1,6 @@
 """Player model for fantasy football players."""
 
-from typing import Dict, Optional, Any
+from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 
 
@@ -25,6 +25,7 @@ class Player:
     stats: Dict[str, Any] = field(default_factory=dict)
     projected_points: float = 0.0
     actual_points: float = 0.0
+    headshot_url: Optional[str] = None
     
     def __post_init__(self):
         """Validate player data after initialization."""
@@ -81,4 +82,5 @@ class Player:
             'stats': self.stats,
             'projected_points': self.projected_points,
             'actual_points': self.actual_points,
+            'headshot_url': self.headshot_url,
         }

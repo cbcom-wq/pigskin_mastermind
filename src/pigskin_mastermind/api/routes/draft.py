@@ -82,6 +82,7 @@ def _load_db_players(db: Session) -> List[dict]:
             "nfl_team": p.nfl_team,
             "projected_points": p.projected_points or 0.0,
             "adp_rank": adp_map.get(p.id),
+            "headshot_url": p.headshot_url or "",
         }
         for p in db_players
         if p.position in ("QB", "RB", "WR", "TE", "K", "DEF")

@@ -162,12 +162,13 @@ async def get_player_play_by_play(
 
     service = NFLDataService(db)
     try:
-        plays = service.get_play_by_play(player_db_id=player_id, year=year, week=week)
+        result = service.get_play_by_play(player_db_id=player_id, year=year, week=week)
     except ImportError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
+    plays = result.get("plays", [])
     return {
         "player_id": player_id,
         "player_name": db_player.name,
@@ -175,6 +176,8 @@ async def get_player_play_by_play(
         "week": week,
         "plays": plays,
         "total_plays": len(plays),
+        "game_summary": result.get("game_summary", {}),
+        "player_stats": result.get("player_stats", {}),
     }
 
 

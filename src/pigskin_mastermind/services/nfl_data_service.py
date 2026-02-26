@@ -7,10 +7,6 @@ from datetime import datetime
 import pandas as pd
 from sqlalchemy.orm import Session
 
-try:
-    import nfl_data_py as nfl
-except ImportError:
-    nfl = None
 
 from pigskin_mastermind.models.database import (
     DBPlayer, DBPlayerGameLog, DBPlayerSeasonStats, DBNFLTeamStats
@@ -28,7 +24,7 @@ _PBP_COLUMNS = [
     'passer_player_id', 'passer_player_name',
     'rusher_player_id', 'rusher_player_name',
     'receiver_player_id', 'receiver_player_name',
-    'sack', 'touchdown', 'interception',
+    'complete_pass', 'sack', 'touchdown', 'interception',
     'first_down_rush', 'first_down_pass',
     'penalty', 'penalty_team', 'penalty_yards',
     'total_home_score', 'total_away_score',
@@ -329,6 +325,12 @@ class NFLDataService:
             metadata['draft_number'] = _safe_int(row.get('draft_number'))
             metadata['college'] = _safe_str(row.get('college'))
             db_player.stats = metadata
+
+            # Import headshot URL from roster data
+            headshot = _safe_str(row.get('headshot_url') or row.get('headshot'))
+            if headshot:
+                db_player.headshot_url = headshot
+
             db_player.updated_at = datetime.utcnow()
 
         self.db.commit()
@@ -338,7 +340,7 @@ class NFLDataService:
         player_db_id: int,
         year: int,
         week: int,
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """Return play-by-play entries involving *player_db_id* for a given week.
 
         Queries ``nfl_data_py.import_pbp_data`` using a limited column set for
@@ -361,7 +363,9 @@ class NFLDataService:
             ImportError: If ``nfl_data_py`` is not installed.
             ValueError: If the player is not found or has no GSIS id.
         """
-        if nfl is None:
+        try:
+            import nfl_data_py as nfl
+        except ImportError:
             raise ImportError(
                 "nfl_data_py is not installed. Run: pip install nfl_data_py"
             )
@@ -370,10 +374,20 @@ class NFLDataService:
         if not db_player:
             raise ValueError(f"Player with id={player_db_id} not found")
 
-        # Extract the raw GSIS id stored as "nfl_<gsis_id>"
+        # Resolve the stored player_id to a GSIS id for PBP matching.
+        # IDs may be stored as "espn_<id>", "nfl_<gsis_id>", or bare GSIS ids.
         player_id_str = db_player.player_id
         if player_id_str.startswith("nfl_"):
             gsis_id = player_id_str[4:]
+        elif player_id_str.startswith("espn_"):
+            espn_id = int(player_id_str[5:])
+            id_map = nfl.import_ids()
+            match = id_map[id_map['espn_id'] == espn_id]
+            if match.empty:
+                raise ValueError(
+                    f"Could not resolve ESPN id {espn_id} to a GSIS id"
+                )
+            gsis_id = str(match.iloc[0]['gsis_id'])
         else:
             gsis_id = player_id_str
 
@@ -388,7 +402,7 @@ class NFLDataService:
             df = df[df['week'] == week]
 
         if df.empty:
-            return []
+            return {'plays': [], 'game_summary': {}, 'player_stats': {}}
 
         # Filter to plays where this player is passer, rusher, or receiver
         mask = (
@@ -399,7 +413,7 @@ class NFLDataService:
         player_df = df[mask]
 
         if player_df.empty:
-            return []
+            return {'plays': [], 'game_summary': {}, 'player_stats': {}}
 
         # Sort: earliest plays first (highest game_seconds_remaining first)
         if 'game_seconds_remaining' in player_df.columns:
@@ -427,7 +441,71 @@ class NFLDataService:
                 play[col] = val
             plays.append(play)
 
-        return plays
+        # ── Game summary ─────────────────────────────────────────────────────────
+        def _sv(v: Any) -> Any:
+            """Convert numpy scalar / NaN to a plain Python value."""
+            if v is None:
+                return None
+            if hasattr(v, 'item'):
+                try:
+                    v = v.item()
+                except Exception:
+                    return None
+            try:
+                if pd.isna(v):
+                    return None
+            except Exception:
+                pass
+            return v
+
+        game_summary: Dict[str, Any] = {}
+        if 'game_id' in player_df.columns:
+            game_id_val = player_df['game_id'].iloc[0]
+            game_df = df[df['game_id'] == game_id_val] if 'game_id' in df.columns else player_df
+            game_summary = {
+                'game_id': _sv(game_id_val),
+                'home_team': _sv(game_df['home_team'].iloc[0]) if 'home_team' in game_df.columns else None,
+                'away_team': _sv(game_df['away_team'].iloc[0]) if 'away_team' in game_df.columns else None,
+                'home_score': _sv(game_df['total_home_score'].max()) if 'total_home_score' in game_df.columns else None,
+                'away_score': _sv(game_df['total_away_score'].max()) if 'total_away_score' in game_df.columns else None,
+                'player_team': _sv(player_df['posteam'].mode().iloc[0]) if 'posteam' in player_df.columns and not player_df['posteam'].dropna().empty else None,
+            }
+
+        # ── Player stat summary ───────────────────────────────────────────────
+        def _psum(col: str, src_df: Any) -> float:
+            try:
+                return float(src_df[col].fillna(0).sum()) if col in src_df.columns else 0.0
+            except Exception:
+                return 0.0
+
+        rush_mask = player_df.get('rusher_player_id', pd.Series(dtype=object)) == gsis_id
+        rec_mask  = player_df.get('receiver_player_id', pd.Series(dtype=object)) == gsis_id
+        pass_mask = player_df.get('passer_player_id', pd.Series(dtype=object)) == gsis_id
+
+        rush_df = player_df[rush_mask]
+        rec_df  = player_df[rec_mask]
+        pass_df = player_df[pass_mask]
+
+        player_stats: Dict[str, Any] = {
+            'rush_attempts':      len(rush_df),
+            'rush_yards':         int(_psum('yards_gained', rush_df)),
+            'rush_tds':           int(_psum('touchdown', rush_df)),
+            'rush_first_downs':   int(_psum('first_down_rush', rush_df)),
+            'targets':            len(rec_df),
+            'receptions':         int(_psum('complete_pass', rec_df)),
+            'rec_yards':          int(_psum('yards_gained', rec_df)),
+            'rec_tds':            int(_psum('touchdown', rec_df)),
+            'air_yards':          int(_psum('air_yards', rec_df)),
+            'yac':                int(_psum('yards_after_catch', rec_df)),
+            'pass_attempts':      len(pass_df),
+            'pass_completions':   int(_psum('complete_pass', pass_df)),
+            'pass_yards':         int(_psum('yards_gained', pass_df)),
+            'pass_tds':           int(_psum('touchdown', pass_df)),
+            'pass_interceptions': int(_psum('interception', pass_df)),
+            'total_epa':          round(_psum('epa', player_df), 2),
+        }
+
+        return {'plays': plays, 'game_summary': game_summary, 'player_stats': player_stats}
 
     def import_adp_from_csv(
         self,

@@ -147,6 +147,7 @@
       return `
       <div class="flex items-center justify-between px-3 py-2 hover:bg-slate-50 transition-colors">
         <div class="flex items-center gap-2 min-w-0">
+          ${p.headshot_url ? `<img src="${p.headshot_url}" alt="" class="w-7 h-7 rounded-full object-cover bg-slate-200 flex-shrink-0" onerror="this.style.display='none'" />` : ''}
           <span class="inline-flex items-center justify-center w-9 h-5 rounded text-[10px] font-bold flex-shrink-0 ${posClass(p.position)}">${p.position}</span>
           <div class="min-w-0">
             <p class="text-sm font-medium text-slate-700 truncate">${p.name}</p>
@@ -175,6 +176,7 @@
     }
     document.getElementById('my-roster').innerHTML = players.map(p => `
       <div class="flex items-center gap-2 px-2 py-1 rounded-lg">
+        ${p.headshot_url ? `<img src="${p.headshot_url}" alt="" class="w-5 h-5 rounded-full object-cover bg-slate-200 flex-shrink-0" onerror="this.style.display='none'" />` : ''}
         <span class="inline-flex items-center justify-center w-9 h-5 rounded text-[10px] font-bold flex-shrink-0 ${posClass(p.position)}">${p.position}</span>
         <div class="min-w-0">
           <p class="text-xs font-medium text-slate-700 truncate">${p.name}</p>
@@ -193,6 +195,7 @@
     document.getElementById('picks-log').innerHTML = recent.map(pick => `
       <div class="flex items-center gap-2 px-2 py-1 text-xs">
         <span class="text-slate-400 w-12 flex-shrink-0">R${pick.round} P${pick.pick_number}</span>
+        ${pick.player.headshot_url ? `<img src="${pick.player.headshot_url}" alt="" class="w-5 h-5 rounded-full object-cover bg-slate-200 flex-shrink-0" onerror="this.style.display='none'" />` : ''}
         <span class="inline-flex items-center justify-center w-8 h-4 rounded text-[9px] font-bold flex-shrink-0 ${posClass(pick.player.position)}">${pick.player.position}</span>
         <span class="truncate font-medium text-slate-700">${pick.player.name}</span>
         <span class="ml-auto text-slate-400 flex-shrink-0">Slot ${pick.slot}</span>

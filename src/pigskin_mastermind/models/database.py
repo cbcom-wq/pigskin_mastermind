@@ -17,6 +17,7 @@ class DBPlayer(Base):
     actual_points = Column(Float, default=0.0)
     stats = Column(JSON, default=dict)
     team_id = Column(Integer, ForeignKey("teams.id"), nullable=True)
+    headshot_url = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
