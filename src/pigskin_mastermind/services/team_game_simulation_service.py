@@ -166,6 +166,23 @@ class TeamGameSimulationService:
         """Merge events from all players into chronological order."""
         all_events: List[Dict[str, Any]] = []
 
+        # Build gsis_id → player info lookup for counterpart resolution.
+        # DBPlayer.player_id stores "nfl_<gsis_id>", so strip the prefix.
+        gsis_lookup: Dict[str, Dict[str, Any]] = {}
+        for p in players:
+            pid_str = getattr(p, "player_id", "") or ""
+            if pid_str.startswith("nfl_"):
+                gsis = pid_str[4:]
+            else:
+                gsis = pid_str
+            if gsis:
+                gsis_lookup[gsis] = {
+                    "name": p.name,
+                    "position": p.position,
+                    "color": _POSITION_COLORS.get(p.position, "#94a3b8"),
+                    "headshot_url": getattr(p, "headshot_url", None) or "",
+                }
+
         for sim, player in zip(player_sims, players):
             for orig_idx, event in enumerate(sim.get("events", [])):
                 # Tag event with player identity
@@ -176,6 +193,22 @@ class TeamGameSimulationService:
                     player.position, "#94a3b8"
                 )
                 event["player_headshot_url"] = getattr(player, "headshot_url", None) or ""
+
+                # Enrich pass plays with counterpart (QB ↔ receiver) info
+                if event.get("play_type") == "pass":
+                    passer_gsis = event.get("passer_gsis_id") or ""
+                    receiver_gsis = event.get("receiver_gsis_id") or ""
+                    passer_info = gsis_lookup.get(passer_gsis, {})
+                    receiver_info = gsis_lookup.get(receiver_gsis, {})
+
+                    event["passer_headshot_url"] = passer_info.get("headshot_url", "")
+                    event["passer_position"] = passer_info.get("position", "QB")
+                    event["passer_color"] = passer_info.get("color", _POSITION_COLORS["QB"])
+
+                    event["receiver_headshot_url"] = receiver_info.get("headshot_url", "")
+                    event["receiver_position"] = receiver_info.get("position", "")
+                    event["receiver_color"] = receiver_info.get("color", "#94a3b8")
+
                 event["_original_index"] = orig_idx
                 all_events.append(event)
 

@@ -8,6 +8,56 @@
     .route-field-wrapper {
         perspective: 900px;
         perspective-origin: 50% 100%;
+        position: relative;
+    }
+    /* Play description banner floating above the 3D field */
+    .play-banner {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 10;
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 0.4rem 1rem;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.3s ease;
+    }
+    .play-banner.visible { opacity: 1; }
+    .play-banner-inner {
+        background: rgba(15, 23, 42, 0.88);
+        border: 1px solid rgba(100, 116, 139, 0.4);
+        border-radius: 0.75rem;
+        padding: 0.5rem 1.25rem;
+        max-width: 90%;
+        text-align: center;
+        backdrop-filter: blur(6px);
+    }
+    .play-banner-desc {
+        color: #e2e8f0;
+        font-size: 0.8rem;
+        font-weight: 500;
+        line-height: 1.35;
+    }
+    .play-banner-meta {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        margin-top: 0.25rem;
+        font-size: 0.65rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #94a3b8;
+    }
+    .play-banner-badge {
+        padding: 0.15rem 0.45rem;
+        border-radius: 0.25rem;
+        font-size: 0.6rem;
+        font-weight: 700;
     }
     .route-field-inner {
         transform: rotateX(28deg);
@@ -169,6 +219,13 @@
                 </div>
 
                 <div class="route-field-wrapper">
+                    <!-- Play description banner -->
+                    <div id="play-banner" class="play-banner">
+                        <div class="play-banner-inner">
+                            <div id="play-banner-desc" class="play-banner-desc"></div>
+                            <div id="play-banner-meta" class="play-banner-meta"></div>
+                        </div>
+                    </div>
                     <div id="route-field-inner" class="route-field-inner">
                         <svg id="route-svg" class="route-field-svg w-full rounded-lg" viewBox="0 0 400 300" preserveAspectRatio="xMidYMid meet">
                             <defs>
@@ -359,8 +416,11 @@ let simScoringSettings = null;
 const VB_W = 400;
 const VB_H = 300;
 const FIELD_DEPTH_YARDS = 40;
+const BEHIND_LOS_YARDS = 8;   // visible yards behind the LOS (dropbacks, sacks)
+const TOTAL_DEPTH_YARDS = FIELD_DEPTH_YARDS + BEHIND_LOS_YARDS;
 const FIELD_TOP_Y = 20;
 const FIELD_BOT_Y = 280;
+const LOS_Y = FIELD_BOT_Y - (BEHIND_LOS_YARDS / TOTAL_DEPTH_YARDS) * (FIELD_BOT_Y - FIELD_TOP_Y);
 const FIELD_LEFT_X = 30;
 const FIELD_RIGHT_X = 370;
 
@@ -371,7 +431,7 @@ function _def(v, fb) { return v === null || v === undefined ? fb : v; }
 
 function depthToY(depthPct, losX) {
     const yardsBeyond = depthPct - losX;
-    const frac = yardsBeyond / FIELD_DEPTH_YARDS;
+    const frac = (yardsBeyond + BEHIND_LOS_YARDS) / TOTAL_DEPTH_YARDS;
     return FIELD_BOT_Y - frac * (FIELD_BOT_Y - FIELD_TOP_Y);
 }
 
@@ -392,7 +452,7 @@ function buildFieldBackground(losFieldX) {
     g.innerHTML = '';
     g.appendChild(svgEl('rect', {x:0, y:0, width: VB_W, height: VB_H, fill:'#1a2a1a'}));
     const losYard = losFieldX;
-    const startYard = Math.floor((losYard - 5) / 5) * 5;
+    const startYard = Math.floor((losYard - BEHIND_LOS_YARDS - 5) / 5) * 5;
     const endYard = losYard + FIELD_DEPTH_YARDS + 5;
     for (let yd = startYard; yd <= endYard; yd += 5) {
         const y = depthToY(yd, losFieldX);
@@ -428,7 +488,7 @@ function buildFieldBackground(losFieldX) {
 function drawLOS(losFieldX) {
     const g = _q('svg-los-group');
     g.innerHTML = '';
-    const y = FIELD_BOT_Y;
+    const y = LOS_Y;
     g.appendChild(svgEl('line', {
         x1: FIELD_LEFT_X - 8, y1: y, x2: FIELD_RIGHT_X + 8, y2: y,
         stroke: '#3b82f6', 'stroke-width': 1.5, opacity: 0.9,
@@ -496,7 +556,51 @@ function drawRoute(evt, animate, opacity) {
 
     /* Headshot marker or position badge at route endpoint */
     const headshotUrl = evt.player_headshot_url || '';
-    if (headshotUrl && opacity >= 0.8) {
+    const isPassPlay = evt.play_type === 'pass' && !rp.is_sack && opacity >= 0.8;
+
+    if (isPassPlay) {
+        /* On pass plays show QB at throw point and receiver at route end */
+        const dropSeg = segs.find(function(s) { return s.type === 'drop'; });
+        let qbUrl, qbColor, qbName, rcvUrl, rcvColor, rcvName;
+        if (evt.role === 'pass') {
+            qbUrl = headshotUrl;
+            qbColor = playerColor;
+            qbName = evt.player_name || '';
+            rcvUrl = evt.receiver_headshot_url || '';
+            rcvColor = evt.receiver_color || '#3b82f6';
+            rcvName = evt.receiver_name || '';
+        } else {
+            qbUrl = evt.passer_headshot_url || '';
+            qbColor = evt.passer_color || '#ef4444';
+            qbName = evt.passer_name || '';
+            rcvUrl = headshotUrl;
+            rcvColor = playerColor;
+            rcvName = evt.player_name || '';
+        }
+        /* QB icon at the drop/throw point (or LOS for receive-role events) */
+        const qbSeg = dropSeg || segs[0];
+        if (qbSeg) {
+            if (qbUrl) {
+                drawStaticHeadshot(qbSeg, losX, qbUrl, qbColor);
+            } else if (qbName) {
+                const _qx = lateralToX(qbSeg.lateral);
+                const _qy = depthToY(qbSeg.depth, losX);
+                drawNameBadge(_qx, _qy - 14, qbName, qbColor);
+            }
+        }
+        /* Receiver icon travels to / sits at the route endpoint */
+        if (rcvUrl) {
+            drawHeadshotMarker(segs, losX, animate, rcvUrl, rcvColor);
+        } else if (rcvName) {
+            /* No headshot — show name badge at endpoint */
+            const _ls = segs[segs.length - 1];
+            const _ex = lateralToX(_ls.lateral);
+            const _ey = depthToY(_ls.depth, losX);
+            drawNameBadge(_ex, _ey - 14, rcvName, rcvColor);
+        } else {
+            drawHeadshotMarker(segs, losX, animate, headshotUrl, playerColor);
+        }
+    } else if (headshotUrl && opacity >= 0.8) {
         drawHeadshotMarker(segs, losX, animate, headshotUrl, playerColor);
     } else {
         /* Fallback: position-colored badge */
@@ -549,6 +653,30 @@ function drawRoute(evt, animate, opacity) {
             cx: ex, cy: ey, r: 3, fill: dotColor, opacity: opacity, class: 'route-endpoint',
         }));
     }
+
+    /* Yards-gained readout next to endpoint */
+    if (opacity >= 0.8) {
+        const yds = evt.yards_gained;
+        const ydsText = yds > 0 ? '+' + yds : String(yds);
+        const ydsColor = yds > 0 ? '#4ade80' : yds < 0 ? '#f87171' : '#94a3b8';
+        const labelX = ex + 14;
+        const labelY = ey + 3;
+
+        /* Background pill */
+        const pillW = ydsText.length * 5.5 + 8;
+        labelsG.appendChild(svgEl('rect', {
+            x: labelX - 3, y: labelY - 8, width: pillW, height: 12,
+            rx: 3, ry: 3, fill: '#0f172a', opacity: 0.8,
+        }));
+        const yt = svgEl('text', {
+            x: labelX + pillW / 2 - 3, y: labelY,
+            fill: ydsColor, 'font-size': '7.5', 'text-anchor': 'middle',
+            'font-family': 'system-ui, sans-serif', 'font-weight': '700',
+            opacity: opacity,
+        });
+        yt.textContent = ydsText;
+        labelsG.appendChild(yt);
+    }
 }
 
 function classifySegments(segs, rp, role) {
@@ -586,6 +714,61 @@ function classifySegments(segs, rp, role) {
 /* ── headshot marker ─────────────────────────────────────────────────── */
 
 let _headshotCounter = 0;
+
+/**
+ * Draw a small name badge (pill with player name) at a given SVG position.
+ */
+function drawNameBadge(cx, cy, name, bgColor) {
+    const labelsG = _q('svg-labels');
+    const shortName = name.length > 12 ? name.substring(0, 11) + '…' : name;
+    const pillW = shortName.length * 4.5 + 10;
+
+    labelsG.appendChild(svgEl('rect', {
+        x: cx - pillW / 2, y: cy - 5, width: pillW, height: 11,
+        rx: 3, ry: 3, fill: bgColor || '#3b82f6', opacity: 0.85,
+    }));
+    const t = svgEl('text', {
+        x: cx, y: cy + 3, fill: '#ffffff', 'font-size': '6', 'text-anchor': 'middle',
+        'font-family': 'system-ui, sans-serif', 'font-weight': '700',
+    });
+    t.textContent = shortName;
+    labelsG.appendChild(t);
+}
+
+/**
+ * Draw a static (non-animated) headshot at a specific segment point.
+ * Used for placing the QB icon at the throw/drop point on pass plays.
+ */
+function drawStaticHeadshot(seg, losX, headshotUrl, ringColor) {
+    const hsG = _q('svg-headshot');
+    const R = 9;
+    const BORDER = 1.5;
+    const px = lateralToX(seg.lateral);
+    const py = depthToY(seg.depth, losX);
+
+    const g = svgEl('g', {
+        class: 'headshot-marker',
+        transform: 'translate(' + px.toFixed(1) + ',' + py.toFixed(1) + ')',
+    });
+
+    g.appendChild(svgEl('circle', {
+        cx: 0, cy: 0, r: R + BORDER,
+        fill: '#0f172a', stroke: ringColor || '#ef4444', 'stroke-width': BORDER,
+    }));
+
+    const img = document.createElementNS(SVG_NS, 'image');
+    img.setAttributeNS(XLINK_NS, 'href', headshotUrl);
+    img.setAttribute('x', String(-R));
+    img.setAttribute('y', String(-R));
+    img.setAttribute('width', String(R * 2));
+    img.setAttribute('height', String(R * 2));
+    img.setAttribute('clip-path', 'url(#headshot-clip)');
+    img.setAttribute('preserveAspectRatio', 'xMidYMid slice');
+    img.addEventListener('error', function() { g.style.display = 'none'; });
+    g.appendChild(img);
+
+    hsG.appendChild(g);
+}
 
 /**
  * Draw a player headshot at the tip of the route.
@@ -822,6 +1005,30 @@ function applyFrame(index, instant) {
 
     const yards = e.yards_gained > 0 ? '+' + e.yards_gained : e.yards_gained;
     const playerColor = e.player_color || '#94a3b8';
+
+    /* ── Update play banner ────────────────────────────────── */
+    const banner = _q('play-banner');
+    const bannerDesc = _q('play-banner-desc');
+    const bannerMeta = _q('play-banner-meta');
+    const desc = (e.description || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    if (desc) {
+        bannerDesc.innerHTML = desc;
+        const metaParts = [];
+        metaParts.push('<span style="color:#cbd5e1">' + (e.down_distance || '') + '</span>');
+        const roleClass = e.role === 'pass' ? 'background:#3b82f6;color:#fff'
+            : e.role === 'rush' ? 'background:#eab308;color:#1a1a1a'
+            : 'background:#22c55e;color:#fff';
+        metaParts.push('<span class="play-banner-badge" style="' + roleClass + '">' + (e.role || 'play').toUpperCase() + '</span>');
+        metaParts.push('<span>' + yards + ' yds</span>');
+        if (e.badges && e.badges.touchdown) metaParts.push('<span class="play-banner-badge" style="background:#16a34a;color:#fff">TD</span>');
+        if (e.badges && e.badges.first_down) metaParts.push('<span class="play-banner-badge" style="background:#2563eb;color:#fff">1ST DOWN</span>');
+        if (e.badges && e.badges.turnover) metaParts.push('<span class="play-banner-badge" style="background:#dc2626;color:#fff">TURNOVER</span>');
+        if (e.badges && e.badges.big_play) metaParts.push('<span class="play-banner-badge" style="background:#d97706;color:#fff">BIG PLAY</span>');
+        bannerMeta.innerHTML = metaParts.join('');
+        banner.classList.add('visible');
+    } else {
+        banner.classList.remove('visible');
+    }
 
     const badgeParts = [];
     if (e.badges && e.badges.touchdown) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-field-600 text-white text-[10px] font-bold">TD</span>');

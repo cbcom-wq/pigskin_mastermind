@@ -107,6 +107,10 @@ class PlayerGameSimulationService:
                     "is_sack": is_sack,
                     "home_score": self._nullable_int(play.get("total_home_score")),
                     "away_score": self._nullable_int(play.get("total_away_score")),
+                    "passer_name": play.get("passer_player_name"),
+                    "passer_gsis_id": play.get("passer_player_id"),
+                    "receiver_name": play.get("receiver_player_name"),
+                    "receiver_gsis_id": play.get("receiver_player_id"),
                     "badges": {
                         "touchdown": touchdown,
                         "first_down": first_down,
