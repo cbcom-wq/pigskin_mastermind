@@ -1,34 +1,41 @@
 # Pigskin Mastermind
 
-A comprehensive fantasy football research, entertainment, and management application.
+A comprehensive fantasy football research, entertainment, and management application with a full web UI, REST API, and CLI.
 
 ## Features
 
-### Team Management
-- Create and manage fantasy football teams
-- Import teams from fantasy football services (ESPN, Yahoo)
-- Track team records and performance
-- Compare teams and analyze composition
+### Web Interface
+- **Dashboard**: Overview of teams, players, and total points at a glance
+- **Team Management**: Create, view, and manage fantasy teams through a browser
+- **Player Management**: Browse, search, and manage players by position
+- **League Management**: Configure and track fantasy leagues
+- **Lineup Optimization**: Interactive lineup editing with projected-point optimization
+- **Trade Analyzer**: Evaluate trade fairness with visual breakdowns
+- **Draft Simulator**: Mock draft engine using ESPN ADP or custom player pools with configurable AI opponents and strategies
+- **Season Animation**: Animated week-by-week cumulative points chart with weekly MVP highlights
+- **Visualizations**: Static and animated season performance charts
 
-### Data & Analysis
-- Player statistics tracking
-- Fantasy point calculations (customizable scoring)
-- Position-based player management
-- Team performance metrics
+### Data & Statistics
+- **ESPN Sync**: Import teams, rosters, and weekly stats from ESPN Fantasy leagues
+- **NFL Data Import**: Pull play-by-play and weekly stats via `nfl_data_py` for league-wide analysis
+- **Free Agent Pool**: Import all available players (not just rostered) for waiver wire analysis
+- **Player Game Logs**: Detailed per-game stat history with season totals
+- **Player Projections**: Weekly and season-long fantasy point projections using multi-factor criteria
+- **Scoring Settings**: Configurable per-league scoring (PPR, half-PPR, standard, custom)
+- **Position Breakdown**: Team composition and performance metrics by position
 
 ### Decision-Making Tools
-- **Lineup Optimizer**: Automatically generate optimal starting lineups based on projections
-- **Trade Analyzer**: Evaluate trade fairness and impact
-- **Player Projections**: Generate weekly and yearly fantasy point projections using advanced criteria
-- Lineup change suggestions
-- Player comparison tools
+- **Lineup Optimizer**: Automatically fill optimal starting lineup by projected points (including FLEX)
+- **Trade Analyzer**: Evaluate trade net value and receive Accept/Reject/Consider recommendations
+- **Player Projections**: Weekly and yearly projections based on skill level, opponent defense, weather, momentum, and more
+- **Lineup Change Suggestions**: Identify bench players who should start over current starters
 
 ### Entertainment Features
-- **Team Name Generator**: Generate creative team names
-- **Matchup Predictor**: Predict game outcomes with win probabilities
-- **Power Rankings**: Generate league-wide power rankings
-- **Weekly Awards**: Automatic award generation (highest scorer, best record, etc.)
-- Friendly trash talk generator
+- **Team Name Generator**: Generate creative team names (random or player-based)
+- **Matchup Predictor**: Predict game outcomes with win probabilities and confidence levels
+- **Power Rankings**: League-wide composite rankings (60% win %, 40% points)
+- **Weekly Awards**: Automated awards for highest scorer, best record, luckiest team, and more
+- **Trash Talk Generator**: Auto-generated trash talk for matchup results
 
 ## Installation
 
@@ -44,11 +51,45 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-## Usage
+## Launching the Web Interface
 
-### Command Line Interface
+The web interface is built with **FastAPI** and served by **Uvicorn**. The database is managed by **SQLAlchemy** and **Alembic**.
 
-The application includes a CLI tool for quick access to features:
+### 1. Set up the database
+
+```bash
+# Apply all database migrations
+alembic upgrade head
+```
+
+### 2. Start the web server
+
+```bash
+uvicorn pigskin_mastermind.api.main:app --reload
+```
+
+The app will be available at **http://127.0.0.1:8000**.
+
+| URL | Description |
+|-----|-------------|
+| `http://127.0.0.1:8000/` | Dashboard |
+| `http://127.0.0.1:8000/teams` | Team management |
+| `http://127.0.0.1:8000/players` | Player browser |
+| `http://127.0.0.1:8000/leagues` | League management |
+| `http://127.0.0.1:8000/lineups` | Lineup optimizer |
+| `http://127.0.0.1:8000/trades` | Trade analyzer |
+| `http://127.0.0.1:8000/draft` | Mock draft simulator |
+| `http://127.0.0.1:8000/docs` | Interactive API docs (Swagger UI) |
+
+To bind to a different host or port:
+
+```bash
+uvicorn pigskin_mastermind.api.main:app --host 0.0.0.0 --port 8080 --reload
+```
+
+## Command Line Interface
+
+The `pigskin` CLI provides quick access to core features without the web server.
 
 ```bash
 # Create a new team
@@ -73,7 +114,7 @@ pigskin entertainment player-names --player "Patrick Mahomes"
 pigskin import-cmd espn --team-id 12345 --swid YOUR_SWID --espn-s2 YOUR_ESPN_S2 --league-id 67890
 ```
 
-### Python API
+## Python API
 
 ```python
 from pigskin_mastermind import Team, Player, TeamManager
@@ -154,7 +195,7 @@ Week-by-week projections accounting for:
 - Opponent defensive strength vs. specific position
 - Recent offensive momentum
 - Weather conditions and forecast
-- Shared base projection criteria (see below) plus weekly-specific factors
+- Shared base projection criteria plus weekly-specific factors
 
 ### Projection Criteria
 
@@ -177,25 +218,59 @@ Both projection types use common base criteria:
 - **Offensive Momentum Score** (-100 to 100): Recent team offensive performance
 - **Weather Impact Score** (-100 to 100): Weather conditions impact
 
-### Example Usage
+## ESPN Integration
 
-See the Python API section above for projection usage examples.
+### Syncing a League
+
+Import team rosters and weekly stats from an ESPN Fantasy league via the web UI (**Leagues → Sync**) or the API endpoint `POST /leagues/{league_id}/sync`.
+
+### Importing All Players (Free Agents)
+
+Import all available players (including free agents) for waiver wire analysis via the web UI (**Leagues → Import All Players**) or the API endpoint:
+
+```
+POST /leagues/{league_id}/import-all-players?year=2024
+```
+
+See [docs/IMPORT_ALL_PLAYERS.md](docs/IMPORT_ALL_PLAYERS.md) for full details.
 
 ## Project Structure
 
 ```
 pigskin_mastermind/
 ├── src/pigskin_mastermind/
-│   ├── models/              # Data models (Player, Team)
-│   ├── services/            # Business logic (TeamManager, Importers, DecisionTools)
-│   ├── entertainment/       # Entertainment features (NameGenerator, Awards)
+│   ├── api/                 # FastAPI application
+│   │   ├── main.py          # App entry point and dashboard route
+│   │   ├── database.py      # SQLAlchemy engine and session
+│   │   └── routes/          # API route handlers (teams, players, leagues,
+│   │                        #   lineups, trades, draft, stats, visualizations)
+│   ├── models/              # Data models (Player, Team, DB models, projections)
+│   ├── services/            # Business logic
+│   │   ├── team_manager.py       # Team CRUD
+│   │   ├── decision_tools.py     # LineupOptimizer, TradeAnalyzer
+│   │   ├── projection_service.py # Weekly/yearly projections
+│   │   ├── espn_sync.py          # ESPN league/roster sync
+│   │   ├── nfl_data_service.py   # NFL-wide stats via nfl_data_py
+│   │   ├── mock_draft.py         # Mock draft engine with ESPN ADP
+│   │   ├── visualization_service.py # Season animation charts
+│   │   ├── stats_service.py      # Player stats and game logs
+│   │   └── importer.py           # Fantasy platform importers
+│   ├── entertainment/       # Entertainment features
+│   ├── templates/           # Jinja2 HTML templates for the web UI
 │   ├── utils/               # Utility functions
-│   └── cli.py               # Command-line interface
+│   └── cli.py               # Click-based CLI interface
+├── alembic/                 # Database migrations
+├── alembic.ini              # Alembic configuration
 ├── tests/                   # Test suite
+├── docs/                    # Additional documentation
+│   ├── TUTORIAL.md
+│   ├── IMPORT_ALL_PLAYERS.md
+│   └── SEASON_ANIMATION.md
+├── examples/                # Example scripts
 ├── requirements.txt         # Production dependencies
 ├── requirements-dev.txt     # Development dependencies
 ├── setup.py                 # Package setup
-└── README.md               # This file
+└── README.md                # This file
 ```
 
 ## Development
@@ -226,15 +301,16 @@ flake8 src/ tests/
 ## Features Roadmap
 
 - [x] Basic player projection system (weekly and yearly)
-- [ ] Real-time API integrations with ESPN and Yahoo
-- [ ] Historical data analysis
+- [x] Web interface (FastAPI + Jinja2)
+- [x] Database persistence (SQLAlchemy + Alembic)
+- [x] ESPN league sync and free-agent import
+- [x] Mock draft simulator with ESPN ADP
+- [x] Season animation visualization
+- [x] NFL play-by-play stats import
+- [ ] Real-time API integrations with Yahoo Fantasy
 - [ ] Machine learning-based projections
-- [ ] Enhanced projection algorithms with position-specific criteria
-- [ ] Web interface
 - [ ] Mobile app
-- [ ] Advanced analytics and visualizations
-- [ ] Draft assistant tools
-- [ ] Waiver wire recommendations
+- [ ] Draft assistant tools (waiver wire recommendations)
 
 ## Contributing
 
