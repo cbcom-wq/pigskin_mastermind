@@ -221,6 +221,9 @@
                     if (data.showToast) {
                         showToast(data.showToast.message, data.showToast.type);
                     }
+                    if (data.pageRefresh) {
+                        setTimeout(function() { window.location.reload(); }, 1200);
+                    }
                 } catch(ex) {}
             }
         });

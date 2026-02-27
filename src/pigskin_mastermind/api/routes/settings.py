@@ -179,7 +179,12 @@ async def sync_weekly_stats(team_db_id: int, db: Session = Depends(get_db)):
         from pigskin_mastermind.services.espn_sync import ESPNSyncService
         sync_service = ESPNSyncService(db)
         weeks = sync_service.sync_weekly_stats(team_db_id)
-        return _toast_response(f"Synced {weeks} weeks of data!", "success")
+        response = _toast_response(f"Synced {weeks} weeks of data!", "success")
+        # Merge pageRefresh into the trigger so the page reloads after sync
+        trigger = json.loads(response.headers["HX-Trigger"])
+        trigger["pageRefresh"] = True
+        response.headers["HX-Trigger"] = json.dumps(trigger)
+        return response
     except ValueError as e:
         return _toast_response(str(e), "error")
     except Exception as e:
