@@ -89,6 +89,37 @@ def _load_db_players(db: Session) -> List[dict]:
     ]
 
 
+def _has_meaningful_adp(players: List[dict]) -> bool:
+    """Return True when the player list has varied ADP values.
+
+    ESPN returns a uniform default ADP (e.g. 170.0) for every player when
+    season data is not yet available.  We consider data *meaningful* only
+    when there are at least two distinct ``adp_rank`` values.
+    """
+    adp_values = {p.get("adp_rank") for p in players}
+    return len(adp_values) > 1
+
+
+def _fetch_espn_adp_with_fallback(
+    year: int, limit: int = 300
+) -> tuple[Optional[List[dict]], int]:
+    """Fetch ESPN ADP data, falling back to the prior year if needed.
+
+    When the requested season has only placeholder ADP values (all identical),
+    the previous year's data is tried automatically.
+
+    Returns:
+        A ``(players, actual_year)`` tuple.  ``players`` is ``None`` when both
+        the requested year *and* the fallback fail.
+    """
+    players = fetch_espn_adp(year=year, limit=limit)
+    if players and not _has_meaningful_adp(players):
+        fallback = fetch_espn_adp(year=year - 1, limit=limit)
+        if fallback and _has_meaningful_adp(fallback):
+            return fallback, year - 1
+    return players, year
+
+
 # ---------------------------------------------------------------------------
 # Page routes
 # ---------------------------------------------------------------------------
@@ -134,7 +165,7 @@ async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
     """Create a new interactive mock draft and return its initial state."""
     player_pool: Optional[List[dict]] = None
     if req.use_espn_adp:
-        player_pool = fetch_espn_adp(year=req.espn_adp_year)
+        player_pool, _ = _fetch_espn_adp_with_fallback(year=req.espn_adp_year)
         if player_pool is None:
             raise HTTPException(
                 status_code=503,
@@ -180,13 +211,17 @@ async def get_espn_adp(year: int = 2025, limit: int = 300):
         JSON with ``players`` list ordered by ADP and ``source`` label.
     """
     limit = max(1, min(limit, 500))
-    players = fetch_espn_adp(year=year, limit=limit)
+    players, actual_year = _fetch_espn_adp_with_fallback(year=year, limit=limit)
     if players is None:
         raise HTTPException(
             status_code=503,
             detail="Failed to fetch ADP data from ESPN. Check connectivity or try again later.",
         )
-    return {"source": "espn", "year": year, "count": len(players), "players": players}
+    resp: dict = {"source": "espn", "year": actual_year, "count": len(players), "players": players}
+    if actual_year != year:
+        resp["fallback"] = True
+        resp["requested_year"] = year
+    return resp
 
 
 @router.get("/board/{draft_id}")

@@ -434,16 +434,19 @@ def _make_espn_api_response(players):
 def _make_espn_player_entry(pid, name, pos_id, team_id, adp, rating=10.0):
     return {
         "id": pid,
-        "onTeamId": team_id,
-        "playerPoolEntry": {
-            "averageDraftPositionPPR": adp,
-            "averageDraftPosition": adp,
-            "playerRatings": {"totalRating": rating},
-            "player": {
-                "id": pid,
-                "fullName": name,
-                "defaultPositionId": pos_id,
+        "onTeamId": 0,
+        "player": {
+            "id": pid,
+            "fullName": name,
+            "defaultPositionId": pos_id,
+            "proTeamId": team_id,
+            "ownership": {
+                "averageDraftPositionPPR": adp,
+                "averageDraftPosition": adp,
             },
+        },
+        "ratings": {
+            "0": {"totalRating": rating},
         },
     }
 
@@ -751,3 +754,105 @@ def test_start_draft_with_espn_adp_failure(client):
             },
         )
     assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# ADP year-fallback tests
+# ---------------------------------------------------------------------------
+
+
+def _uniform_adp_players(adp_value: float = 170.0):
+    """Return a player list where every entry has the same ADP (placeholder data)."""
+    return [
+        {"id": f"espn_{i}", "name": f"Player {i}", "position": pos,
+         "nfl_team": "KC", "projected_points": 0.0, "adp_rank": adp_value}
+        for i, pos in enumerate(["QB", "RB", "WR", "TE", "K"])
+    ]
+
+
+def _varied_adp_players():
+    """Return a player list with distinct ADP values (meaningful data)."""
+    return [
+        {"id": "espn_1", "name": "Star QB", "position": "QB", "nfl_team": "KC",
+         "projected_points": 25.0, "adp_rank": 1.0},
+        {"id": "espn_2", "name": "Star RB", "position": "RB", "nfl_team": "SF",
+         "projected_points": 22.0, "adp_rank": 2.5},
+    ]
+
+
+def test_adp_endpoint_falls_back_to_previous_year(client):
+    """GET /draft/adp should fall back to year-1 when current year has uniform ADP."""
+    def _side_effect(year=2025, limit=300):
+        if year == 2025:
+            return _uniform_adp_players()
+        if year == 2024:
+            return _varied_adp_players()
+        return None
+
+    with patch("pigskin_mastermind.api.routes.draft.fetch_espn_adp", side_effect=_side_effect):
+        resp = client.get("/draft/adp?year=2025&limit=50")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["year"] == 2024
+    assert data["fallback"] is True
+    assert data["requested_year"] == 2025
+    assert data["players"][0]["adp_rank"] == 1.0
+
+
+def test_adp_endpoint_no_fallback_when_data_is_good(client):
+    """GET /draft/adp should NOT fall back when the requested year has varied ADP."""
+    with patch("pigskin_mastermind.api.routes.draft.fetch_espn_adp", return_value=_varied_adp_players()):
+        resp = client.get("/draft/adp?year=2025")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["year"] == 2025
+    assert "fallback" not in data
+
+
+def test_adp_endpoint_uniform_both_years_still_returns_data(client):
+    """If both years have uniform ADP, return the original year's data anyway."""
+    with patch("pigskin_mastermind.api.routes.draft.fetch_espn_adp", return_value=_uniform_adp_players()):
+        resp = client.get("/draft/adp?year=2025")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    # Falls through — original year used because fallback wasn't better
+    assert data["year"] == 2025
+    assert "fallback" not in data
+
+
+def test_start_draft_falls_back_to_previous_year(client):
+    """POST /draft/start should fall back to year-1 ADP when current year is uniform."""
+    uniform = _uniform_adp_players()
+    varied = [
+        {"id": f"espn_{i}", "name": f"Player {i}", "position": pos, "nfl_team": "KC",
+         "projected_points": float(20 - i), "adp_rank": float(i + 1)}
+        for i, pos in enumerate(["QB", "RB", "WR", "TE", "K", "DEF",
+                                   "RB", "WR", "RB", "WR", "WR", "RB",
+                                   "TE", "K", "DEF", "QB", "WR", "RB",
+                                   "WR", "TE"])
+    ]
+
+    def _side_effect(year=2025, limit=300):
+        if year == 2025:
+            return uniform
+        if year == 2024:
+            return varied
+        return None
+
+    with patch("pigskin_mastermind.api.routes.draft.fetch_espn_adp", side_effect=_side_effect):
+        resp = client.post(
+            "/draft/start",
+            json={
+                "num_teams": 2,
+                "num_rounds": 3,
+                "user_pick_position": 1,
+                "use_espn_adp": True,
+                "espn_adp_year": 2025,
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] in ("in_progress", "complete")

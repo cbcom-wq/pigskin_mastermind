@@ -78,8 +78,8 @@ def fetch_espn_adp(year: int = 2025, limit: int = 300) -> Optional[List[Dict[str
 
     players: List[Dict[str, Any]] = []
     for i, entry in enumerate(raw_players):
-        pool_entry = entry.get("playerPoolEntry", {})
-        player_info = pool_entry.get("player", {})
+        # ESPN API returns player data directly on each entry (no playerPoolEntry wrapper).
+        player_info = entry.get("player", {})
 
         name = player_info.get("fullName")
         if not name:
@@ -90,16 +90,21 @@ def fetch_espn_adp(year: int = 2025, limit: int = 300) -> Optional[List[Dict[str
         if not position:
             continue
 
-        nfl_team = _ESPN_TEAM_MAP.get(entry.get("onTeamId", 0), "FA")
+        # NFL team comes from the player's proTeamId field
+        nfl_team = _ESPN_TEAM_MAP.get(player_info.get("proTeamId", 0), "FA")
 
+        # ADP lives inside the player's ownership data
+        ownership = player_info.get("ownership", {})
         adp = (
-            pool_entry.get("averageDraftPositionPPR")
-            or pool_entry.get("averageDraftPosition")
+            ownership.get("averageDraftPositionPPR")
+            or ownership.get("averageDraftPosition")
             or float(i + 1)
         )
 
-        ratings = pool_entry.get("playerRatings", {})
-        projected = round(float(ratings.get("totalRating") or 0.0), 1)
+        # Projected points come from the top-level ratings object
+        ratings = entry.get("ratings", {})
+        rating_entry = ratings.get("0", {})
+        projected = round(float(rating_entry.get("totalRating") or 0.0), 1)
 
         players.append({
             "id": f"espn_{entry.get('id', i)}",
