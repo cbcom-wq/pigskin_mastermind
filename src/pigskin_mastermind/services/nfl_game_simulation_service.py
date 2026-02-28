@@ -147,7 +147,13 @@ class NFLGameSimulationService:
         }
 
     def _resolve_headshots(self, plays: List[Dict[str, Any]]) -> Dict[str, str]:
-        """Build a mapping of GSIS player IDs to headshot URLs."""
+        """Build a mapping of GSIS player IDs to headshot URLs.
+
+        Player IDs in play-by-play data are GSIS ids (e.g. ``00-0033106``),
+        but the local database stores players with ``espn_<id>`` keys.  We
+        use the ``nfl_data_py`` id-mapping table to bridge GSIS → ESPN, then
+        look the headshot up via the ``espn_<id>`` player_id.
+        """
         gsis_ids = set()
         for play in plays:
             for key in ("passer_player_id", "rusher_player_id", "receiver_player_id"):
@@ -158,16 +164,47 @@ class NFLGameSimulationService:
         if not gsis_ids:
             return {}
 
+        # ── Build GSIS → espn_<id> mapping via nfl_data_py ──────────────
+        gsis_to_player_id: Dict[str, str] = {}
+        try:
+            import nfl_data_py as nfl
+            id_map = nfl.import_ids()
+            for gsis_id in gsis_ids:
+                match = id_map[id_map["gsis_id"] == gsis_id]
+                if not match.empty:
+                    espn_id = match.iloc[0].get("espn_id")
+                    if espn_id is not None:
+                        try:
+                            gsis_to_player_id[gsis_id] = f"espn_{int(espn_id)}"
+                        except (ValueError, TypeError):
+                            pass
+                # Also try the nfl_ prefix as a fallback
+                if gsis_id not in gsis_to_player_id:
+                    gsis_to_player_id[gsis_id] = f"nfl_{gsis_id}"
+        except Exception:
+            # If the id-map import fails, fall back to nfl_ prefix only
+            for gsis_id in gsis_ids:
+                gsis_to_player_id[gsis_id] = f"nfl_{gsis_id}"
+
+        # ── Batch-query the database for all candidate player_ids ───────
+        candidate_ids = list(set(gsis_to_player_id.values()))
+        players = (
+            self.db.query(DBPlayer)
+            .filter(DBPlayer.player_id.in_(candidate_ids))
+            .all()
+        )
+        pid_to_headshot = {
+            p.player_id: p.headshot_url
+            for p in players
+            if p.headshot_url
+        }
+
         headshots: Dict[str, str] = {}
-        # Look up players in the database by their GSIS id
         for gsis_id in gsis_ids:
-            player = (
-                self.db.query(DBPlayer)
-                .filter(DBPlayer.player_id == f"nfl_{gsis_id}")
-                .first()
-            )
-            if player and player.headshot_url:
-                headshots[gsis_id] = player.headshot_url
+            db_pid = gsis_to_player_id.get(gsis_id, "")
+            url = pid_to_headshot.get(db_pid, "")
+            if url:
+                headshots[gsis_id] = url
 
         return headshots
 

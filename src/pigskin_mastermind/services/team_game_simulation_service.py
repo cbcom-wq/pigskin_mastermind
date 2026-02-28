@@ -167,21 +167,37 @@ class TeamGameSimulationService:
         all_events: List[Dict[str, Any]] = []
 
         # Build gsis_id → player info lookup for counterpart resolution.
-        # DBPlayer.player_id stores "nfl_<gsis_id>", so strip the prefix.
+        # PBP events reference players by GSIS id (e.g. "00-0033106") but
+        # DBPlayer.player_id uses "espn_<id>".  We resolve via nfl_data_py.
         gsis_lookup: Dict[str, Dict[str, Any]] = {}
-        for p in players:
-            pid_str = getattr(p, "player_id", "") or ""
-            if pid_str.startswith("nfl_"):
-                gsis = pid_str[4:]
-            else:
-                gsis = pid_str
-            if gsis:
-                gsis_lookup[gsis] = {
-                    "name": p.name,
-                    "position": p.position,
-                    "color": _POSITION_COLORS.get(p.position, "#94a3b8"),
-                    "headshot_url": getattr(p, "headshot_url", None) or "",
-                }
+        try:
+            import nfl_data_py as nfl
+            id_map = nfl.import_ids()
+            for p in players:
+                pid_str = getattr(p, "player_id", "") or ""
+                gsis = None
+                if pid_str.startswith("espn_"):
+                    try:
+                        espn_id = int(pid_str[5:])
+                        match = id_map[id_map["espn_id"] == espn_id]
+                        if not match.empty:
+                            gsis = str(match.iloc[0]["gsis_id"])
+                    except (ValueError, TypeError):
+                        pass
+                elif pid_str.startswith("nfl_"):
+                    gsis = pid_str[4:]
+                else:
+                    gsis = pid_str
+                if gsis and gsis != "nan":
+                    gsis_lookup[gsis] = {
+                        "name": p.name,
+                        "position": p.position,
+                        "color": _POSITION_COLORS.get(p.position, "#94a3b8"),
+                        "headshot_url": getattr(p, "headshot_url", None) or "",
+                    }
+        except Exception:
+            # If nfl_data_py unavailable, skip counterpart enrichment
+            pass
 
         for sim, player in zip(player_sims, players):
             for orig_idx, event in enumerate(sim.get("events", [])):

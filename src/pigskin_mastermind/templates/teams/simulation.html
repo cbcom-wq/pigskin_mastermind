@@ -4,162 +4,7 @@
 {% block page_title %}Team Simulation{% endblock %}
 
 {% block content %}
-<style>
-    .route-field-wrapper {
-        perspective: 900px;
-        perspective-origin: 50% 100%;
-        position: relative;
-    }
-    /* Play description banner floating above the 3D field */
-    .play-banner {
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        z-index: 10;
-        display: flex;
-        align-items: flex-start;
-        justify-content: center;
-        padding: 0.4rem 1rem;
-        pointer-events: none;
-        opacity: 0;
-        transition: opacity 0.3s ease;
-    }
-    .play-banner.visible { opacity: 1; }
-    .play-banner-inner {
-        background: rgba(15, 23, 42, 0.88);
-        border: 1px solid rgba(100, 116, 139, 0.4);
-        border-radius: 0.75rem;
-        padding: 0.5rem 1.25rem;
-        max-width: 90%;
-        text-align: center;
-        backdrop-filter: blur(6px);
-    }
-    .play-banner-desc {
-        color: #e2e8f0;
-        font-size: 0.8rem;
-        font-weight: 500;
-        line-height: 1.35;
-    }
-    .play-banner-meta {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 0.5rem;
-        margin-top: 0.25rem;
-        font-size: 0.65rem;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: #94a3b8;
-    }
-    .play-banner-badge {
-        padding: 0.15rem 0.45rem;
-        border-radius: 0.25rem;
-        font-size: 0.6rem;
-        font-weight: 700;
-    }
-    .route-field-inner {
-        transform: rotateX(28deg);
-        transform-origin: 50% 100%;
-        transition: transform 0.4s ease;
-    }
-    .route-field-inner.flat-view {
-        transform: rotateX(0deg);
-    }
-    .route-field-svg {
-        background: #1a2a1a;
-    }
-    .route-line {
-        fill: none;
-        stroke-width: 1.6;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-    }
-    .route-line.route-segment   { stroke: #ffffff; }
-    .route-line.yac-segment     { stroke: #22c55e; }
-    .route-line.incomplete-segment { stroke: #9ca3af; stroke-dasharray: 4 3; }
-    .route-line.sack-segment    { stroke: #ef4444; stroke-dasharray: 3 2; }
-    .route-line.rush-segment    { stroke: #facc15; }
-    .route-line.animate-draw {
-        stroke-dasharray: var(--route-len, 500);
-        stroke-dashoffset: var(--route-len, 500);
-        animation: drawRoute 0.7s ease forwards;
-    }
-    @keyframes drawRoute {
-        to { stroke-dashoffset: 0; }
-    }
-    .route-endpoint { transition: opacity 0.3s ease; }
-    .headshot-marker { filter: drop-shadow(0 0 4px rgba(59,130,246,0.5)); transition: opacity 0.3s ease; }
-    @keyframes headshotPulse {
-        0%, 100% { filter: drop-shadow(0 0 4px rgba(59,130,246,0.5)); }
-        50% { filter: drop-shadow(0 0 8px rgba(59,130,246,0.8)); }
-    }
-    .headshot-marker.animate { animation: headshotPulse 1.2s ease-in-out infinite; }
-    .legend-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
-    .legend-chip .swatch { width: 18px; height: 3px; border-radius: 2px; }
-    .roster-player { transition: all 0.2s ease; }
-    .roster-player.active-player { background-color: #f0fdf4; border-color: #22c55e; }
-
-    /* ── Celebration overlay ─────────────────────────────────────────── */
-    .celebration-overlay {
-        position: absolute;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 50;
-        pointer-events: none;
-        opacity: 0;
-        transition: opacity 0.15s ease;
-    }
-    .celebration-overlay.active { opacity: 1; pointer-events: auto; }
-    .celebration-card {
-        position: relative;
-        padding: 1.5rem 2.5rem;
-        border-radius: 1rem;
-        text-align: center;
-        transform: scale(0.6);
-        transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
-        box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-        overflow: hidden;
-        min-width: 280px;
-        cursor: pointer;
-    }
-    .celebration-overlay.active .celebration-card { transform: scale(1); }
-    .celebration-card.tier-touchdown { background: linear-gradient(135deg, #065f46 0%, #047857 40%, #d97706 100%); border: 2px solid #fbbf24; }
-    .celebration-card.tier-big-play { background: linear-gradient(135deg, #92400e 0%, #d97706 50%, #f59e0b 100%); border: 2px solid #fbbf24; }
-    .celebration-card.tier-turnover { background: linear-gradient(135deg, #7f1d1d 0%, #dc2626 100%); border: 2px solid #ef4444; }
-    .celebration-card.tier-high-fpts { background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 50%, #7c3aed 100%); border: 2px solid #818cf8; }
-    .confetti-container { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
-    .confetti-piece { position: absolute; width: 8px; height: 8px; top: -10px; opacity: 0; }
-    .celebration-overlay.active .confetti-piece { animation: confettiFall 1.8s ease-in forwards; }
-    @keyframes confettiFall {
-        0%   { opacity: 1; transform: translateY(0) rotate(0deg) scale(1); }
-        100% { opacity: 0; transform: translateY(250px) rotate(720deg) scale(0.3); }
-    }
-    .celebration-card.tier-turnover { animation: none; }
-    .celebration-overlay.active .celebration-card.tier-turnover { animation: dangerShake 0.5s ease-in-out; }
-    @keyframes dangerShake {
-        0%, 100% { transform: scale(1) translateX(0); }
-        15% { transform: scale(1) translateX(-8px); }
-        30% { transform: scale(1) translateX(8px); }
-        45% { transform: scale(1) translateX(-6px); }
-        60% { transform: scale(1) translateX(6px); }
-        75% { transform: scale(1) translateX(-3px); }
-    }
-    .celebration-overlay.active .celebration-card.tier-big-play { animation: glowPulse 0.8s ease-in-out 2; }
-    @keyframes glowPulse {
-        0%, 100% { box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
-        50% { box-shadow: 0 20px 60px rgba(245,158,11,0.6), 0 0 40px rgba(245,158,11,0.3); }
-    }
-    .celebration-emoji { font-size: 2.5rem; line-height: 1; }
-    .celebration-title { font-size: 1.5rem; font-weight: 900; text-transform: uppercase; letter-spacing: 0.08em; color: white; text-shadow: 0 2px 8px rgba(0,0,0,0.4); margin-top: 0.25rem; }
-    .celebration-player { font-size: 0.875rem; font-weight: 700; color: rgba(255,255,255,0.9); margin-top: 0.25rem; }
-    .celebration-detail { font-size: 0.75rem; font-weight: 600; color: rgba(255,255,255,0.7); margin-top: 0.25rem; }
-    .celebration-fpts { display: inline-block; margin-top: 0.5rem; padding: 0.25rem 0.75rem; border-radius: 9999px; background: rgba(255,255,255,0.2); color: white; font-size: 0.875rem; font-weight: 800; }
-    .celebration-headshot { width: 56px; height: 56px; border-radius: 50%; border: 3px solid rgba(255,255,255,0.8); object-fit: cover; margin: 0 auto 0.5rem; display: block; }
-</style>
+<link rel="stylesheet" href="/static/css/simulation.css">
 
 <div class="max-w-7xl mx-auto space-y-5">
     <a href="{{ back_url or '/teams/' ~ team.id }}"
@@ -207,11 +52,11 @@
                 <div class="flex items-center justify-between mb-3">
                     <h3 class="text-xs uppercase tracking-wider font-semibold text-slate-400">Route Chart</h3>
                     <div class="flex items-center gap-3">
-                        <button id="btn-all-routes" onclick="toggleAllRoutes()"
+                        <button id="btn-all-routes" onclick="SimField.toggleAllRoutes()"
                                 class="px-3 py-1 text-[10px] font-bold uppercase tracking-wider rounded border border-slate-600 text-slate-400 hover:text-white hover:border-slate-400 transition-colors">
                             All Routes
                         </button>
-                        <button id="btn-flat-view" onclick="toggleFlatView()"
+                        <button id="btn-flat-view" onclick="SimField.toggleFlatView()"
                                 class="px-3 py-1 text-[10px] font-bold uppercase tracking-wider rounded border border-slate-600 text-slate-400 hover:text-white hover:border-slate-400 transition-colors">
                             Flat View
                         </button>
@@ -259,7 +104,7 @@
                 </div>
 
                 <!-- Celebration overlay -->
-                <div id="celebration-overlay" class="celebration-overlay" onclick="dismissCelebration()">
+                <div id="celebration-overlay" class="celebration-overlay" onclick="SimField.dismissCelebration()">
                     <div id="celebration-card" class="celebration-card">
                         <div id="celebration-confetti" class="confetti-container"></div>
                         <div id="celebration-content"></div>
@@ -284,27 +129,27 @@
             <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
                 <div class="flex flex-wrap items-center justify-between gap-3">
                     <div class="flex items-center gap-2">
-                        <button id="btn-prev" onclick="stepBackward()" disabled
+                        <button id="btn-prev" onclick="SimField.stepBackward()" disabled
                                 class="px-3 py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-50">◀ Prev</button>
-                        <button id="btn-play" onclick="playSimulation()" disabled
+                        <button id="btn-play" onclick="SimField.playSimulation()" disabled
                                 class="px-4 py-2 text-xs font-semibold rounded-lg bg-field-600 hover:bg-field-700 text-white disabled:opacity-50">Play</button>
-                        <button id="btn-pause" onclick="pauseSimulation()" disabled
+                        <button id="btn-pause" onclick="SimField.pauseSimulation()" disabled
                                 class="px-4 py-2 text-xs font-semibold rounded-lg bg-slate-400 text-white disabled:opacity-50">Pause</button>
-                        <button id="btn-next" onclick="stepForward()" disabled
+                        <button id="btn-next" onclick="SimField.stepForward()" disabled
                                 class="px-3 py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-50">Next ▶</button>
-                        <button id="btn-reset" onclick="resetSimulation()" disabled
+                        <button id="btn-reset" onclick="SimField.resetSimulation()" disabled
                                 class="px-3 py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-50">Reset</button>
                     </div>
                     <div class="flex items-center gap-3 w-full sm:w-auto">
                         <label for="sim-speed" class="text-xs font-semibold uppercase tracking-wider text-slate-500">Speed</label>
                         <input id="sim-speed" type="range" min="0.5" max="3" step="0.5" value="1"
-                               onchange="setSpeed(this.value)" class="w-32">
+                               onchange="SimField.setSpeed(this.value)" class="w-32">
                         <span id="sim-speed-label" class="text-xs font-semibold text-slate-600 w-10">1.0x</span>
                     </div>
                 </div>
                 <div class="mt-3">
                     <input id="sim-progress" type="range" min="0" max="0" value="0" disabled
-                           oninput="jumpToPlay(this.value)" class="w-full">
+                           oninput="SimField.jumpToPlay(this.value)" class="w-full">
                 </div>
             </div>
 
@@ -388,518 +233,79 @@
 {% endblock %}
 
 {% block extra_js %}
+<script src="/static/js/simulation-field.js"></script>
 <script>
 /* =====================================================================
-   Team Game Simulation Viewer
+   Team Game Simulation — Page-specific logic
+   Uses shared SimField engine for field rendering & playback.
    ===================================================================== */
 
-const SVG_NS = 'http://www.w3.org/2000/svg';
-const XLINK_NS = 'http://www.w3.org/1999/xlink';
 const TEAM_DB_ID = {{ team.id }};
-
-/* Position colors matching the service */
-const POSITION_COLORS = {
-    'QB': '#ef4444', 'RB': '#22c55e', 'WR': '#3b82f6',
-    'TE': '#f59e0b', 'K': '#8b5cf6', 'DEF': '#64748b', 'DST': '#64748b',
-};
-
-let simEvents = [];
-let simPlayers = [];
-let simCurrentIndex = 0;
-let simTimer = null;
-let simPlaying = false;
-let simSpeed = 1.0;
-let allRoutesMode = false;
-const simBaseDelay = 1400;
 let simScoringSettings = null;
-
-const VB_W = 400;
-const VB_H = 300;
-const FIELD_DEPTH_YARDS = 40;
-const BEHIND_LOS_YARDS = 8;   // visible yards behind the LOS (dropbacks, sacks)
-const TOTAL_DEPTH_YARDS = FIELD_DEPTH_YARDS + BEHIND_LOS_YARDS;
-const FIELD_TOP_Y = 20;
-const FIELD_BOT_Y = 280;
-const LOS_Y = FIELD_BOT_Y - (BEHIND_LOS_YARDS / TOTAL_DEPTH_YARDS) * (FIELD_BOT_Y - FIELD_TOP_Y);
-const FIELD_LEFT_X = 30;
-const FIELD_RIGHT_X = 370;
+let simPlayers = [];
 
 function _q(id) { return document.getElementById(id); }
 function _def(v, fb) { return v === null || v === undefined ? fb : v; }
 
-/* ── coordinate helpers ─────────────────────────────────────────────── */
+/* ── Team-specific frame handler ──────────────────────────────────── */
 
-function depthToY(depthPct, losX) {
-    const yardsBeyond = depthPct - losX;
-    const frac = (yardsBeyond + BEHIND_LOS_YARDS) / TOTAL_DEPTH_YARDS;
-    return FIELD_BOT_Y - frac * (FIELD_BOT_Y - FIELD_TOP_Y);
+function onTeamFrame(e, index, instant) {
+    const events = SimField.getEvents();
+    const yards = e.yards_gained > 0 ? '+' + e.yards_gained : e.yards_gained;
+    const playerColor = e.player_color || '#94a3b8';
+
+    const badgeParts = [];
+    const badges = e.badges || {};
+    if (badges.touchdown) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-field-600 text-white text-[10px] font-bold">TD</span>');
+    if (badges.first_down) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-blue-600 text-white text-[10px] font-bold">1D</span>');
+    if (badges.turnover) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold">TURNOVER</span>');
+    if (badges.big_play) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-pigskin-500 text-white text-[10px] font-bold">BIG PLAY</span>');
+
+    _q('sim-current-play').innerHTML =
+        '<div class="flex flex-wrap items-center gap-2 mb-1">'
+        + '<span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Play ' + (index + 1) + ' of ' + events.length + '</span>'
+        + '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold text-white" style="background:' + playerColor + '">'
+        + (e.player_position || '') + ' · ' + (e.player_name || 'Unknown') + '</span>'
+        + '<span class="text-xs text-slate-400">' + (e.time_label || '—') + '</span>'
+        + '<span class="text-xs text-slate-400">' + (e.down_distance || '—') + '</span>'
+        + '<span class="px-2 py-0.5 rounded text-[10px] font-bold ' + (e.role === 'pass' ? 'bg-blue-100 text-blue-700' : e.role === 'rush' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700') + '">'
+        + (e.role || 'play').toUpperCase() + ' · ' + yards + ' yds</span>'
+        + badgeParts.join('')
+        + '</div>'
+        + '<p class="text-sm text-slate-700">' + ((e.description || 'No description').replace(/</g, '&lt;').replace(/>/g, '&gt;')) + '</p>'
+        + '<p class="mt-2 text-xs text-slate-500">EPA: <span class="' + ((e.epa || 0) >= 0 ? 'text-field-700' : 'text-red-500') + ' font-semibold">' + ((e.epa || 0) >= 0 ? '+' : '') + (e.epa || 0).toFixed(2) + '</span>'
+        + ' · Team FPTS: <span class="font-semibold text-field-700">' + _def(e.team_fantasy_points, 0).toFixed(1) + '</span></p>';
+
+    updateStats(e);
+    highlightRosterPlayer(e.player_id);
+    SimField.updateActiveRow(index);
 }
 
-function lateralToX(lateralPct) {
-    return FIELD_LEFT_X + (lateralPct / 100) * (FIELD_RIGHT_X - FIELD_LEFT_X);
-}
-
-/* ── SVG helpers ─────────────────────────────────────────────────────── */
-
-function svgEl(tag, attrs) {
-    const el = document.createElementNS(SVG_NS, tag);
-    for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
-    return el;
-}
-
-function buildFieldBackground(losFieldX) {
-    const g = _q('svg-field-bg');
-    g.innerHTML = '';
-    g.appendChild(svgEl('rect', {x:0, y:0, width: VB_W, height: VB_H, fill:'#1a2a1a'}));
-    const losYard = losFieldX;
-    const startYard = Math.floor((losYard - BEHIND_LOS_YARDS - 5) / 5) * 5;
-    const endYard = losYard + FIELD_DEPTH_YARDS + 5;
-    for (let yd = startYard; yd <= endYard; yd += 5) {
-        const y = depthToY(yd, losFieldX);
-        if (y < 0 || y > VB_H) continue;
-        const isTen = (yd % 10 === 0);
-        g.appendChild(svgEl('line', {
-            x1: FIELD_LEFT_X, y1: y, x2: FIELD_RIGHT_X, y2: y,
-            stroke: isTen ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.1)',
-            'stroke-width': isTen ? 0.6 : 0.3,
-        }));
-        if (isTen) {
-            const displayYd = yd > 50 ? (100 - yd) : yd;
-            if (displayYd >= 0 && displayYd <= 50) {
-                const makeLabel = function(x, anchor) {
-                    const t = svgEl('text', {
-                        x: x, y: y + 3,
-                        fill: 'rgba(255,255,255,0.35)',
-                        'font-size': '8', 'text-anchor': anchor,
-                        'font-family': 'system-ui, sans-serif', 'font-weight': '700',
-                    });
-                    t.textContent = displayYd;
-                    return t;
-                };
-                g.appendChild(makeLabel(FIELD_LEFT_X - 4, 'end'));
-                g.appendChild(makeLabel(FIELD_RIGHT_X + 4, 'start'));
-            }
-        }
-    }
-    g.appendChild(svgEl('line', {x1: FIELD_LEFT_X, y1:0, x2: FIELD_LEFT_X, y2: VB_H, stroke:'rgba(255,255,255,0.08)', 'stroke-width':1}));
-    g.appendChild(svgEl('line', {x1: FIELD_RIGHT_X, y1:0, x2: FIELD_RIGHT_X, y2: VB_H, stroke:'rgba(255,255,255,0.08)', 'stroke-width':1}));
-}
-
-function drawLOS(losFieldX) {
-    const g = _q('svg-los-group');
-    g.innerHTML = '';
-    const y = LOS_Y;
-    g.appendChild(svgEl('line', {
-        x1: FIELD_LEFT_X - 8, y1: y, x2: FIELD_RIGHT_X + 8, y2: y,
-        stroke: '#3b82f6', 'stroke-width': 1.5, opacity: 0.9,
-    }));
-    const makeLosLabel = function(x, anchor) {
-        const t = svgEl('text', {
-            x: x, y: y + 12, fill: '#3b82f6', 'font-size': '8', 'text-anchor': anchor,
-            'font-family': 'system-ui, sans-serif', 'font-weight': '700',
-        });
-        t.textContent = 'LOS';
-        return t;
-    };
-    g.appendChild(makeLosLabel(FIELD_LEFT_X - 8, 'end'));
-    g.appendChild(makeLosLabel(FIELD_RIGHT_X + 8, 'start'));
-}
-
-/* ── route drawing ──────────────────────────────────────────────────── */
-
-function clearRoutes() {
-    _q('svg-routes').innerHTML = '';
-    _q('svg-endpoints').innerHTML = '';
-    _q('svg-headshot').innerHTML = '';
-    _q('svg-labels').innerHTML = '';
-    /* Remove old headshot motion paths from defs */
-    _q('route-svg').querySelectorAll('[id^="headshot-motion-path-"]').forEach(function(el) { el.remove(); });
-    _headshotCounter = 0;
-}
-
-function drawRoute(evt, animate, opacity) {
-    const rp = evt.route_path;
-    if (!rp || !rp.segments || rp.segments.length < 2) return;
-
-    const routesG = _q('svg-routes');
-    const endpointsG = _q('svg-endpoints');
-    const labelsG = _q('svg-labels');
-    const losX = evt.start_x;
-    const segs = rp.segments;
-    const playerColor = evt.player_color || '#94a3b8';
-
-    const groups = classifySegments(segs, rp, evt.role);
-
-    groups.forEach(function(group) {
-        if (group.points.length < 2) return;
-        const pts = group.points.map(function(s) {
-            return lateralToX(s.lateral).toFixed(1) + ',' + depthToY(s.depth, losX).toFixed(1);
-        }).join(' ');
-
-        const attrs = {
-            points: pts,
-            class: 'route-line ' + group.cssClass,
-            opacity: opacity,
-        };
-        if (group.marker) attrs['marker-end'] = 'url(#' + group.marker + ')';
-
-        const polyline = svgEl('polyline', attrs);
-        if (animate) {
-            routesG.appendChild(polyline);
-            const len = polyline.getTotalLength ? polyline.getTotalLength() : 500;
-            polyline.style.setProperty('--route-len', len);
-            polyline.classList.add('animate-draw');
-        } else {
-            routesG.appendChild(polyline);
-        }
-    });
-
-    /* Headshot marker or position badge at route endpoint */
-    const headshotUrl = evt.player_headshot_url || '';
-    const isPassPlay = evt.play_type === 'pass' && !rp.is_sack && opacity >= 0.8;
-
-    if (isPassPlay) {
-        /* On pass plays show QB at throw point and receiver at route end */
-        const dropSeg = segs.find(function(s) { return s.type === 'drop'; });
-        let qbUrl, qbColor, qbName, rcvUrl, rcvColor, rcvName;
-        if (evt.role === 'pass') {
-            qbUrl = headshotUrl;
-            qbColor = playerColor;
-            qbName = evt.player_name || '';
-            rcvUrl = evt.receiver_headshot_url || '';
-            rcvColor = evt.receiver_color || '#3b82f6';
-            rcvName = evt.receiver_name || '';
-        } else {
-            qbUrl = evt.passer_headshot_url || '';
-            qbColor = evt.passer_color || '#ef4444';
-            qbName = evt.passer_name || '';
-            rcvUrl = headshotUrl;
-            rcvColor = playerColor;
-            rcvName = evt.player_name || '';
-        }
-        /* QB icon at the drop/throw point (or LOS for receive-role events) */
-        const qbSeg = dropSeg || segs[0];
-        if (qbSeg) {
-            if (qbUrl) {
-                drawStaticHeadshot(qbSeg, losX, qbUrl, qbColor);
-            } else if (qbName) {
-                const _qx = lateralToX(qbSeg.lateral);
-                const _qy = depthToY(qbSeg.depth, losX);
-                drawNameBadge(_qx, _qy - 14, qbName, qbColor);
-            }
-        }
-        /* Receiver icon travels to / sits at the route endpoint */
-        if (rcvUrl) {
-            drawHeadshotMarker(segs, losX, animate, rcvUrl, rcvColor);
-        } else if (rcvName) {
-            /* No headshot — show name badge at endpoint */
-            const _ls = segs[segs.length - 1];
-            const _ex = lateralToX(_ls.lateral);
-            const _ey = depthToY(_ls.depth, losX);
-            drawNameBadge(_ex, _ey - 14, rcvName, rcvColor);
-        } else {
-            drawHeadshotMarker(segs, losX, animate, headshotUrl, playerColor);
-        }
-    } else if (headshotUrl && opacity >= 0.8) {
-        drawHeadshotMarker(segs, losX, animate, headshotUrl, playerColor);
-    } else {
-        /* Fallback: position-colored badge */
-        const lastSeg = segs[segs.length - 1];
-        const ex = lateralToX(lastSeg.lateral);
-        const ey = depthToY(lastSeg.depth, losX);
-        const badgeG = svgEl('g', {});
-        badgeG.appendChild(svgEl('circle', {
-            cx: ex, cy: ey - 14, r: 8,
-            fill: playerColor, stroke: '#0f172a', 'stroke-width': 1, opacity: Math.max(opacity, 0.8),
-        }));
-        const posText = svgEl('text', {
-            x: ex, y: ey - 11, fill: '#ffffff', 'font-size': '6', 'text-anchor': 'middle',
-            'font-family': 'system-ui, sans-serif', 'font-weight': '700', opacity: Math.max(opacity, 0.8),
-        });
-        posText.textContent = (evt.player_position || '??').substring(0, 2);
-        badgeG.appendChild(posText);
-        endpointsG.appendChild(badgeG);
-    }
-
-    /* Endpoint marker */
-    const lastSeg = segs[segs.length - 1];
-    const ex = lateralToX(lastSeg.lateral);
-    const ey = depthToY(lastSeg.depth, losX);
-
-    if (rp.is_touchdown) {
-        endpointsG.appendChild(svgEl('circle', {
-            cx: ex, cy: ey, r: 6, fill: 'none', stroke: '#3b82f6', 'stroke-width': 2, opacity: opacity,
-            class: 'route-endpoint',
-        }));
-        endpointsG.appendChild(svgEl('circle', {
-            cx: ex, cy: ey, r: 2.5, fill: '#3b82f6', opacity: opacity, class: 'route-endpoint',
-        }));
-        const td = svgEl('text', {
-            x: ex, y: ey + 18, fill: '#3b82f6', 'font-size': '8', 'text-anchor': 'middle',
-            'font-family': 'system-ui, sans-serif', 'font-weight': '700', opacity: opacity,
-        });
-        td.textContent = 'TD';
-        labelsG.appendChild(td);
-    } else if (rp.is_sack) {
-        const sack = svgEl('text', {
-            x: ex, y: ey + 3, fill: '#ef4444', 'font-size': '10', 'text-anchor': 'middle',
-            'font-family': 'system-ui, sans-serif', 'font-weight': '900', opacity: opacity,
-        });
-        sack.textContent = '✕';
-        endpointsG.appendChild(sack);
-    } else {
-        const dotColor = rp.is_complete ? '#22c55e' : (evt.role === 'rush' ? '#facc15' : '#9ca3af');
-        endpointsG.appendChild(svgEl('circle', {
-            cx: ex, cy: ey, r: 3, fill: dotColor, opacity: opacity, class: 'route-endpoint',
-        }));
-    }
-
-    /* Yards-gained readout next to endpoint */
-    if (opacity >= 0.8) {
-        const yds = evt.yards_gained;
-        const ydsText = yds > 0 ? '+' + yds : String(yds);
-        const ydsColor = yds > 0 ? '#4ade80' : yds < 0 ? '#f87171' : '#94a3b8';
-        const labelX = ex + 14;
-        const labelY = ey + 3;
-
-        /* Background pill */
-        const pillW = ydsText.length * 5.5 + 8;
-        labelsG.appendChild(svgEl('rect', {
-            x: labelX - 3, y: labelY - 8, width: pillW, height: 12,
-            rx: 3, ry: 3, fill: '#0f172a', opacity: 0.8,
-        }));
-        const yt = svgEl('text', {
-            x: labelX + pillW / 2 - 3, y: labelY,
-            fill: ydsColor, 'font-size': '7.5', 'text-anchor': 'middle',
-            'font-family': 'system-ui, sans-serif', 'font-weight': '700',
-            opacity: opacity,
-        });
-        yt.textContent = ydsText;
-        labelsG.appendChild(yt);
-    }
-}
-
-function classifySegments(segs, rp, role) {
-    const groups = [];
-    let currentGroup = null;
-    for (let i = 0; i < segs.length; i++) {
-        const seg = segs[i];
-        let cssClass, marker;
-        if (role === 'rush') { cssClass = 'rush-segment'; marker = 'arrow-yellow'; }
-        else if (rp.is_sack && (seg.type === 'sack_end' || (i > 0 && segs[i-1].type === 'drop'))) { cssClass = 'sack-segment'; marker = 'arrow-red'; }
-        else if (seg.type === 'catch_end') {
-            if (currentGroup) groups.push(currentGroup);
-            currentGroup = { cssClass: 'yac-segment', marker: 'arrow-green', points: [segs[i - 1], seg] };
-            groups.push(currentGroup);
-            currentGroup = null;
-            continue;
-        } else if (!rp.is_complete && !rp.is_sack && role !== 'rush') { cssClass = 'incomplete-segment'; marker = 'arrow-grey'; }
-        else { cssClass = 'route-segment'; marker = 'arrow-white'; }
-
-        if (currentGroup && currentGroup.cssClass === cssClass) {
-            currentGroup.points.push(seg);
-            currentGroup.marker = marker;
-        } else {
-            if (currentGroup) groups.push(currentGroup);
-            currentGroup = {
-                cssClass: cssClass, marker: marker,
-                points: i > 0 && (!currentGroup || currentGroup.cssClass !== cssClass) ? [segs[i-1], seg] : [seg],
-            };
-        }
-    }
-    if (currentGroup && currentGroup.points.length >= 2) groups.push(currentGroup);
-    return groups.filter(function(g) { return g.points.length >= 2; });
-}
-
-/* ── headshot marker ─────────────────────────────────────────────────── */
-
-let _headshotCounter = 0;
-
-/**
- * Draw a small name badge (pill with player name) at a given SVG position.
- */
-function drawNameBadge(cx, cy, name, bgColor) {
-    const labelsG = _q('svg-labels');
-    const shortName = name.length > 12 ? name.substring(0, 11) + '…' : name;
-    const pillW = shortName.length * 4.5 + 10;
-
-    labelsG.appendChild(svgEl('rect', {
-        x: cx - pillW / 2, y: cy - 5, width: pillW, height: 11,
-        rx: 3, ry: 3, fill: bgColor || '#3b82f6', opacity: 0.85,
-    }));
-    const t = svgEl('text', {
-        x: cx, y: cy + 3, fill: '#ffffff', 'font-size': '6', 'text-anchor': 'middle',
-        'font-family': 'system-ui, sans-serif', 'font-weight': '700',
-    });
-    t.textContent = shortName;
-    labelsG.appendChild(t);
-}
-
-/**
- * Draw a static (non-animated) headshot at a specific segment point.
- * Used for placing the QB icon at the throw/drop point on pass plays.
- */
-function drawStaticHeadshot(seg, losX, headshotUrl, ringColor) {
-    const hsG = _q('svg-headshot');
-    const R = 9;
-    const BORDER = 1.5;
-    const px = lateralToX(seg.lateral);
-    const py = depthToY(seg.depth, losX);
-
-    const g = svgEl('g', {
-        class: 'headshot-marker',
-        transform: 'translate(' + px.toFixed(1) + ',' + py.toFixed(1) + ')',
-    });
-
-    g.appendChild(svgEl('circle', {
-        cx: 0, cy: 0, r: R + BORDER,
-        fill: '#0f172a', stroke: ringColor || '#ef4444', 'stroke-width': BORDER,
-    }));
-
-    const img = document.createElementNS(SVG_NS, 'image');
-    img.setAttributeNS(XLINK_NS, 'href', headshotUrl);
-    img.setAttribute('x', String(-R));
-    img.setAttribute('y', String(-R));
-    img.setAttribute('width', String(R * 2));
-    img.setAttribute('height', String(R * 2));
-    img.setAttribute('clip-path', 'url(#headshot-clip)');
-    img.setAttribute('preserveAspectRatio', 'xMidYMid slice');
-    img.addEventListener('error', function() { g.style.display = 'none'; });
-    g.appendChild(img);
-
-    hsG.appendChild(g);
-}
-
-/**
- * Draw a player headshot at the tip of the route.
- * Uses the player's headshot_url; ring color matches their position color.
- */
-function drawHeadshotMarker(segs, losX, animate, headshotUrl, playerColor) {
-    const hsG = _q('svg-headshot');
-    if (!segs || segs.length < 2) return;
-
-    const R = 10;
-    const BORDER = 1.8;
-
-    const pathPoints = segs.map(function(s) {
-        return { x: lateralToX(s.lateral), y: depthToY(s.depth, losX) };
-    });
-    const pathD = pathPoints.map(function(p, i) {
-        return (i === 0 ? 'M' : 'L') + p.x.toFixed(1) + ',' + p.y.toFixed(1);
-    }).join(' ');
-
-    const g = svgEl('g', { class: 'headshot-marker' + (animate ? ' animate' : '') });
-
-    /* Border ring — colored by position */
-    g.appendChild(svgEl('circle', {
-        cx: 0, cy: 0, r: R + BORDER,
-        fill: '#0f172a', stroke: playerColor || '#3b82f6', 'stroke-width': BORDER,
-    }));
-
-    /* Clipped headshot image */
-    const img = document.createElementNS(SVG_NS, 'image');
-    img.setAttributeNS(XLINK_NS, 'href', headshotUrl);
-    img.setAttribute('x', String(-R));
-    img.setAttribute('y', String(-R));
-    img.setAttribute('width', String(R * 2));
-    img.setAttribute('height', String(R * 2));
-    img.setAttribute('clip-path', 'url(#headshot-clip)');
-    img.setAttribute('preserveAspectRatio', 'xMidYMid slice');
-    img.addEventListener('error', function() { g.style.display = 'none'; });
-    g.appendChild(img);
-
-    if (animate) {
-        _headshotCounter++;
-        const motionId = 'headshot-motion-path-' + _headshotCounter;
-        const defsPath = svgEl('path', { d: pathD, id: motionId });
-        _q('route-svg').querySelector('defs').appendChild(defsPath);
-
-        const animMotion = document.createElementNS(SVG_NS, 'animateMotion');
-        animMotion.setAttribute('dur', '0.7s');
-        animMotion.setAttribute('fill', 'freeze');
-        animMotion.setAttribute('calcMode', 'linear');
-
-        const mpath = document.createElementNS(SVG_NS, 'mpath');
-        mpath.setAttributeNS(XLINK_NS, 'href', '#' + motionId);
-        animMotion.appendChild(mpath);
-        g.appendChild(animMotion);
-    } else {
-        const last = pathPoints[pathPoints.length - 1];
-        g.setAttribute('transform', 'translate(' + last.x.toFixed(1) + ',' + last.y.toFixed(1) + ')');
-    }
-
-    hsG.appendChild(g);
-}
-
-/* ── all-routes overlay ─────────────────────────────────────────────── */
-
-function toggleAllRoutes() {
-    allRoutesMode = !allRoutesMode;
-    const btn = _q('btn-all-routes');
-    if (allRoutesMode) {
-        btn.classList.add('border-white', 'text-white');
-        btn.classList.remove('border-slate-600', 'text-slate-400');
-        drawAllRoutes();
-    } else {
-        btn.classList.remove('border-white', 'text-white');
-        btn.classList.add('border-slate-600', 'text-slate-400');
-        if (simEvents.length) applyFrame(simCurrentIndex, true);
-    }
-}
-
-function drawAllRoutes() {
-    if (!simEvents.length) return;
-    const refLos = simEvents[0].start_x;
-    clearRoutes();
-    buildFieldBackground(refLos);
-    drawLOS(refLos);
-    simEvents.forEach(function(evt) { drawRoute(evt, false, 0.5); });
-}
-
-function toggleFlatView() {
-    const inner = _q('route-field-inner');
-    const btn = _q('btn-flat-view');
-    inner.classList.toggle('flat-view');
-    if (inner.classList.contains('flat-view')) {
-        btn.classList.add('border-white', 'text-white');
-        btn.classList.remove('border-slate-600', 'text-slate-400');
-    } else {
-        btn.classList.remove('border-white', 'text-white');
-        btn.classList.add('border-slate-600', 'text-slate-400');
-    }
-}
-
-/* ── playback controls ───────────────────────────────────────────── */
-
-function setControlsEnabled(enabled) {
-    ['btn-prev', 'btn-play', 'btn-pause', 'btn-next', 'btn-reset', 'sim-progress'].forEach(function(id) {
-        _q(id).disabled = !enabled;
-    });
-}
+/* ── Stats ────────────────────────────────────────────────────────── */
 
 function resetStats() {
     ['stat-total-plays','stat-total-tds','stat-pass-yards','stat-rush-yards','stat-rec-yards','stat-first-downs'].forEach(function(id) {
         _q(id).textContent = '0';
     });
     _q('stat-team-fpts').textContent = '0.0';
-    // Reset per-player fpts in sidebar
     document.querySelectorAll('[id^="roster-fpts-"]').forEach(function(el) {
         el.textContent = '0.0';
     });
 }
 
 function updateStats(evt) {
-    const snapshot = evt.stats_snapshot || {};
-    // We accumulate across all players — use team_fantasy_points from the merged event
+    const events = SimField.getEvents();
+    const currentIndex = SimField.getCurrentIndex();
+
+    /* Team fantasy points from the merged event */
     _q('stat-team-fpts').textContent = _def(evt.team_fantasy_points, 0).toFixed(1);
 
-    // Per-player running fantasy points: sum last seen snapshot per player
+    /* Per-player running fantasy points: sum last seen snapshot per player */
     const playerFpts = {};
-    for (let i = 0; i <= simCurrentIndex; i++) {
-        const e = simEvents[i];
+    for (let i = 0; i <= currentIndex; i++) {
+        const e = events[i];
         const pid = e.player_id;
         const snap = e.stats_snapshot || {};
-        // Rough PPR estimate for display
         let pts = 0;
         pts += (_def(snap.pass_yards, 0)) * 0.04;
         pts += (_def(snap.pass_tds, 0)) * 4;
@@ -911,19 +317,16 @@ function updateStats(evt) {
         pts += (_def(snap.rec_tds, 0)) * 6;
         playerFpts[pid] = pts;
     }
-
-    // Update sidebar
     for (const [pid, pts] of Object.entries(playerFpts)) {
         const el = _q('roster-fpts-' + pid);
         if (el) el.textContent = pts.toFixed(1);
     }
 
-    // Team-wide snapshot aggregation: use the current event's snapshot for that player
-    // We need cumulative across all players
+    /* Team-wide snapshot aggregation */
     let totalPlays = 0, totalTds = 0, passYds = 0, rushYds = 0, recYds = 0, firstDowns = 0;
     const lastSnapshots = {};
-    for (let i = 0; i <= simCurrentIndex; i++) {
-        lastSnapshots[simEvents[i].player_id] = simEvents[i].stats_snapshot || {};
+    for (let i = 0; i <= currentIndex; i++) {
+        lastSnapshots[events[i].player_id] = events[i].stats_snapshot || {};
     }
     for (const snap of Object.values(lastSnapshots)) {
         totalPlays += _def(snap.total_plays, 0);
@@ -941,6 +344,8 @@ function updateStats(evt) {
     _q('stat-first-downs').textContent = firstDowns;
 }
 
+/* ── Roster highlighting ──────────────────────────────────────────── */
+
 function highlightRosterPlayer(playerId) {
     document.querySelectorAll('.roster-player').forEach(function(el) {
         el.classList.remove('active-player');
@@ -951,6 +356,8 @@ function highlightRosterPlayer(playerId) {
         active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }
 }
+
+/* ── Timeline ─────────────────────────────────────────────────────── */
 
 function renderTimeline(events) {
     const body = _q('sim-play-table-body');
@@ -967,7 +374,7 @@ function renderTimeline(events) {
                 : 'bg-slate-100 text-slate-600';
         const y = e.yards_gained > 0 ? '+' + e.yards_gained : e.yards_gained;
         const playerColor = e.player_color || '#94a3b8';
-        return '<tr id="sim-row-' + i + '" class="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer" onclick="jumpToPlay(' + i + ')">'
+        return '<tr id="sim-row-' + i + '" class="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer" onclick="SimField.jumpToPlay(' + i + ')">'
             + '<td class="px-3 py-2 text-xs text-slate-500">' + (i + 1) + '</td>'
             + '<td class="px-3 py-2 text-xs"><span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full inline-block" style="background:' + playerColor + '"></span>' + (e.player_name || '—') + '</span></td>'
             + '<td class="px-3 py-2 text-xs text-slate-500">' + (e.time_label || '—') + '</td>'
@@ -978,184 +385,7 @@ function renderTimeline(events) {
     }).join('');
 }
 
-function updateActiveRow(index) {
-    simEvents.forEach(function(_, i) {
-        const row = _q('sim-row-' + i);
-        if (!row) return;
-        row.classList.toggle('bg-field-50', i === index);
-    });
-}
-
-function applyFrame(index, instant) {
-    if (!simEvents.length) return;
-    if (index < 0) index = 0;
-    if (index >= simEvents.length) index = simEvents.length - 1;
-    simCurrentIndex = index;
-
-    const e = simEvents[index];
-
-    if (allRoutesMode) {
-        drawAllRoutes();
-    } else {
-        clearRoutes();
-        buildFieldBackground(e.start_x);
-        drawLOS(e.start_x);
-        drawRoute(e, !instant, 1.0);
-    }
-
-    const yards = e.yards_gained > 0 ? '+' + e.yards_gained : e.yards_gained;
-    const playerColor = e.player_color || '#94a3b8';
-
-    /* ── Update play banner ────────────────────────────────── */
-    const banner = _q('play-banner');
-    const bannerDesc = _q('play-banner-desc');
-    const bannerMeta = _q('play-banner-meta');
-    const desc = (e.description || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    if (desc) {
-        bannerDesc.innerHTML = desc;
-        const metaParts = [];
-        metaParts.push('<span style="color:#cbd5e1">' + (e.down_distance || '') + '</span>');
-        const roleClass = e.role === 'pass' ? 'background:#3b82f6;color:#fff'
-            : e.role === 'rush' ? 'background:#eab308;color:#1a1a1a'
-            : 'background:#22c55e;color:#fff';
-        metaParts.push('<span class="play-banner-badge" style="' + roleClass + '">' + (e.role || 'play').toUpperCase() + '</span>');
-        metaParts.push('<span>' + yards + ' yds</span>');
-        if (e.badges && e.badges.touchdown) metaParts.push('<span class="play-banner-badge" style="background:#16a34a;color:#fff">TD</span>');
-        if (e.badges && e.badges.first_down) metaParts.push('<span class="play-banner-badge" style="background:#2563eb;color:#fff">1ST DOWN</span>');
-        if (e.badges && e.badges.turnover) metaParts.push('<span class="play-banner-badge" style="background:#dc2626;color:#fff">TURNOVER</span>');
-        if (e.badges && e.badges.big_play) metaParts.push('<span class="play-banner-badge" style="background:#d97706;color:#fff">BIG PLAY</span>');
-        bannerMeta.innerHTML = metaParts.join('');
-        banner.classList.add('visible');
-    } else {
-        banner.classList.remove('visible');
-    }
-
-    const badgeParts = [];
-    if (e.badges && e.badges.touchdown) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-field-600 text-white text-[10px] font-bold">TD</span>');
-    if (e.badges && e.badges.first_down) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-blue-600 text-white text-[10px] font-bold">1D</span>');
-    if (e.badges && e.badges.turnover) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold">TURNOVER</span>');
-    if (e.badges && e.badges.big_play) badgeParts.push('<span class="px-1.5 py-0.5 rounded bg-pigskin-500 text-white text-[10px] font-bold">BIG PLAY</span>');
-
-    _q('sim-current-play').innerHTML =
-        '<div class="flex flex-wrap items-center gap-2 mb-1">'
-        + '<span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Play ' + (index + 1) + ' of ' + simEvents.length + '</span>'
-        + '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold text-white" style="background:' + playerColor + '">'
-        + (e.player_position || '') + ' · ' + (e.player_name || 'Unknown') + '</span>'
-        + '<span class="text-xs text-slate-400">' + (e.time_label || '—') + '</span>'
-        + '<span class="text-xs text-slate-400">' + (e.down_distance || '—') + '</span>'
-        + '<span class="px-2 py-0.5 rounded text-[10px] font-bold ' + (e.role === 'pass' ? 'bg-blue-100 text-blue-700' : e.role === 'rush' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700') + '">'
-        + (e.role || 'play').toUpperCase() + ' · ' + yards + ' yds</span>'
-        + badgeParts.join('')
-        + '</div>'
-        + '<p class="text-sm text-slate-700">' + ((e.description || 'No description').replace(/</g, '&lt;').replace(/>/g, '&gt;')) + '</p>'
-        + '<p class="mt-2 text-xs text-slate-500">EPA: <span class="' + ((e.epa || 0) >= 0 ? 'text-field-700' : 'text-red-500') + ' font-semibold">' + ((e.epa || 0) >= 0 ? '+' : '') + (e.epa || 0).toFixed(2) + '</span>'
-        + ' · Team FPTS: <span class="font-semibold text-field-700">' + _def(e.team_fantasy_points, 0).toFixed(1) + '</span></p>';
-
-    updateStats(e);
-    highlightRosterPlayer(e.player_id);
-    _q('sim-progress').value = String(index);
-    updateActiveRow(index);
-    _q('btn-prev').disabled = index === 0;
-    _q('btn-next').disabled = index >= simEvents.length - 1;
-
-    checkCelebration(e, index, instant);
-}
-
-function playSimulation() {
-    if (!simEvents.length || simPlaying) return;
-    simPlaying = true;
-    _q('btn-play').disabled = true;
-    _q('btn-pause').disabled = false;
-    simTimer = setInterval(function() {
-        if (simCurrentIndex >= simEvents.length - 1) { pauseSimulation(); return; }
-        applyFrame(simCurrentIndex + 1, false);
-    }, simBaseDelay / simSpeed);
-}
-
-function pauseSimulation() {
-    simPlaying = false;
-    _q('btn-play').disabled = !simEvents.length;
-    _q('btn-pause').disabled = true;
-    if (simTimer) { clearInterval(simTimer); simTimer = null; }
-}
-
-function stepForward() { if (!simEvents.length) return; pauseSimulation(); applyFrame(simCurrentIndex + 1, false); }
-function stepBackward() { if (!simEvents.length) return; pauseSimulation(); applyFrame(simCurrentIndex - 1, false); }
-function resetSimulation() { if (!simEvents.length) return; pauseSimulation(); allRoutesMode = false; _q('btn-all-routes').classList.remove('border-white','text-white'); _q('btn-all-routes').classList.add('border-slate-600','text-slate-400'); applyFrame(0, true); }
-
-function jumpToPlay(value) {
-    if (!simEvents.length) return;
-    pauseSimulation();
-    allRoutesMode = false;
-    _q('btn-all-routes').classList.remove('border-white','text-white');
-    _q('btn-all-routes').classList.add('border-slate-600','text-slate-400');
-    applyFrame(parseInt(value, 10) || 0, true);
-}
-
-function setSpeed(value) {
-    simSpeed = parseFloat(value);
-    _q('sim-speed-label').textContent = simSpeed.toFixed(1) + 'x';
-    if (simPlaying) { pauseSimulation(); playSimulation(); }
-}
-
-async function loadSimulation() {
-    pauseSimulation();
-    resetStats();
-    allRoutesMode = false;
-
-    const year = _q('sim-year').value;
-    const week = _q('sim-week').value;
-    const spinner = _q('sim-load-spinner');
-    const btn = _q('sim-load-btn');
-    spinner.classList.remove('hidden');
-    btn.disabled = true;
-
-    try {
-        const resp = await fetch('/api/stats/teams/' + TEAM_DB_ID + '/game-simulation?year=' + year + '&week=' + week);
-        if (!resp.ok) {
-            const err = await resp.json();
-            throw new Error(err.detail || 'Failed to load team simulation');
-        }
-        const data = await resp.json();
-
-        simEvents = data.events || [];
-        simPlayers = data.players || [];
-        simScoringSettings = data.scoring_settings || null;
-        simCurrentIndex = 0;
-        _q('sim-progress').max = String(Math.max(0, simEvents.length - 1));
-        _q('sim-progress').value = '0';
-        setControlsEnabled(simEvents.length > 0);
-
-        renderTimeline(simEvents);
-
-        if (simEvents.length > 0) {
-            applyFrame(0, true);
-        } else {
-            clearRoutes();
-            buildFieldBackground(25);
-            drawLOS(25);
-            _q('sim-current-play').textContent = 'No plays found for this team/week combination.';
-        }
-    } catch (err) {
-        simEvents = [];
-        setControlsEnabled(false);
-        renderTimeline([]);
-        clearRoutes();
-        buildFieldBackground(25);
-        drawLOS(25);
-        _q('sim-current-play').innerHTML = '<p class="text-sm text-red-500">' + (err.message || 'Failed to load team simulation') + '</p>';
-        if (typeof showToast === 'function') showToast(err.message || 'Failed to load', 'error');
-    } finally {
-        spinner.classList.add('hidden');
-        btn.disabled = false;
-    }
-}
-
-/* ── celebration system ───────────────────────────────────────────── */
-
-let celebrationTimer = null;
-const CELEBRATION_DURATION = 2800;
-const CONFETTI_COLORS = ['#fbbf24','#34d399','#60a5fa','#f472b6','#a78bfa','#fb923c','#ffffff'];
+/* ── Celebration system ───────────────────────────────────────────── */
 
 function estimatePlayFpts(snapshot, prevSnapshot) {
     function calc(s) {
@@ -1176,121 +406,91 @@ function estimatePlayFpts(snapshot, prevSnapshot) {
     return Math.round((calc(snapshot || {}) - calc(prevSnapshot || {})) * 10) / 10;
 }
 
-function determineCelebrationTier(evt, fptsGained) {
-    const b = evt.badges || {};
-    if (b.touchdown) return 'touchdown';
-    if (b.turnover) return 'turnover';
-    if (b.big_play) return 'big-play';
-    if (fptsGained >= 4.0) return 'high-fpts';
-    return null;
-}
-
-function buildConfetti(container, tier) {
-    container.innerHTML = '';
-    if (tier === 'turnover') return;
-    const count = tier === 'touchdown' ? 30 : 15;
-    for (let i = 0; i < count; i++) {
-        const piece = document.createElement('div');
-        piece.className = 'confetti-piece';
-        const color = CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)];
-        const left = Math.random() * 100;
-        const delay = Math.random() * 0.8;
-        const size = 4 + Math.random() * 8;
-        piece.style.cssText = 'left:' + left + '%;background:' + color
-            + ';animation-delay:' + delay + 's;width:' + size + 'px;height:' + size + 'px;border-radius:'
-            + (Math.random() > 0.5 ? '50%' : '2px') + ';';
-        container.appendChild(piece);
-    }
-}
-
-function showCelebration(evt, tier, fptsGained, playerName, playerHeadshot, playerPosition) {
-    const overlay = _q('celebration-overlay');
-    const card = _q('celebration-card');
-    const content = _q('celebration-content');
-    const confetti = _q('celebration-confetti');
-
-    if (celebrationTimer) { clearTimeout(celebrationTimer); celebrationTimer = null; }
-    overlay.classList.remove('active');
-    card.className = 'celebration-card tier-' + tier;
-
-    const tierConfig = {
-        'touchdown': { emoji: '🏆', title: 'TOUCHDOWN!', color: '#fbbf24' },
-        'big-play':  { emoji: '🔥', title: 'BIG PLAY!', color: '#f59e0b' },
-        'turnover':  { emoji: '💀', title: 'TURNOVER',  color: '#ef4444' },
-        'high-fpts': { emoji: '⚡', title: 'HUGE PLAY!', color: '#818cf8' },
-    };
-    const cfg = tierConfig[tier] || tierConfig['big-play'];
-
-    let html = '';
-    if (playerHeadshot) {
-        html += '<img src="' + playerHeadshot + '" class="celebration-headshot" onerror="this.style.display=\'none\'">';
-    }
-    html += '<div class="celebration-emoji">' + cfg.emoji + '</div>';
-    html += '<div class="celebration-title">' + cfg.title + '</div>';
-    if (playerName) {
-        html += '<div class="celebration-player">' + (playerPosition ? playerPosition + ' · ' : '') + playerName + '</div>';
-    }
-    const yards = evt.yards_gained;
-    const ydsStr = yards > 0 ? '+' + yards : String(yards);
-    html += '<div class="celebration-detail">' + ydsStr + ' yards · ' + (evt.description || '').substring(0, 60) + '</div>';
-    if (fptsGained > 0 && tier !== 'turnover') {
-        html += '<span class="celebration-fpts">+' + fptsGained.toFixed(1) + ' FPTS</span>';
-    }
-    content.innerHTML = html;
-
-    buildConfetti(confetti, tier);
-
-    requestAnimationFrame(function() {
-        overlay.classList.add('active');
-    });
-
-    celebrationTimer = setTimeout(function() {
-        dismissCelebration();
-    }, CELEBRATION_DURATION);
-}
-
-function dismissCelebration() {
-    const overlay = _q('celebration-overlay');
-    overlay.classList.remove('active');
-    if (celebrationTimer) { clearTimeout(celebrationTimer); celebrationTimer = null; }
-    if (simPlaying && !simTimer) {
-        simTimer = setInterval(function() {
-            if (simCurrentIndex >= simEvents.length - 1) { pauseSimulation(); return; }
-            applyFrame(simCurrentIndex + 1, false);
-        }, simBaseDelay / simSpeed);
-    }
-}
-
-function checkCelebration(evt, index, instant) {
+function teamCheckCelebration(evt, index, instant) {
     if (instant) return;
 
-    // For team sim, get the previous snapshot for THIS player specifically
+    const events = SimField.getEvents();
+    /* For team sim, get the previous snapshot for THIS player specifically */
     let prevSnapshot = {};
     for (let i = index - 1; i >= 0; i--) {
-        if (simEvents[i].player_id === evt.player_id) {
-            prevSnapshot = simEvents[i].stats_snapshot || {};
+        if (events[i].player_id === evt.player_id) {
+            prevSnapshot = events[i].stats_snapshot || {};
             break;
         }
     }
     const currSnapshot = evt.stats_snapshot || {};
     const fptsGained = estimatePlayFpts(currSnapshot, prevSnapshot);
-    const tier = determineCelebrationTier(evt, fptsGained);
+
+    const b = evt.badges || {};
+    let tier = null;
+    if (b.touchdown) tier = 'touchdown';
+    else if (b.turnover) tier = 'turnover';
+    else if (b.big_play) tier = 'big-play';
+    else if (fptsGained >= 4.0) tier = 'high-fpts';
     if (!tier) return;
 
     const playerName = evt.player_name || 'Unknown';
     const playerHeadshot = evt.player_headshot_url || '';
     const playerPosition = evt.player_position || '';
 
-    showCelebration(evt, tier, fptsGained, playerName, playerHeadshot, playerPosition);
+    SimField.showCelebration(evt, tier, fptsGained, playerName, playerHeadshot, playerPosition);
+}
 
-    if (simPlaying && simTimer) {
-        clearInterval(simTimer);
-        simTimer = null;
+/* ── Load simulation ──────────────────────────────────────────────── */
+
+async function loadSimulation() {
+    SimField.pauseSimulation();
+    resetStats();
+
+    const year = _q('sim-year').value;
+    const week = _q('sim-week').value;
+    const spinner = _q('sim-load-spinner');
+    const btn = _q('sim-load-btn');
+    spinner.classList.remove('hidden');
+    btn.disabled = true;
+
+    try {
+        const resp = await fetch('/api/stats/teams/' + TEAM_DB_ID + '/game-simulation?year=' + year + '&week=' + week);
+        if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.detail || 'Failed to load team simulation');
+        }
+        const data = await resp.json();
+
+        SimField.setEvents(data.events || []);
+        simPlayers = data.players || [];
+        simScoringSettings = data.scoring_settings || null;
+
+        const events = SimField.getEvents();
+        renderTimeline(events);
+
+        if (events.length > 0) {
+            SimField.applyFrame(0, true);
+        } else {
+            SimField.clearRoutes();
+            SimField.buildFieldBackground(25);
+            SimField.drawLOS(25);
+            _q('sim-current-play').textContent = 'No plays found for this team/week combination.';
+        }
+    } catch (err) {
+        SimField.setEvents([]);
+        SimField.setControlsEnabled(false);
+        renderTimeline([]);
+        SimField.clearRoutes();
+        SimField.buildFieldBackground(25);
+        SimField.drawLOS(25);
+        _q('sim-current-play').innerHTML = '<p class="text-sm text-red-500">' + (err.message || 'Failed to load team simulation') + '</p>';
+        if (typeof showToast === 'function') showToast(err.message || 'Failed to load', 'error');
+    } finally {
+        spinner.classList.add('hidden');
+        btn.disabled = false;
     }
 }
 
-/* ── init ──────────────────────────────────────────────────────────── */
-buildFieldBackground(25);
-drawLOS(25);
+/* ── Init ─────────────────────────────────────────────────────────── */
+SimField.init({
+    onFrame: onTeamFrame,
+    checkCelebration: teamCheckCelebration,
+});
 </script>
 {% endblock %}
