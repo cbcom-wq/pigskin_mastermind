@@ -45,6 +45,7 @@ from pigskin_mastermind.api.routes.visualizations import router as visualization
 from pigskin_mastermind.api.routes.stats import router as stats_router
 from pigskin_mastermind.api.routes.draft import router as draft_router
 from pigskin_mastermind.api.routes.games import router as games_router
+from pigskin_mastermind.api.routes.odds import router as odds_router
 
 app.include_router(teams_router)
 app.include_router(leagues_router)
@@ -56,6 +57,7 @@ app.include_router(visualizations_router)
 app.include_router(stats_router)
 app.include_router(draft_router)
 app.include_router(games_router)
+app.include_router(odds_router)
 
 
 @app.get("/health")
