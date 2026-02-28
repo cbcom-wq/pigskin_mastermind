@@ -243,6 +243,36 @@ class DBLeague(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class DBSportsbookOdds(Base):
+    """Sportsbook betting lines for NFL games and player props."""
+    __tablename__ = "sportsbook_odds"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String, nullable=False, index=True)
+    sport = Column(String, nullable=False, default='americanfootball_nfl')
+
+    # Game info
+    home_team = Column(String, nullable=False)
+    away_team = Column(String, nullable=False)
+    commence_time = Column(DateTime, nullable=True)
+
+    # Market info
+    market = Column(String, nullable=False)  # h2h, spreads, totals, player_pass_yds, etc.
+    bookmaker = Column(String, nullable=False)
+
+    # Outcome
+    outcome_name = Column(String, nullable=True)  # Team name or "Over"/"Under"
+    price = Column(Integer, nullable=True)  # American odds (-110, +150, etc.)
+    point = Column(Float, nullable=True)  # Spread or total line
+
+    # Player props
+    player_name = Column(String, nullable=True, index=True)
+
+    # Meta
+    source = Column(String, default='the_odds_api')
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 DEFAULT_SCORING_SETTINGS = {
     "pass_yd": 0.04,
     "pass_td": 4,

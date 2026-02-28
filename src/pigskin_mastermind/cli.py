@@ -458,5 +458,112 @@ def stats_yearly_rankings(year, position, top):
         db.close()
 
 
+@main.group()
+def odds():
+    """Sportsbook betting odds commands."""
+    pass
+
+
+@odds.command('import-game-odds')
+@click.option('--api-key', envvar='ODDS_API_KEY', required=True,
+              help='The Odds API key (or set ODDS_API_KEY env var)')
+@click.option('--markets', default='h2h,spreads,totals',
+              help='Comma-separated markets (h2h, spreads, totals)')
+def odds_import_game(api_key, markets):
+    """Import current NFL game odds from The Odds API."""
+    from pigskin_mastermind.services.sportsbook_service import SportsBookService
+
+    market_list = [m.strip() for m in markets.split(',') if m.strip()]
+    db = _get_stats_db()
+    try:
+        service = SportsBookService(db, api_key=api_key)
+        count = service.import_game_odds(markets=market_list)
+        click.echo(f"Imported {count} game odds rows.")
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+    except Exception as e:
+        click.echo(f"API error: {e}", err=True)
+    finally:
+        db.close()
+
+
+@odds.command('import-player-props')
+@click.argument('event_id')
+@click.option('--api-key', envvar='ODDS_API_KEY', required=True,
+              help='The Odds API key (or set ODDS_API_KEY env var)')
+@click.option('--markets', default=None,
+              help='Comma-separated player prop markets (default: all)')
+def odds_import_props(event_id, api_key, markets):
+    """Import player prop odds for a specific NFL event."""
+    from pigskin_mastermind.services.sportsbook_service import SportsBookService
+
+    market_list = None
+    if markets:
+        market_list = [m.strip() for m in markets.split(',') if m.strip()]
+    db = _get_stats_db()
+    try:
+        service = SportsBookService(db, api_key=api_key)
+        count = service.import_player_props(event_id, markets=market_list)
+        click.echo(f"Imported {count} player prop odds rows.")
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+    except Exception as e:
+        click.echo(f"API error: {e}", err=True)
+    finally:
+        db.close()
+
+
+@odds.command('games')
+@click.option('--team', default=None, help='Filter by NFL team')
+@click.option('--market', default=None, help='Filter by market (h2h, spreads, totals)')
+def odds_games(team, market):
+    """Show stored game odds."""
+    from pigskin_mastermind.services.sportsbook_service import SportsBookService
+
+    db = _get_stats_db()
+    try:
+        service = SportsBookService(db)
+        rows = service.get_game_odds(team=team, market=market)
+        if not rows:
+            click.echo("No game odds found. Run 'odds import-game-odds' first.")
+            return
+        click.echo(f"\n{'Away':<20} {'Home':<20} {'Market':<10} {'Book':<15} {'Outcome':<20} {'Price':>7} {'Line':>7}")
+        click.echo("-" * 105)
+        for r in rows:
+            point_str = f"{r['point']}" if r['point'] is not None else ""
+            click.echo(
+                f"{r['away_team']:<20} {r['home_team']:<20} {r['market']:<10} "
+                f"{r['bookmaker']:<15} {r['outcome_name']:<20} {r['price'] or '':>7} {point_str:>7}"
+            )
+    finally:
+        db.close()
+
+
+@odds.command('player-props')
+@click.option('--player', default=None, help='Filter by player name')
+@click.option('--market', default=None, help='Filter by prop market')
+def odds_player_props(player, market):
+    """Show stored player prop odds."""
+    from pigskin_mastermind.services.sportsbook_service import SportsBookService
+
+    db = _get_stats_db()
+    try:
+        service = SportsBookService(db)
+        rows = service.get_player_odds(player_name=player, market=market)
+        if not rows:
+            click.echo("No player prop odds found. Run 'odds import-player-props' first.")
+            return
+        click.echo(f"\n{'Player':<25} {'Market':<20} {'Book':<15} {'Outcome':<10} {'Price':>7} {'Line':>7}")
+        click.echo("-" * 90)
+        for r in rows:
+            point_str = f"{r['point']}" if r['point'] is not None else ""
+            click.echo(
+                f"{(r['player_name'] or ''):<25} {r['market']:<20} "
+                f"{r['bookmaker']:<15} {r['outcome_name']:<10} {r['price'] or '':>7} {point_str:>7}"
+            )
+    finally:
+        db.close()
+
+
 if __name__ == '__main__':
     main()
