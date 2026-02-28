@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+
+{% block title %}NFL Scores — Pigskin Mastermind{% endblock %}
+{% block page_title %}NFL Scores{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto space-y-6">
+    <!-- Week Selector -->
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+        <div class="flex flex-wrap items-end gap-4">
+            <div>
+                <label for="score-year" class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Season</label>
+                <select id="score-year" class="rounded-lg border-slate-300 text-sm px-3 py-2 focus:ring-field-500 focus:border-field-500">
+                    {% for y in range(2024, 2019, -1) %}
+                    <option value="{{ y }}" {{ 'selected' if y == default_year else '' }}>{{ y }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="score-week" class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Week</label>
+                <select id="score-week" class="rounded-lg border-slate-300 text-sm px-3 py-2 focus:ring-field-500 focus:border-field-500">
+                    {% for w in range(1, 19) %}
+                    <option value="{{ w }}" {{ 'selected' if w == default_week else '' }}>Week {{ w }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <button id="score-load-btn" onclick="loadScoreboard()"
+                        class="inline-flex items-center gap-2 px-5 py-2 text-sm font-semibold rounded-lg bg-field-600 hover:bg-field-700 text-white transition-colors">
+                    <svg id="score-load-spinner" class="hidden animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    Load Scores
+                </button>
+            </div>
+            <div class="ml-auto flex items-center gap-2">
+                <span id="live-badge" class="hidden inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700">
+                    <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                    LIVE
+                </span>
+                <label class="flex items-center gap-2 text-xs text-slate-500">
+                    <input id="auto-refresh-toggle" type="checkbox" class="rounded border-slate-300 text-field-600 focus:ring-field-500" onchange="toggleAutoRefresh()">
+                    Auto-refresh
+                </label>
+            </div>
+        </div>
+    </div>
+
+    <!-- Games Grid -->
+    <div id="games-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div class="col-span-full text-center py-12 text-sm text-slate-400">
+            Select a season &amp; week, then click <strong>Load Scores</strong>.
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let refreshTimer = null;
+const REFRESH_INTERVAL = 30000; // 30 seconds for live games
+
+/* ── NFL team abbreviation → emoji/color for cards ── */
+const TEAM_COLORS = {
+    ARI:'#97233F',ATL:'#A71930',BAL:'#241773',BUF:'#00338D',
+    CAR:'#0085CA',CHI:'#0B162A',CIN:'#FB4F14',CLE:'#311D00',
+    DAL:'#041E42',DEN:'#FB4F14',DET:'#0076B6',GB:'#203731',
+    HOU:'#03202F',IND:'#002C5F',JAX:'#006778',KC:'#E31837',
+    LV:'#000000',LAC:'#0080C6',LAR:'#003594',MIA:'#008E97',
+    MIN:'#4F2683',NE:'#002244',NO:'#D3BC8D',NYG:'#0B2265',
+    NYJ:'#125740',PHI:'#004C54',PIT:'#FFB612',SF:'#AA0000',
+    SEA:'#002244',TB:'#D50A0A',TEN:'#0C2340',WAS:'#773141',
+};
+
+function teamColor(abbr) {
+    return TEAM_COLORS[abbr] || '#64748b';
+}
+
+async function loadScoreboard() {
+    const year = document.getElementById('score-year').value;
+    const week = document.getElementById('score-week').value;
+    const spinner = document.getElementById('score-load-spinner');
+    const btn = document.getElementById('score-load-btn');
+    const grid = document.getElementById('games-grid');
+
+    spinner.classList.remove('hidden');
+    btn.disabled = true;
+
+    try {
+        const resp = await fetch('/api/games/scoreboard?year=' + year + '&week=' + week);
+        if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.detail || 'Failed to load scoreboard');
+        }
+        const data = await resp.json();
+        renderGames(data.games || [], year, week);
+
+        // Show live badge if any game is not final
+        const hasLive = (data.games || []).some(g => g.status !== 'final');
+        document.getElementById('live-badge').classList.toggle('hidden', !hasLive);
+    } catch (e) {
+        grid.innerHTML = '<div class="col-span-full text-center py-8 text-sm text-red-500">' + e.message + '</div>';
+    } finally {
+        spinner.classList.add('hidden');
+        btn.disabled = false;
+    }
+}
+
+function renderGames(games, year, week) {
+    const grid = document.getElementById('games-grid');
+    if (!games.length) {
+        grid.innerHTML = '<div class="col-span-full text-center py-12 text-sm text-slate-400">No games found for this week.</div>';
+        return;
+    }
+
+    grid.innerHTML = games.map(function(g) {
+        const homeColor = teamColor(g.home_team);
+        const awayColor = teamColor(g.away_team);
+        const isFinal = g.status === 'final';
+        const homeScore = g.home_score !== null ? g.home_score : '—';
+        const awayScore = g.away_score !== null ? g.away_score : '—';
+        const statusLabel = isFinal ? 'FINAL' : (g.gametime || 'TBD');
+        const statusClass = isFinal ? 'text-slate-500' : 'text-red-600 font-bold';
+        const dateStr = g.gameday || '';
+
+        const homeWin = isFinal && g.home_score > g.away_score;
+        const awayWin = isFinal && g.away_score > g.home_score;
+
+        return '<a href="/games/' + encodeURIComponent(g.game_id) + '?year=' + year + '&week=' + week + '"'
+            + ' class="block bg-white rounded-xl shadow-sm border border-slate-200 hover:shadow-md hover:border-field-300 transition-all cursor-pointer overflow-hidden">'
+            + '<div class="flex items-stretch">'
+            + '  <div class="w-1.5" style="background:linear-gradient(' + awayColor + ',' + homeColor + ')"></div>'
+            + '  <div class="flex-1 p-4">'
+            + '    <div class="flex items-center justify-between mb-3">'
+            + '      <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">' + dateStr + '</span>'
+            + '      <span class="text-[10px] font-semibold uppercase tracking-wider ' + statusClass + '">' + statusLabel + '</span>'
+            + '    </div>'
+            + '    <div class="space-y-2">'
+            + '      <div class="flex items-center justify-between">'
+            + '        <div class="flex items-center gap-2">'
+            + '          <span class="w-8 h-8 rounded-lg flex items-center justify-center text-white text-xs font-bold" style="background:' + awayColor + '">' + (g.away_team || '?') + '</span>'
+            + '          <span class="text-sm font-semibold ' + (awayWin ? 'text-slate-900' : 'text-slate-600') + '">' + (g.away_team || '?') + '</span>'
+            + '        </div>'
+            + '        <span class="text-lg font-bold tabular-nums ' + (awayWin ? 'text-slate-900' : 'text-slate-500') + '">' + awayScore + '</span>'
+            + '      </div>'
+            + '      <div class="flex items-center justify-between">'
+            + '        <div class="flex items-center gap-2">'
+            + '          <span class="w-8 h-8 rounded-lg flex items-center justify-center text-white text-xs font-bold" style="background:' + homeColor + '">' + (g.home_team || '?') + '</span>'
+            + '          <span class="text-sm font-semibold ' + (homeWin ? 'text-slate-900' : 'text-slate-600') + '">' + (g.home_team || '?') + '</span>'
+            + '        </div>'
+            + '        <span class="text-lg font-bold tabular-nums ' + (homeWin ? 'text-slate-900' : 'text-slate-500') + '">' + homeScore + '</span>'
+            + '      </div>'
+            + '    </div>'
+            + '    <div class="mt-2 text-[10px] text-slate-400 truncate">' + (g.stadium || '') + '</div>'
+            + '  </div>'
+            + '</div>'
+            + '</a>';
+    }).join('');
+}
+
+function toggleAutoRefresh() {
+    const on = document.getElementById('auto-refresh-toggle').checked;
+    if (on) {
+        loadScoreboard();
+        refreshTimer = setInterval(loadScoreboard, REFRESH_INTERVAL);
+    } else {
+        if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+    }
+}
+</script>
+{% endblock %}
