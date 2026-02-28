@@ -830,6 +830,8 @@ function toggleLiveRefresh() {
     if (on) {
         _q('sim-live-badge').classList.remove('hidden');
         liveRefreshTimer = setInterval(function() {
+            // Skip refresh if user is actively playing back
+            if (simPlaying) return;
             loadSimulation();
         }, 30000);
     } else {

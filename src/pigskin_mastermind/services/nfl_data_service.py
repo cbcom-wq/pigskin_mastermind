@@ -677,12 +677,14 @@ class NFLDataService:
             plays.append(play)
 
         # Build game summary
+        raw_home_score = self._sv(game_df['total_home_score'].max()) if 'total_home_score' in game_df.columns else None
+        raw_away_score = self._sv(game_df['total_away_score'].max()) if 'total_away_score' in game_df.columns else None
         game_summary: Dict[str, Any] = {
             'game_id': game_id,
             'home_team': self._sv(game_df['home_team'].iloc[0]) if 'home_team' in game_df.columns else None,
             'away_team': self._sv(game_df['away_team'].iloc[0]) if 'away_team' in game_df.columns else None,
-            'home_score': int(self._sv(game_df['total_home_score'].max())) if 'total_home_score' in game_df.columns and self._sv(game_df['total_home_score'].max()) is not None else None,
-            'away_score': int(self._sv(game_df['total_away_score'].max())) if 'total_away_score' in game_df.columns and self._sv(game_df['total_away_score'].max()) is not None else None,
+            'home_score': int(raw_home_score) if raw_home_score is not None else None,
+            'away_score': int(raw_away_score) if raw_away_score is not None else None,
         }
 
         return {'plays': plays, 'game_summary': game_summary}
