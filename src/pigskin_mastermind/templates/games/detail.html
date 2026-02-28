@@ -1,0 +1,843 @@
+{% extends "base.html" %}
+
+{% block title %}Game Simulation — Pigskin Mastermind{% endblock %}
+{% block page_title %}Game Simulation{% endblock %}
+
+{% block content %}
+<style>
+    .route-field-wrapper {
+        perspective: 900px;
+        perspective-origin: 50% 100%;
+        position: relative;
+    }
+    .play-banner {
+        position: absolute; top: 0; left: 0; right: 0; z-index: 10;
+        display: flex; align-items: flex-start; justify-content: center;
+        padding: 0.4rem 1rem; pointer-events: none; opacity: 0; transition: opacity 0.3s ease;
+    }
+    .play-banner.visible { opacity: 1; }
+    .play-banner-inner {
+        background: rgba(15,23,42,0.88); border: 1px solid rgba(100,116,139,0.4);
+        border-radius: 0.75rem; padding: 0.5rem 1.25rem; max-width: 90%;
+        text-align: center; backdrop-filter: blur(6px);
+    }
+    .play-banner-desc { color: #e2e8f0; font-size: 0.8rem; font-weight: 500; line-height: 1.35; }
+    .play-banner-meta {
+        display: flex; align-items: center; justify-content: center; gap: 0.5rem;
+        margin-top: 0.25rem; font-size: 0.65rem; font-weight: 700;
+        text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8;
+    }
+    .play-banner-badge { padding: 0.15rem 0.45rem; border-radius: 0.25rem; font-size: 0.6rem; font-weight: 700; }
+    .route-field-inner {
+        transform: rotateX(28deg); transform-origin: 50% 100%; transition: transform 0.4s ease;
+    }
+    .route-field-inner.flat-view { transform: rotateX(0deg); }
+    .route-field-svg { background: #1a2a1a; }
+    .route-line { fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+    .route-line.route-segment   { stroke: #ffffff; }
+    .route-line.yac-segment     { stroke: #22c55e; }
+    .route-line.incomplete-segment { stroke: #9ca3af; stroke-dasharray: 4 3; }
+    .route-line.sack-segment    { stroke: #ef4444; stroke-dasharray: 3 2; }
+    .route-line.rush-segment    { stroke: #facc15; }
+    .route-line.animate-draw {
+        stroke-dasharray: var(--route-len, 500); stroke-dashoffset: var(--route-len, 500);
+        animation: drawRoute 0.7s ease forwards;
+    }
+    @keyframes drawRoute { to { stroke-dashoffset: 0; } }
+    .route-endpoint { transition: opacity 0.3s ease; }
+    .headshot-marker { filter: drop-shadow(0 0 4px rgba(59,130,246,0.5)); transition: opacity 0.3s ease; }
+    @keyframes headshotPulse {
+        0%, 100% { filter: drop-shadow(0 0 4px rgba(59,130,246,0.5)); }
+        50% { filter: drop-shadow(0 0 8px rgba(59,130,246,0.8)); }
+    }
+    .headshot-marker.animate { animation: headshotPulse 1.2s ease-in-out infinite; }
+    .legend-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    .legend-chip .swatch { width: 18px; height: 3px; border-radius: 2px; }
+
+    /* Celebration overlay */
+    .celebration-overlay {
+        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        z-index: 50; pointer-events: none; opacity: 0; transition: opacity 0.15s ease;
+    }
+    .celebration-overlay.active { opacity: 1; pointer-events: auto; }
+    .celebration-card {
+        position: relative; padding: 1.5rem 2.5rem; border-radius: 1rem; text-align: center;
+        transform: scale(0.6); transition: transform 0.35s cubic-bezier(0.34,1.56,0.64,1);
+        box-shadow: 0 20px 60px rgba(0,0,0,0.5); overflow: hidden; min-width: 280px; cursor: pointer;
+    }
+    .celebration-overlay.active .celebration-card { transform: scale(1); }
+    .celebration-card.tier-touchdown {
+        background: linear-gradient(135deg,#065f46 0%,#047857 40%,#d97706 100%); border: 2px solid #fbbf24;
+    }
+    .celebration-card.tier-big-play {
+        background: linear-gradient(135deg,#92400e 0%,#d97706 50%,#f59e0b 100%); border: 2px solid #fbbf24;
+    }
+    .celebration-card.tier-turnover {
+        background: linear-gradient(135deg,#7f1d1d 0%,#dc2626 100%); border: 2px solid #ef4444;
+    }
+    .confetti-container { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+    .confetti-piece { position: absolute; width: 8px; height: 8px; top: -10px; opacity: 0; }
+    .celebration-overlay.active .confetti-piece { animation: confettiFall 1.8s ease-in forwards; }
+    @keyframes confettiFall { 0% { opacity:1; transform:translateY(0) rotate(0deg) scale(1); } 100% { opacity:0; transform:translateY(250px) rotate(720deg) scale(0.3); } }
+    .celebration-overlay.active .celebration-card.tier-turnover { animation: dangerShake 0.5s ease-in-out; }
+    @keyframes dangerShake { 0%,100% { transform:scale(1) translateX(0); } 15% { transform:scale(1) translateX(-8px); } 30% { transform:scale(1) translateX(8px); } 45% { transform:scale(1) translateX(-6px); } 60% { transform:scale(1) translateX(6px); } 75% { transform:scale(1) translateX(-3px); } }
+    .celebration-emoji { font-size: 2.5rem; line-height: 1; }
+    .celebration-title { font-size: 1.5rem; font-weight: 900; text-transform: uppercase; letter-spacing: 0.08em; color: white; text-shadow: 0 2px 8px rgba(0,0,0,0.4); margin-top: 0.25rem; }
+    .celebration-player { font-size: 0.875rem; font-weight: 700; color: rgba(255,255,255,0.9); margin-top: 0.25rem; }
+    .celebration-detail { font-size: 0.75rem; font-weight: 600; color: rgba(255,255,255,0.7); margin-top: 0.25rem; }
+</style>
+
+<div class="max-w-7xl mx-auto space-y-4">
+    <!-- Back link + Header -->
+    <div class="flex items-center gap-3">
+        <a href="/games?year={{ year }}&week={{ week }}" class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-field-700 transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+            Back to Scores
+        </a>
+    </div>
+
+    <!-- Scoreboard Header -->
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center gap-4">
+                <div class="text-center">
+                    <p id="away-team-name" class="text-lg font-bold text-slate-800">—</p>
+                    <p id="away-team-score" class="text-3xl font-black tabular-nums text-slate-400">0</p>
+                </div>
+                <div class="text-xs font-bold text-slate-300 uppercase">@</div>
+                <div class="text-center">
+                    <p id="home-team-name" class="text-lg font-bold text-slate-800">—</p>
+                    <p id="home-team-score" class="text-3xl font-black tabular-nums text-slate-400">0</p>
+                </div>
+            </div>
+            <div class="text-right">
+                <p class="text-xs text-slate-400">{{ year }} · Week {{ week }}</p>
+                <span id="game-status-badge" class="mt-1 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-500">
+                    Loading…
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Load / Live controls -->
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+        <div class="flex flex-wrap items-center gap-4">
+            <button id="sim-load-btn" onclick="loadSimulation()"
+                    class="inline-flex items-center gap-2 px-5 py-2 text-sm font-semibold rounded-lg bg-field-600 hover:bg-field-700 text-white transition-colors">
+                <svg id="sim-load-spinner" class="hidden animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                Load Game Simulation
+            </button>
+            <label class="flex items-center gap-2 text-xs text-slate-500">
+                <input id="live-refresh-toggle" type="checkbox" class="rounded border-slate-300 text-field-600 focus:ring-field-500" onchange="toggleLiveRefresh()">
+                Live refresh (30s)
+            </label>
+            <span id="sim-live-badge" class="hidden inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700">
+                <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                LIVE
+            </span>
+        </div>
+    </div>
+
+    <!-- Main layout: 3-col grid -->
+    <div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        <!-- Simulation area (3 cols) -->
+        <div class="lg:col-span-3 space-y-4">
+            <!-- Route field -->
+            <div class="bg-slate-900 rounded-xl shadow-sm border border-slate-700 overflow-hidden">
+                <div class="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <h3 class="text-xs uppercase tracking-wider font-semibold text-slate-400">Play Visualization</h3>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button id="btn-flat-view" onclick="toggleFlatView()"
+                                class="px-3 py-1 text-[10px] font-bold uppercase tracking-wider rounded border border-slate-600 text-slate-400 hover:text-white hover:border-slate-400 transition-colors">
+                            Flat View
+                        </button>
+                    </div>
+                </div>
+
+                <div class="route-field-wrapper">
+                    <div id="play-banner" class="play-banner">
+                        <div class="play-banner-inner">
+                            <div id="play-banner-desc" class="play-banner-desc"></div>
+                            <div id="play-banner-meta" class="play-banner-meta"></div>
+                        </div>
+                    </div>
+                    <div id="route-field-inner" class="route-field-inner">
+                        <svg id="route-field-svg" class="route-field-svg w-full" viewBox="0 0 1000 500" preserveAspectRatio="xMidYMid meet">
+                            <defs>
+                                <pattern id="yard-lines" x="0" y="0" width="100" height="500" patternUnits="userSpaceOnUse">
+                                    <line x1="100" y1="0" x2="100" y2="500" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+                                </pattern>
+                                <clipPath id="headshot-clip"><circle cx="0" cy="0" r="14"/></clipPath>
+                            </defs>
+                            <rect width="1000" height="500" fill="url(#yard-lines)"/>
+                            <g id="field-lines-group"></g>
+                            <g id="route-group"></g>
+                            <g id="headshot-group"></g>
+                        </svg>
+                    </div>
+
+                    <!-- Celebration overlay -->
+                    <div id="celebration-overlay" class="celebration-overlay" onclick="dismissCelebration()">
+                        <div id="celebration-card" class="celebration-card">
+                            <div class="confetti-container" id="confetti-container"></div>
+                            <div id="celebration-emoji" class="celebration-emoji"></div>
+                            <div id="celebration-title" class="celebration-title"></div>
+                            <div id="celebration-player" class="celebration-player"></div>
+                            <div id="celebration-detail" class="celebration-detail"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="px-4 py-2 border-t border-slate-700 flex flex-wrap gap-4">
+                    <span class="legend-chip text-slate-400"><span class="swatch" style="background:#ffffff"></span>Route</span>
+                    <span class="legend-chip text-slate-400"><span class="swatch" style="background:#22c55e"></span>YAC</span>
+                    <span class="legend-chip text-slate-400"><span class="swatch" style="background:#facc15"></span>Rush</span>
+                    <span class="legend-chip text-slate-400"><span class="swatch" style="background:#9ca3af;border-top:2px dashed #9ca3af"></span>Incomplete</span>
+                    <span class="legend-chip text-slate-400"><span class="swatch" style="background:#ef4444"></span>Sack</span>
+                </div>
+            </div>
+
+            <!-- Controls -->
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div class="flex items-center gap-2">
+                        <button id="btn-prev" onclick="stepBackward()" disabled class="px-3 py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-50">◀ Prev</button>
+                        <button id="btn-play" onclick="playSimulation()" disabled class="px-4 py-2 text-xs font-semibold rounded-lg bg-field-600 hover:bg-field-700 text-white disabled:opacity-50">Play</button>
+                        <button id="btn-pause" onclick="pauseSimulation()" disabled class="px-4 py-2 text-xs font-semibold rounded-lg bg-slate-400 text-white disabled:opacity-50">Pause</button>
+                        <button id="btn-next" onclick="stepForward()" disabled class="px-3 py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-50">Next ▶</button>
+                        <button id="btn-reset" onclick="resetSimulation()" disabled class="px-3 py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-50">Reset</button>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <label for="sim-speed" class="text-xs font-semibold uppercase tracking-wider text-slate-500">Speed</label>
+                        <input id="sim-speed" type="range" min="0.5" max="3" step="0.5" value="1" onchange="setSpeed(this.value)" class="w-32">
+                        <span id="sim-speed-label" class="text-xs font-semibold text-slate-600 w-10">1.0x</span>
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <input id="sim-progress" type="range" min="0" max="0" value="0" disabled oninput="jumpToPlay(this.value)" class="w-full">
+                </div>
+            </div>
+
+            <!-- Play description -->
+            <div id="sim-current-play" class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 text-sm text-slate-500">
+                Click <strong>Load Game Simulation</strong> to start.
+            </div>
+
+            <!-- Play Timeline table -->
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                <div class="px-4 py-3 border-b border-slate-100">
+                    <h3 class="text-xs uppercase tracking-wider font-semibold text-slate-500">Play Timeline</h3>
+                </div>
+                <div class="overflow-x-auto max-h-80">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="bg-slate-50 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                                <th class="px-3 py-2">#</th>
+                                <th class="px-3 py-2">Team</th>
+                                <th class="px-3 py-2">Player</th>
+                                <th class="px-3 py-2">Time</th>
+                                <th class="px-3 py-2">Type</th>
+                                <th class="px-3 py-2">Description</th>
+                                <th class="px-3 py-2 text-right">Yds</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sim-play-table-body">
+                            <tr><td colspan="7" class="px-4 py-6 text-center text-sm text-slate-400">No simulation loaded yet</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar (1 col) -->
+        <div class="space-y-4">
+            <!-- Game Score -->
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                <h3 class="text-sm font-semibold text-slate-700 mb-3">Score</h3>
+                <div class="space-y-2">
+                    <div class="flex items-center justify-between">
+                        <span id="sidebar-away" class="text-sm font-semibold text-slate-600">Away</span>
+                        <span id="sidebar-away-score" class="text-xl font-bold tabular-nums text-slate-800">0</span>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <span id="sidebar-home" class="text-sm font-semibold text-slate-600">Home</span>
+                        <span id="sidebar-home-score" class="text-xl font-bold tabular-nums text-slate-800">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Game Stats -->
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                <h3 class="text-sm font-semibold text-slate-700 mb-3">Game Stats</h3>
+                <div class="grid grid-cols-2 gap-2.5 text-sm">
+                    <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">Plays</p><p id="stat-total-plays" class="font-bold text-slate-800">0</p></div>
+                    <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">TDs</p><p id="stat-total-tds" class="font-bold text-field-700">0</p></div>
+                    <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">Pass Plays</p><p id="stat-pass-plays" class="font-bold text-slate-800">0</p></div>
+                    <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">Rush Plays</p><p id="stat-rush-plays" class="font-bold text-slate-800">0</p></div>
+                    <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">Total Yds</p><p id="stat-total-yards" class="font-bold text-slate-800">0</p></div>
+                    <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">Turnovers</p><p id="stat-turnovers" class="font-bold text-red-600">0</p></div>
+                </div>
+            </div>
+
+            <!-- Players involved in current play -->
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                <h3 class="text-sm font-semibold text-slate-700 mb-3">Players on Play</h3>
+                <div id="play-players" class="space-y-2">
+                    <p class="text-xs text-slate-400 text-center py-2">No play loaded</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const XLINK_NS = 'http://www.w3.org/1999/xlink';
+const GAME_ID = '{{ game_id }}';
+const YEAR = {{ year }};
+const WEEK = {{ week }};
+
+let simEvents = [];
+let simCurrentIndex = 0;
+let simPlaying = false;
+let simTimer = null;
+let simSpeed = 1.0;
+const simBaseDelay = 1200;
+let liveRefreshTimer = null;
+
+function _q(id) { return document.getElementById(id); }
+function _def(v, d) { return (v !== null && v !== undefined) ? v : d; }
+
+/* ── Field drawing ────────────────────────────────────────── */
+
+function buildFieldBackground(refLos) {
+    const g = _q('field-lines-group');
+    g.innerHTML = '';
+    const los = refLos !== undefined ? refLos : 50;
+    const losX = los * 10;
+
+    // End zones
+    var ezLeft = document.createElementNS(SVG_NS, 'rect');
+    ezLeft.setAttribute('x', '0'); ezLeft.setAttribute('y', '0');
+    ezLeft.setAttribute('width', '50'); ezLeft.setAttribute('height', '500');
+    ezLeft.setAttribute('fill', 'rgba(220,38,38,0.12)');
+    g.appendChild(ezLeft);
+
+    var ezRight = document.createElementNS(SVG_NS, 'rect');
+    ezRight.setAttribute('x', '950'); ezRight.setAttribute('y', '0');
+    ezRight.setAttribute('width', '50'); ezRight.setAttribute('height', '500');
+    ezRight.setAttribute('fill', 'rgba(37,99,235,0.12)');
+    g.appendChild(ezRight);
+
+    // LOS line
+    var losLine = document.createElementNS(SVG_NS, 'line');
+    losLine.setAttribute('x1', losX); losLine.setAttribute('y1', '0');
+    losLine.setAttribute('x2', losX); losLine.setAttribute('y2', '500');
+    losLine.setAttribute('stroke', 'rgba(59,130,246,0.6)');
+    losLine.setAttribute('stroke-width', '2');
+    losLine.setAttribute('stroke-dasharray', '8 4');
+    g.appendChild(losLine);
+}
+
+function drawLOS(x) {
+    // no-op; LOS is drawn in buildFieldBackground
+}
+
+/* ── Route drawing ────────────────────────────────────────── */
+
+function clearRoutes() {
+    _q('route-group').innerHTML = '';
+    _q('headshot-group').innerHTML = '';
+}
+
+function drawRoute(evt, animate, opacity) {
+    const rp = evt.route_path;
+    if (!rp || !rp.segments || rp.segments.length < 2) return;
+
+    const segs = rp.segments;
+    const svg = _q('route-field-svg');
+    const routeG = _q('route-group');
+    const hsG = _q('headshot-group');
+
+    // Build polyline segments
+    for (var i = 0; i < segs.length - 1; i++) {
+        var s0 = segs[i], s1 = segs[i + 1];
+        var x0 = s0.depth * 10, y0 = (100 - s0.lateral) * 5;
+        var x1 = s1.depth * 10, y1 = (100 - s1.lateral) * 5;
+
+        var line = document.createElementNS(SVG_NS, 'line');
+        line.setAttribute('x1', x0); line.setAttribute('y1', y0);
+        line.setAttribute('x2', x1); line.setAttribute('y2', y1);
+        line.setAttribute('opacity', opacity || 1);
+
+        var cls = 'route-line ';
+        if (rp.is_sack && i === segs.length - 2) cls += 'sack-segment';
+        else if (s1.type === 'catch_end') cls += 'yac-segment';
+        else if (s1.type === 'run_end' || s1.type === 'run_gap' || s1.type === 'run_start') cls += 'rush-segment';
+        else if (!rp.is_complete && (s1.type === 'target')) cls += 'incomplete-segment';
+        else cls += 'route-segment';
+
+        if (animate) cls += ' animate-draw';
+        line.setAttribute('class', cls);
+
+        if (animate) {
+            var len = Math.sqrt((x1-x0)*(x1-x0) + (y1-y0)*(y1-y0));
+            line.style.setProperty('--route-len', len);
+            line.style.animationDelay = (i * 0.15) + 's';
+        }
+        routeG.appendChild(line);
+    }
+
+    // Endpoint dot
+    var last = segs[segs.length - 1];
+    var cx = last.depth * 10, cy = (100 - last.lateral) * 5;
+    var dot = document.createElementNS(SVG_NS, 'circle');
+    dot.setAttribute('cx', cx); dot.setAttribute('cy', cy);
+    dot.setAttribute('r', '5');
+    dot.setAttribute('class', 'route-endpoint');
+    dot.setAttribute('opacity', opacity || 1);
+    var dotColor = rp.is_touchdown ? '#22c55e' : rp.is_sack ? '#ef4444' : '#ffffff';
+    dot.setAttribute('fill', dotColor);
+    routeG.appendChild(dot);
+
+    // Draw headshot markers for players involved
+    drawPlayerHeadshots(evt, segs, hsG, animate);
+}
+
+function drawPlayerHeadshots(evt, segs, group, animate) {
+    // Show headshots for players on this play
+    var players = [];
+
+    // Primary player (passer/rusher)
+    if (evt.passer_headshot_url || evt.passer_name) {
+        var startSeg = segs[0];
+        players.push({
+            url: evt.passer_headshot_url || '',
+            name: evt.passer_name || 'QB',
+            x: startSeg.depth * 10,
+            y: (100 - startSeg.lateral) * 5 - 20,
+        });
+    } else if (evt.rusher_headshot_url || evt.rusher_name) {
+        var startSeg = segs[0];
+        players.push({
+            url: evt.rusher_headshot_url || '',
+            name: evt.rusher_name || 'RB',
+            x: startSeg.depth * 10,
+            y: (100 - startSeg.lateral) * 5 - 20,
+        });
+    }
+
+    // Secondary player (receiver)
+    if (evt.receiver_headshot_url || evt.receiver_name) {
+        var lastSeg = segs[segs.length - 1];
+        players.push({
+            url: evt.receiver_headshot_url || '',
+            name: evt.receiver_name || 'WR',
+            x: lastSeg.depth * 10,
+            y: (100 - lastSeg.lateral) * 5 + 20,
+        });
+    }
+
+    players.forEach(function(p) {
+        var g = document.createElementNS(SVG_NS, 'g');
+        g.setAttribute('transform', 'translate(' + p.x + ',' + p.y + ')');
+        g.setAttribute('class', 'headshot-marker' + (animate ? ' animate' : ''));
+
+        if (p.url) {
+            var img = document.createElementNS(SVG_NS, 'image');
+            img.setAttributeNS(XLINK_NS, 'href', p.url);
+            img.setAttribute('x', '-14'); img.setAttribute('y', '-14');
+            img.setAttribute('width', '28'); img.setAttribute('height', '28');
+            img.setAttribute('clip-path', 'url(#headshot-clip)');
+            g.appendChild(img);
+        }
+        // Ring
+        var ring = document.createElementNS(SVG_NS, 'circle');
+        ring.setAttribute('cx', '0'); ring.setAttribute('cy', '0');
+        ring.setAttribute('r', '14'); ring.setAttribute('fill', 'none');
+        ring.setAttribute('stroke', p.url ? '#3b82f6' : '#94a3b8');
+        ring.setAttribute('stroke-width', '2');
+        g.appendChild(ring);
+
+        // Name label
+        var text = document.createElementNS(SVG_NS, 'text');
+        text.setAttribute('x', '0'); text.setAttribute('y', '24');
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('font-size', '9'); text.setAttribute('fill', '#e2e8f0');
+        text.setAttribute('font-weight', '600');
+        text.textContent = p.name || '';
+        g.appendChild(text);
+
+        group.appendChild(g);
+    });
+}
+
+/* ── Playback controls ────────────────────────────────────── */
+
+function setControlsEnabled(enabled) {
+    ['btn-prev', 'btn-play', 'btn-pause', 'btn-next', 'btn-reset', 'sim-progress'].forEach(function(id) {
+        _q(id).disabled = !enabled;
+    });
+    if (enabled) { _q('btn-pause').disabled = true; }
+}
+
+function setSpeed(val) {
+    simSpeed = parseFloat(val);
+    _q('sim-speed-label').textContent = simSpeed.toFixed(1) + 'x';
+    if (simPlaying) { pauseSimulation(); playSimulation(); }
+}
+
+function playSimulation() {
+    if (!simEvents.length || simPlaying) return;
+    simPlaying = true;
+    _q('btn-play').disabled = true;
+    _q('btn-pause').disabled = false;
+    simTimer = setInterval(function() {
+        if (simCurrentIndex >= simEvents.length - 1) { pauseSimulation(); return; }
+        applyFrame(simCurrentIndex + 1, false);
+    }, simBaseDelay / simSpeed);
+}
+
+function pauseSimulation() {
+    simPlaying = false;
+    _q('btn-play').disabled = !simEvents.length;
+    _q('btn-pause').disabled = true;
+    if (simTimer) { clearInterval(simTimer); simTimer = null; }
+}
+
+function stepForward() { if (!simEvents.length) return; pauseSimulation(); applyFrame(simCurrentIndex + 1, false); }
+function stepBackward() { if (!simEvents.length) return; pauseSimulation(); applyFrame(simCurrentIndex - 1, false); }
+
+function jumpToPlay(val) {
+    var idx = parseInt(val);
+    if (isNaN(idx)) return;
+    pauseSimulation();
+    applyFrame(idx, true);
+}
+
+function resetSimulation() {
+    pauseSimulation();
+    if (simEvents.length) {
+        applyFrame(0, true);
+    }
+}
+
+/* ── Frame rendering ──────────────────────────────────────── */
+
+function applyFrame(index, instant) {
+    if (!simEvents.length) return;
+    index = Math.max(0, Math.min(index, simEvents.length - 1));
+    simCurrentIndex = index;
+    var e = simEvents[index];
+
+    _q('sim-progress').value = index;
+
+    // Draw field + route
+    clearRoutes();
+    buildFieldBackground(e.start_x);
+    drawRoute(e, !instant, 1);
+
+    // Update play description
+    var yards = _def(e.yards_gained, 0);
+    var badgeParts = [];
+    var badges = e.badges || {};
+    if (badges.touchdown)  badgeParts.push('<span class="play-banner-badge bg-green-600 text-white">TD</span>');
+    if (badges.first_down) badgeParts.push('<span class="play-banner-badge bg-blue-600 text-white">1ST</span>');
+    if (badges.turnover)   badgeParts.push('<span class="play-banner-badge bg-red-600 text-white">INT</span>');
+    if (badges.big_play)   badgeParts.push('<span class="play-banner-badge bg-yellow-500 text-yellow-900">BIG PLAY</span>');
+
+    var roleColor = e.role === 'pass' ? 'bg-blue-100 text-blue-700' : e.role === 'rush' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700';
+
+    _q('sim-current-play').innerHTML =
+        '<div class="flex flex-wrap items-center gap-2">'
+        + '<span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Play ' + (index + 1) + ' of ' + simEvents.length + '</span>'
+        + '<span class="text-xs text-slate-400">' + (e.time_label || '—') + '</span>'
+        + '<span class="text-xs text-slate-400">' + (e.down_distance || '—') + '</span>'
+        + '<span class="px-2 py-0.5 rounded text-[10px] font-bold ' + roleColor + '">' + (e.role || 'play').toUpperCase() + ' · ' + yards + ' yds</span>'
+        + '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">' + (e.posteam || '—') + '</span>'
+        + badgeParts.join('')
+        + '</div>'
+        + '<p class="mt-1 text-slate-600 text-xs leading-relaxed">' + (e.description || '') + '</p>';
+
+    // Play banner
+    var banner = _q('play-banner');
+    _q('play-banner-desc').textContent = e.description || '';
+    var metaHtml = '<span>' + (e.time_label || '') + '</span><span>' + (e.down_distance || '') + '</span>';
+    if (e.posteam) metaHtml += '<span>' + e.posteam + '</span>';
+    metaHtml += badgeParts.join('');
+    _q('play-banner-meta').innerHTML = metaHtml;
+    banner.classList.add('visible');
+    setTimeout(function() { banner.classList.remove('visible'); }, 3000);
+
+    // Update score
+    if (e.home_score !== null && e.home_score !== undefined) {
+        _q('home-team-score').textContent = e.home_score;
+        _q('sidebar-home-score').textContent = e.home_score;
+    }
+    if (e.away_score !== null && e.away_score !== undefined) {
+        _q('away-team-score').textContent = e.away_score;
+        _q('sidebar-away-score').textContent = e.away_score;
+    }
+
+    // Update running stats
+    updateStats(index);
+
+    // Update players-on-play sidebar
+    updatePlayPlayers(e);
+
+    // Highlight timeline row
+    highlightTimelineRow(index);
+
+    // Celebration
+    checkCelebration(e, index, instant);
+}
+
+function updateStats(upToIndex) {
+    var plays = 0, tds = 0, passPlays = 0, rushPlays = 0, totalYards = 0, turnovers = 0;
+    for (var i = 0; i <= upToIndex; i++) {
+        var ev = simEvents[i];
+        plays++;
+        totalYards += _def(ev.yards_gained, 0);
+        if (ev.role === 'pass') passPlays++;
+        if (ev.role === 'rush') rushPlays++;
+        var b = ev.badges || {};
+        if (b.touchdown) tds++;
+        if (b.turnover) turnovers++;
+    }
+    _q('stat-total-plays').textContent = plays;
+    _q('stat-total-tds').textContent = tds;
+    _q('stat-pass-plays').textContent = passPlays;
+    _q('stat-rush-plays').textContent = rushPlays;
+    _q('stat-total-yards').textContent = totalYards;
+    _q('stat-turnovers').textContent = turnovers;
+}
+
+function updatePlayPlayers(e) {
+    var html = '';
+    if (e.passer_name) {
+        var headshot = e.passer_headshot_url
+            ? '<img src="' + e.passer_headshot_url + '" class="w-8 h-8 rounded-full object-cover bg-slate-100" onerror="this.style.display=\'none\'" />'
+            : '<div class="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-xs font-bold text-slate-500">QB</div>';
+        html += '<div class="flex items-center gap-2">' + headshot
+            + '<div><p class="text-xs font-medium text-slate-700">' + e.passer_name + '</p>'
+            + '<p class="text-[10px] text-slate-400">Passer</p></div></div>';
+    }
+    if (e.rusher_name) {
+        var headshot = e.rusher_headshot_url
+            ? '<img src="' + e.rusher_headshot_url + '" class="w-8 h-8 rounded-full object-cover bg-slate-100" onerror="this.style.display=\'none\'" />'
+            : '<div class="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-xs font-bold text-slate-500">RB</div>';
+        html += '<div class="flex items-center gap-2">' + headshot
+            + '<div><p class="text-xs font-medium text-slate-700">' + e.rusher_name + '</p>'
+            + '<p class="text-[10px] text-slate-400">Rusher</p></div></div>';
+    }
+    if (e.receiver_name) {
+        var headshot = e.receiver_headshot_url
+            ? '<img src="' + e.receiver_headshot_url + '" class="w-8 h-8 rounded-full object-cover bg-slate-100" onerror="this.style.display=\'none\'" />'
+            : '<div class="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-xs font-bold text-slate-500">WR</div>';
+        html += '<div class="flex items-center gap-2">' + headshot
+            + '<div><p class="text-xs font-medium text-slate-700">' + e.receiver_name + '</p>'
+            + '<p class="text-[10px] text-slate-400">Receiver</p></div></div>';
+    }
+    if (!html) html = '<p class="text-xs text-slate-400 text-center py-2">No player data</p>';
+    _q('play-players').innerHTML = html;
+}
+
+function highlightTimelineRow(index) {
+    var rows = _q('sim-play-table-body').querySelectorAll('tr');
+    rows.forEach(function(r, i) {
+        if (i === index) {
+            r.classList.add('bg-field-50');
+            r.scrollIntoView({ block: 'nearest' });
+        } else {
+            r.classList.remove('bg-field-50');
+        }
+    });
+}
+
+/* ── Celebration ──────────────────────────────────────────── */
+
+function checkCelebration(e, index, instant) {
+    if (instant) return;
+    var badges = e.badges || {};
+    var tier = null, emoji = '', title = '', player = '', detail = '';
+
+    if (badges.touchdown) {
+        tier = 'tier-touchdown';
+        emoji = '🏈🎉';
+        title = 'TOUCHDOWN!';
+        player = e.passer_name || e.rusher_name || '';
+        detail = _def(e.yards_gained, 0) + ' yards · ' + (_def(e.posteam, ''));
+    } else if (badges.turnover) {
+        tier = 'tier-turnover';
+        emoji = '💥';
+        title = 'TURNOVER';
+        player = e.passer_name || '';
+        detail = 'Interception';
+    } else if (badges.big_play) {
+        tier = 'tier-big-play';
+        emoji = '⚡';
+        title = 'BIG PLAY!';
+        player = e.passer_name || e.rusher_name || '';
+        detail = _def(e.yards_gained, 0) + ' yards';
+    }
+
+    if (!tier) return;
+    var overlay = _q('celebration-overlay');
+    _q('celebration-card').className = 'celebration-card ' + tier;
+    _q('celebration-emoji').textContent = emoji;
+    _q('celebration-title').textContent = title;
+    _q('celebration-player').textContent = player;
+    _q('celebration-detail').textContent = detail;
+
+    // Confetti for TDs
+    var cc = _q('confetti-container');
+    cc.innerHTML = '';
+    if (tier === 'tier-touchdown') {
+        var colors = ['#fbbf24','#22c55e','#3b82f6','#ef4444','#ffffff'];
+        for (var i = 0; i < 20; i++) {
+            var piece = document.createElement('div');
+            piece.className = 'confetti-piece';
+            piece.style.left = (Math.random() * 100) + '%';
+            piece.style.background = colors[i % colors.length];
+            piece.style.animationDelay = (Math.random() * 0.5) + 's';
+            piece.style.borderRadius = Math.random() > 0.5 ? '50%' : '2px';
+            cc.appendChild(piece);
+        }
+    }
+    overlay.classList.add('active');
+    setTimeout(function() { overlay.classList.remove('active'); }, 2500);
+}
+
+function dismissCelebration() {
+    _q('celebration-overlay').classList.remove('active');
+}
+
+/* ── Flat view toggle ─────────────────────────────────────── */
+
+function toggleFlatView() {
+    var inner = _q('route-field-inner');
+    var btn = _q('btn-flat-view');
+    inner.classList.toggle('flat-view');
+    if (inner.classList.contains('flat-view')) {
+        btn.classList.add('border-white', 'text-white');
+        btn.classList.remove('border-slate-600', 'text-slate-400');
+    } else {
+        btn.classList.remove('border-white', 'text-white');
+        btn.classList.add('border-slate-600', 'text-slate-400');
+    }
+}
+
+/* ── Load simulation ──────────────────────────────────────── */
+
+async function loadSimulation() {
+    pauseSimulation();
+
+    var spinner = _q('sim-load-spinner');
+    var btn = _q('sim-load-btn');
+    spinner.classList.remove('hidden');
+    btn.disabled = true;
+
+    try {
+        var resp = await fetch('/api/games/' + encodeURIComponent(GAME_ID) + '/simulation?year=' + YEAR + '&week=' + WEEK);
+        if (!resp.ok) {
+            var err = await resp.json();
+            throw new Error(err.detail || 'Failed to load simulation');
+        }
+        var data = await resp.json();
+
+        simEvents = data.events || [];
+        simCurrentIndex = 0;
+        _q('sim-progress').max = String(Math.max(0, simEvents.length - 1));
+        _q('sim-progress').value = '0';
+
+        // Populate header
+        var gs = data.game_summary || {};
+        _q('away-team-name').textContent = gs.away_team || '—';
+        _q('home-team-name').textContent = gs.home_team || '—';
+        _q('sidebar-away').textContent = gs.away_team || 'Away';
+        _q('sidebar-home').textContent = gs.home_team || 'Home';
+
+        if (gs.home_score !== null && gs.home_score !== undefined) {
+            _q('home-team-score').textContent = gs.home_score;
+            _q('sidebar-home-score').textContent = gs.home_score;
+        }
+        if (gs.away_score !== null && gs.away_score !== undefined) {
+            _q('away-team-score').textContent = gs.away_score;
+            _q('sidebar-away-score').textContent = gs.away_score;
+        }
+
+        _q('game-status-badge').innerHTML = simEvents.length + ' plays loaded';
+        _q('game-status-badge').className = 'mt-1 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-field-100 text-field-700';
+
+        // Build timeline table
+        buildTimelineTable();
+
+        // Show first play
+        if (simEvents.length) {
+            setControlsEnabled(true);
+            applyFrame(0, true);
+        }
+    } catch(e) {
+        _q('sim-current-play').innerHTML = '<p class="text-red-500">' + e.message + '</p>';
+    } finally {
+        spinner.classList.add('hidden');
+        btn.disabled = false;
+    }
+}
+
+function buildTimelineTable() {
+    var tbody = _q('sim-play-table-body');
+    if (!simEvents.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-6 text-center text-sm text-slate-400">No plays</td></tr>';
+        return;
+    }
+    tbody.innerHTML = simEvents.map(function(e, i) {
+        var yds = _def(e.yards_gained, 0);
+        var roleClass = e.role === 'pass' ? 'bg-blue-100 text-blue-700' : e.role === 'rush' ? 'bg-yellow-100 text-yellow-700' : 'bg-slate-100 text-slate-600';
+        var badges = e.badges || {};
+        var icons = '';
+        if (badges.touchdown) icons += '🏈 ';
+        if (badges.turnover) icons += '💥 ';
+        if (badges.big_play) icons += '⚡ ';
+
+        var playerName = e.passer_name || e.rusher_name || e.receiver_name || '—';
+        var desc = (e.description || '').substring(0, 80);
+        if ((e.description || '').length > 80) desc += '…';
+
+        return '<tr class="border-b border-slate-50 hover:bg-slate-50 cursor-pointer" onclick="jumpToPlay(' + i + ')">'
+            + '<td class="px-3 py-1.5 text-xs text-slate-400">' + (i + 1) + '</td>'
+            + '<td class="px-3 py-1.5 text-xs font-semibold text-slate-600">' + (e.posteam || '—') + '</td>'
+            + '<td class="px-3 py-1.5 text-xs text-slate-700">' + playerName + '</td>'
+            + '<td class="px-3 py-1.5 text-xs text-slate-400">' + (e.time_label || '—') + '</td>'
+            + '<td class="px-3 py-1.5"><span class="px-1.5 py-0.5 rounded text-[10px] font-bold ' + roleClass + '">' + (e.role || '—').toUpperCase() + '</span></td>'
+            + '<td class="px-3 py-1.5 text-xs text-slate-500">' + icons + desc + '</td>'
+            + '<td class="px-3 py-1.5 text-xs text-right font-semibold ' + (yds >= 10 ? 'text-field-700' : yds < 0 ? 'text-red-500' : 'text-slate-600') + '">' + yds + '</td>'
+            + '</tr>';
+    }).join('');
+}
+
+/* ── Live refresh ─────────────────────────────────────────── */
+
+function toggleLiveRefresh() {
+    var on = _q('live-refresh-toggle').checked;
+    if (on) {
+        _q('sim-live-badge').classList.remove('hidden');
+        liveRefreshTimer = setInterval(function() {
+            // Skip refresh if user is actively playing back
+            if (simPlaying) return;
+            loadSimulation();
+        }, 30000);
+    } else {
+        _q('sim-live-badge').classList.add('hidden');
+        if (liveRefreshTimer) { clearInterval(liveRefreshTimer); liveRefreshTimer = null; }
+    }
+}
+</script>
+{% endblock %}

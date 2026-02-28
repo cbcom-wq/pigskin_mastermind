@@ -518,6 +518,177 @@ class NFLDataService:
 
         return {'plays': plays, 'game_summary': game_summary, 'player_stats': player_stats}
 
+    @staticmethod
+    def _sv(v):
+        """Convert numpy scalar / NaN to a plain Python value."""
+        if v is None:
+            return None
+        if hasattr(v, 'item'):
+            try:
+                v = v.item()
+            except Exception:
+                return None
+        try:
+            import pandas as _pd
+            if _pd.isna(v):
+                return None
+        except (TypeError, ValueError):
+            pass
+        return v
+
+    def get_week_scoreboard(self, year: int, week: int) -> List[Dict[str, Any]]:
+        """Return a list of games for a given week with scores.
+
+        Each entry contains game_id, home_team, away_team, home_score,
+        away_score, and a status indicator.
+        """
+        try:
+            import nfl_data_py as nfl
+        except ImportError:
+            raise ImportError(
+                "nfl_data_py is not installed. Run: pip install nfl_data_py"
+            )
+
+        try:
+            sched = nfl.import_schedules([year])
+        except Exception:
+            return []
+
+        if sched.empty:
+            return []
+
+        week_df = sched[sched['week'] == week] if 'week' in sched.columns else sched
+
+        if week_df.empty:
+            return []
+
+        games: List[Dict[str, Any]] = []
+        for _, row in week_df.iterrows():
+            game_id = self._sv(row.get('game_id'))
+            home_team = self._sv(row.get('home_team'))
+            away_team = self._sv(row.get('away_team'))
+            home_score = self._sv(row.get('home_score'))
+            away_score = self._sv(row.get('away_score'))
+
+            # Determine game status
+            game_type = self._sv(row.get('game_type'))
+            result = self._sv(row.get('result'))
+            if home_score is not None and away_score is not None:
+                status = 'final'
+            else:
+                status = 'scheduled'
+
+            gameday = self._sv(row.get('gameday'))
+            gametime = self._sv(row.get('gametime'))
+            stadium = self._sv(row.get('stadium'))
+
+            games.append({
+                'game_id': game_id,
+                'home_team': home_team,
+                'away_team': away_team,
+                'home_score': int(home_score) if home_score is not None else None,
+                'away_score': int(away_score) if away_score is not None else None,
+                'status': status,
+                'game_type': game_type,
+                'gameday': str(gameday) if gameday else None,
+                'gametime': str(gametime) if gametime else None,
+                'stadium': stadium,
+            })
+
+        return games
+
+    def get_game_play_by_play(self, game_id: str, year: int, week: int) -> Dict[str, Any]:
+        """Return all play-by-play data for an entire game.
+
+        Unlike get_play_by_play which filters to a single player, this returns
+        every play in the game for full-game simulation.
+
+        Args:
+            game_id: NFL game ID string (e.g. '2024_01_KC_BAL').
+            year: NFL season year.
+            week: Week number.
+
+        Returns:
+            Dict with 'plays', 'game_summary', and 'team_stats' keys.
+        """
+        try:
+            import nfl_data_py as nfl
+        except ImportError:
+            raise ImportError(
+                "nfl_data_py is not installed. Run: pip install nfl_data_py"
+            )
+
+        try:
+            df = nfl.import_pbp_data([year], columns=_PBP_COLUMNS, downcast=False)
+        except Exception:
+            df = nfl.import_pbp_data([year], downcast=False)
+
+        # Filter to the requested week
+        if 'week' in df.columns:
+            df = df[df['week'] == week]
+
+        if df.empty:
+            return {'plays': [], 'game_summary': {}, 'team_stats': {}}
+
+        # Filter to the specific game
+        if 'game_id' in df.columns:
+            game_df = df[df['game_id'] == game_id]
+        else:
+            return {'plays': [], 'game_summary': {}, 'team_stats': {}}
+
+        if game_df.empty:
+            return {'plays': [], 'game_summary': {}, 'team_stats': {}}
+
+        # Sort: earliest plays first (highest game_seconds_remaining first)
+        if 'game_seconds_remaining' in game_df.columns:
+            game_df = game_df.sort_values('game_seconds_remaining', ascending=False)
+
+        plays: List[Dict[str, Any]] = []
+        for _, row in game_df.iterrows():
+            play: Dict[str, Any] = {}
+            for col in game_df.columns:
+                val = row.get(col)
+                if hasattr(val, 'item'):
+                    try:
+                        val = val.item()
+                    except (ValueError, AttributeError):
+                        val = None
+                try:
+                    if pd.isna(val):
+                        val = None
+                except (TypeError, ValueError):
+                    pass
+                play[col] = val
+
+            # Determine primary role/player for the play
+            if play.get('passer_player_id'):
+                play['primary_player'] = play.get('passer_player_name')
+                play['primary_role'] = 'pass'
+            elif play.get('rusher_player_id'):
+                play['primary_player'] = play.get('rusher_player_name')
+                play['primary_role'] = 'rush'
+            elif play.get('receiver_player_id'):
+                play['primary_player'] = play.get('receiver_player_name')
+                play['primary_role'] = 'receive'
+            else:
+                play['primary_player'] = None
+                play['primary_role'] = play.get('play_type') or 'other'
+
+            plays.append(play)
+
+        # Build game summary
+        raw_home_score = self._sv(game_df['total_home_score'].max()) if 'total_home_score' in game_df.columns else None
+        raw_away_score = self._sv(game_df['total_away_score'].max()) if 'total_away_score' in game_df.columns else None
+        game_summary: Dict[str, Any] = {
+            'game_id': game_id,
+            'home_team': self._sv(game_df['home_team'].iloc[0]) if 'home_team' in game_df.columns else None,
+            'away_team': self._sv(game_df['away_team'].iloc[0]) if 'away_team' in game_df.columns else None,
+            'home_score': int(raw_home_score) if raw_home_score is not None else None,
+            'away_score': int(raw_away_score) if raw_away_score is not None else None,
+        }
+
+        return {'plays': plays, 'game_summary': game_summary}
+
     def import_adp_from_csv(
         self,
         csv_source: Union[str, io.IOBase],
