@@ -243,6 +243,37 @@ class DBLeague(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class DBSportsbookOdds(Base):
+    """Betting line data fetched from The Odds API.
+
+    Stores both game lines (h2h, spreads, totals) and player props.
+    One row per unique (event, bookmaker, market, outcome_name) combination.
+    """
+    __tablename__ = "sportsbook_odds"
+    __table_args__ = (
+        UniqueConstraint(
+            'event_id', 'bookmaker', 'market', 'outcome_name',
+            name='uq_odds_event_bookmaker_market_outcome',
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String, nullable=False, index=True)
+    sport_key = Column(String, nullable=False)
+    sport_title = Column(String, nullable=True)
+    commence_time = Column(DateTime, nullable=True)
+    home_team = Column(String, nullable=False)
+    away_team = Column(String, nullable=False)
+    bookmaker = Column(String, nullable=False)
+    market = Column(String, nullable=False, index=True)
+    outcome_name = Column(String, nullable=False)
+    price = Column(Float, nullable=True)
+    point = Column(Float, nullable=True)
+    description = Column(String, nullable=True)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 DEFAULT_SCORING_SETTINGS = {
     "pass_yd": 0.04,
     "pass_td": 4,

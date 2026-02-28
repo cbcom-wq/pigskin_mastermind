@@ -458,5 +458,134 @@ def stats_yearly_rankings(year, position, top):
         db.close()
 
 
+@main.group()
+def odds():
+    """Sportsbook betting odds and player props."""
+    pass
+
+
+def _get_odds_db():
+    """Get a database session for CLI odds commands."""
+    from pigskin_mastermind.api.database import SessionLocal
+    return SessionLocal()
+
+
+@odds.command('import-games')
+@click.option('--sport', default='americanfootball_nfl', show_default=True, help='Sport key')
+@click.option('--regions', default='us', show_default=True, help='Comma-separated region codes')
+@click.option('--markets', default='h2h,spreads,totals', show_default=True,
+              help='Comma-separated market keys')
+@click.option('--bookmakers', default=None, help='Comma-separated bookmaker keys to filter')
+def odds_import_games(sport, regions, markets, bookmakers):
+    """Fetch game odds from The Odds API and store them in the database.
+
+    Requires the ODDS_API_KEY environment variable to be set.
+    """
+    from pigskin_mastermind.services.sportsbook_service import SportsbookService
+
+    db = _get_odds_db()
+    try:
+        service = SportsbookService(db)
+        count = service.import_game_odds(sport=sport, regions=regions,
+                                         markets=markets, bookmakers=bookmakers)
+        click.echo(f"Game odds import complete: {count} row(s) upserted.")
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+    finally:
+        db.close()
+
+
+@odds.command('import-props')
+@click.argument('event_id')
+@click.option('--sport', default='americanfootball_nfl', show_default=True, help='Sport key')
+@click.option('--regions', default='us', show_default=True, help='Comma-separated region codes')
+@click.option('--markets',
+              default='player_pass_yds,player_pass_tds,player_rush_yds,player_rush_tds,'
+                      'player_reception_yds,player_receptions',
+              show_default=True, help='Comma-separated prop market keys')
+@click.option('--bookmakers', default=None, help='Comma-separated bookmaker keys to filter')
+def odds_import_props(event_id, sport, regions, markets, bookmakers):
+    """Fetch player props for EVENT_ID from The Odds API and store them.
+
+    Requires the ODDS_API_KEY environment variable to be set.
+    """
+    from pigskin_mastermind.services.sportsbook_service import SportsbookService
+
+    db = _get_odds_db()
+    try:
+        service = SportsbookService(db)
+        count = service.import_player_props(event_id=event_id, sport=sport,
+                                            regions=regions, markets=markets,
+                                            bookmakers=bookmakers)
+        click.echo(f"Player props import complete: {count} row(s) upserted.")
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+    finally:
+        db.close()
+
+
+@odds.command('games')
+@click.option('--event-id', default=None, help='Filter by event ID')
+@click.option('--home-team', default=None, help='Filter by home team (partial match)')
+@click.option('--away-team', default=None, help='Filter by away team (partial match)')
+@click.option('--market', default=None, help='Filter by market (h2h, spreads, totals)')
+@click.option('--bookmaker', default=None, help='Filter by bookmaker key')
+def odds_games(event_id, home_team, away_team, market, bookmaker):
+    """View stored game odds."""
+    from pigskin_mastermind.services.sportsbook_service import SportsbookService
+
+    db = _get_odds_db()
+    try:
+        service = SportsbookService(db)
+        results = service.get_game_odds(event_id=event_id, home_team=home_team,
+                                        away_team=away_team, market=market,
+                                        bookmaker=bookmaker)
+        if not results:
+            click.echo("No game odds found.")
+            return
+
+        click.echo(f"\n{'Market':<20} {'Home':<20} {'Away':<20} {'Outcome':<25} {'Price':>8} {'Point':>7}")
+        click.echo("-" * 105)
+        for r in results:
+            point_str = f"{r['point']:.1f}" if r['point'] is not None else ""
+            click.echo(
+                f"{r['market']:<20} {r['home_team']:<20} {r['away_team']:<20} "
+                f"{r['outcome_name']:<25} {r['price'] or '':>8} {point_str:>7}"
+            )
+    finally:
+        db.close()
+
+
+@odds.command('props')
+@click.option('--player', default=None, help='Filter by player name (partial match)')
+@click.option('--event-id', default=None, help='Filter by event ID')
+@click.option('--market', default=None, help='Filter by prop market key')
+@click.option('--bookmaker', default=None, help='Filter by bookmaker key')
+def odds_props(player, event_id, market, bookmaker):
+    """View stored player prop odds."""
+    from pigskin_mastermind.services.sportsbook_service import SportsbookService
+
+    db = _get_odds_db()
+    try:
+        service = SportsbookService(db)
+        results = service.get_player_props(player_name=player, event_id=event_id,
+                                           market=market, bookmaker=bookmaker)
+        if not results:
+            click.echo("No player props found.")
+            return
+
+        click.echo(f"\n{'Market':<28} {'Player':<25} {'Outcome':<10} {'Price':>8} {'Point':>7}")
+        click.echo("-" * 85)
+        for r in results:
+            point_str = f"{r['point']:.1f}" if r['point'] is not None else ""
+            player_label = r.get('description') or r['outcome_name']
+            click.echo(
+                f"{r['market']:<28} {player_label:<25} {r['outcome_name']:<10} "
+                f"{r['price'] or '':>8} {point_str:>7}"
+            )
+    finally:
+        db.close()
+
+
 if __name__ == '__main__':
     main()
