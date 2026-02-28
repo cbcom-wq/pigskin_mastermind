@@ -341,10 +341,12 @@ _SLOT_ELIGIBLE_POSITIONS = {
 
 def _is_eligible_for_slot(position: str, slot: str) -> bool:
     """Check if a player position is eligible for a given lineup slot."""
+    # Bench and IR accept any position
+    if slot in _BENCH_SLOTS:
+        return True
     eligible = _SLOT_ELIGIBLE_POSITIONS.get(slot)
     if eligible is None:
-        # Unknown slot — allow bench/IR-like behavior
-        return slot in _BENCH_SLOTS
+        return True  # Unknown slot — allow by default
     return position in eligible
 
 
