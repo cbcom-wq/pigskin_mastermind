@@ -286,3 +286,57 @@ async def get_auto_projection(
         report = service.generate_projection_report(player_model, criteria)
 
     return report
+
+
+@router.get("/teams/{team_db_id}/weekly-projections")
+async def get_team_weekly_projections(
+    team_db_id: int,
+    week: int = Query(..., ge=1, le=22),
+    year: int = Query(2025),
+    db: Session = Depends(get_db),
+):
+    """Generate projections for all players on a team's weekly roster."""
+    from pigskin_mastermind.models.player import Player as PlayerModel
+    from pigskin_mastermind.models.database import DBWeeklyTeamStats, DBWeeklyPlayerStats
+    from pigskin_mastermind.services.projection_service import WeeklyProjectionService
+
+    team = db.query(DBTeam).filter_by(id=team_db_id).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    weekly_team = db.query(DBWeeklyTeamStats).filter_by(
+        team_id=team_db_id, week=week
+    ).first()
+    if not weekly_team:
+        raise HTTPException(status_code=404, detail="No weekly data for this week")
+
+    rows = (
+        db.query(DBWeeklyPlayerStats, DBPlayer)
+        .join(DBPlayer, DBWeeklyPlayerStats.player_id == DBPlayer.id)
+        .filter(DBWeeklyPlayerStats.weekly_team_stats_id == weekly_team.id)
+        .all()
+    )
+
+    builder = ProjectionCriteriaBuilder(db)
+    service = WeeklyProjectionService()
+    projections = {}
+
+    for wp, player in rows:
+        try:
+            criteria = builder.build_weekly_criteria(player.id, week, year)
+            player_model = PlayerModel(
+                player_id=player.player_id,
+                name=player.name,
+                position=player.position,
+                team=player.nfl_team,
+                projected_points=player.projected_points,
+            )
+            report = service.generate_projection_report(player_model, criteria)
+            projections[player.id] = {
+                "projected_points": report["projected_points"],
+                "criteria_used": report.get("criteria_used", {}),
+            }
+        except Exception:
+            projections[player.id] = {"projected_points": None, "error": True}
+
+    return {"projections": projections}

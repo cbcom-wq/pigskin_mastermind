@@ -1,16 +1,29 @@
 """Teams routes: listing, CRUD, detail page."""
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
-from fastapi import APIRouter, Depends, Request, Form, Query
+from fastapi import APIRouter, Depends, Request, Form, Query, Body
 from fastapi.responses import RedirectResponse, HTMLResponse
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 import uuid
 import json
 
 from pigskin_mastermind.api.database import get_db
-from pigskin_mastermind.models.database import DBTeam, DBPlayer, DBLeague, DBWeeklyTeamStats, DBWeeklyPlayerStats
+from pigskin_mastermind.models.database import (
+    DBTeam, DBPlayer, DBLeague, DBWeeklyTeamStats, DBWeeklyPlayerStats,
+    DBNFLTeamStats, DBPlayerGameLog,
+)
+
+
+class SlotChange(BaseModel):
+    player_id: int
+    new_slot: str
+
+
+class SlotSwapRequest(BaseModel):
+    changes: List[SlotChange]
 
 router = APIRouter(prefix="/teams", tags=["teams"])
 
@@ -93,6 +106,7 @@ async def team_detail(
 
     weekly_team = None
     weekly_players = []
+    matchups = {}
 
     if week and week in available_weeks:
         # Fetch weekly team stats
@@ -108,10 +122,14 @@ async def team_detail(
             .all(),
             key=lambda row: (
                 1 if row[0].slot_position in _BENCH_SLOTS else 0,
-                _POSITION_ORDER.get(row[1].position, 7),
+                _POSITION_ORDER.get(row[0].slot_position, _POSITION_ORDER.get(row[1].position, 7)),
                 -row[0].actual_points,
             ),
         )
+
+        # Build matchup data for each player
+        year = _get_league_year(db, team)
+        matchups = _build_matchup_data(db, weekly_players, team_db_id, week, year)
 
     # Current roster (season view): starters sorted by position order, then projected points
     players = sorted(
@@ -129,6 +147,7 @@ async def team_detail(
             "selected_week": week,
             "weekly_team": weekly_team,
             "weekly_players": weekly_players,
+            "matchups": matchups,
         }
     )
 
@@ -209,5 +228,123 @@ async def team_simulation_page(
             "default_year": default_year,
             "roster": active_players,
             "back_url": back,
+        },
+    )
+
+
+def _build_matchup_data(db: Session, weekly_players, team_db_id: int, week: int, year: int):
+    """Build a dict mapping player_id → matchup info (opponent, def_rank, etc.)."""
+    matchups = {}
+    for wp, player in weekly_players:
+        opponent = None
+        def_rank = None
+
+        # Try game log first for opponent
+        game_log = (
+            db.query(DBPlayerGameLog)
+            .filter_by(player_id=player.id, year=year, week=week)
+            .first()
+        )
+        if game_log and game_log.opponent:
+            opponent = game_log.opponent
+
+        # Fall back to weekly team stats opponent_name
+        if not opponent:
+            wt = (
+                db.query(DBWeeklyTeamStats)
+                .filter_by(team_id=team_db_id, week=week)
+                .first()
+            )
+            if wt and wt.opponent_name:
+                opponent = wt.opponent_name
+
+        if opponent:
+            pos_lower = player.position.lower()
+            rank_field = f'def_rank_vs_{pos_lower}'
+            team_def = (
+                db.query(DBNFLTeamStats)
+                .filter_by(nfl_team=opponent, year=year, week=None)
+                .first()
+            )
+            if team_def:
+                def_rank = getattr(team_def, rank_field, None)
+
+        matchups[player.id] = {
+            'opponent': opponent,
+            'def_rank': def_rank,
+        }
+    return matchups
+
+
+def _get_league_year(db: Session, team) -> int:
+    """Get the year from the team's league or fall back to current year."""
+    if team.league_id:
+        league = db.query(DBLeague).filter_by(league_id=team.league_id).first()
+        if league and league.year:
+            return league.year
+    return datetime.utcnow().year
+
+
+@router.put("/{team_db_id}/weekly/{week}/slots")
+async def update_weekly_slots(
+    request: Request,
+    team_db_id: int,
+    week: int,
+    body: SlotSwapRequest,
+    db: Session = Depends(get_db),
+):
+    """Update player slot positions for a weekly lineup."""
+    team = db.query(DBTeam).filter(DBTeam.id == team_db_id).first()
+    if not team:
+        return HTMLResponse("Team not found", status_code=404)
+
+    weekly_team = db.query(DBWeeklyTeamStats).filter_by(
+        team_id=team_db_id, week=week
+    ).first()
+    if not weekly_team:
+        return HTMLResponse("Weekly data not found", status_code=404)
+
+    # Apply each slot change
+    for change in body.changes:
+        wp = (
+            db.query(DBWeeklyPlayerStats)
+            .filter_by(
+                player_id=change.player_id,
+                weekly_team_stats_id=weekly_team.id,
+            )
+            .first()
+        )
+        if wp:
+            wp.slot_position = change.new_slot
+
+    db.commit()
+
+    # Return the refreshed lineup fragment
+    from pigskin_mastermind.api.main import templates
+
+    weekly_players = sorted(
+        db.query(DBWeeklyPlayerStats, DBPlayer)
+        .join(DBPlayer, DBWeeklyPlayerStats.player_id == DBPlayer.id)
+        .filter(DBWeeklyPlayerStats.weekly_team_stats_id == weekly_team.id)
+        .all(),
+        key=lambda row: (
+            1 if row[0].slot_position in _BENCH_SLOTS else 0,
+            _POSITION_ORDER.get(row[0].slot_position, _POSITION_ORDER.get(row[1].position, 7)),
+            -row[0].actual_points,
+        ),
+    )
+
+    year = _get_league_year(db, team)
+    matchups = _build_matchup_data(db, weekly_players, team_db_id, week, year)
+
+    return templates.TemplateResponse(
+        "teams/_weekly_lineup.html",
+        {
+            "request": request,
+            "team": team,
+            "selected_week": week,
+            "weekly_team": weekly_team,
+            "weekly_players": weekly_players,
+            "matchups": matchups,
         },
     )
