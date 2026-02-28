@@ -81,6 +81,7 @@ class DBWeeklyPlayerStats(Base):
     weekly_team_stats_id = Column(Integer, ForeignKey("weekly_team_stats.id"), nullable=False)
     week = Column(Integer, nullable=False)
     slot_position = Column(String, nullable=True)  # Starting slot (QB, RB, FLEX, BE, IR, etc.)
+    espn_slot_position = Column(String, nullable=True)  # Original slot from ESPN import
     projected_points = Column(Float, default=0.0)
     actual_points = Column(Float, default=0.0)
     stats = Column(JSON, default=dict)

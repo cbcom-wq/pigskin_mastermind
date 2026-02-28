@@ -324,6 +324,7 @@ class ESPNSyncService:
                 self.db.add(db_wp)
 
             db_wp.slot_position = getattr(box_player, 'slot_position', None)
+            db_wp.espn_slot_position = getattr(box_player, 'slot_position', None)
             db_wp.projected_points = getattr(box_player, 'projected_points', 0.0)
             db_wp.actual_points = getattr(box_player, 'points', 0.0)
             db_wp.stats = {

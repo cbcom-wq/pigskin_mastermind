@@ -285,6 +285,42 @@ def _get_league_year(db: Session, team) -> int:
     return datetime.utcnow().year
 
 
+def _render_weekly_lineup(request, db, team, team_db_id, week):
+    """Fetch weekly lineup data and render the _weekly_lineup.html fragment."""
+    from pigskin_mastermind.api.main import templates
+
+    weekly_team = db.query(DBWeeklyTeamStats).filter_by(
+        team_id=team_db_id, week=week
+    ).first()
+
+    weekly_players = sorted(
+        db.query(DBWeeklyPlayerStats, DBPlayer)
+        .join(DBPlayer, DBWeeklyPlayerStats.player_id == DBPlayer.id)
+        .filter(DBWeeklyPlayerStats.weekly_team_stats_id == weekly_team.id)
+        .all(),
+        key=lambda row: (
+            1 if row[0].slot_position in _BENCH_SLOTS else 0,
+            _POSITION_ORDER.get(row[0].slot_position, _POSITION_ORDER.get(row[1].position, 7)),
+            -row[0].actual_points,
+        ),
+    )
+
+    year = _get_league_year(db, team)
+    matchups = _build_matchup_data(db, weekly_players, team_db_id, week, year)
+
+    return templates.TemplateResponse(
+        "teams/_weekly_lineup.html",
+        {
+            "request": request,
+            "team": team,
+            "selected_week": week,
+            "weekly_team": weekly_team,
+            "weekly_players": weekly_players,
+            "matchups": matchups,
+        },
+    )
+
+
 @router.put("/{team_db_id}/weekly/{week}/slots")
 async def update_weekly_slots(
     request: Request,
@@ -319,32 +355,37 @@ async def update_weekly_slots(
 
     db.commit()
 
-    # Return the refreshed lineup fragment
-    from pigskin_mastermind.api.main import templates
+    return _render_weekly_lineup(request, db, team, team_db_id, week)
 
-    weekly_players = sorted(
-        db.query(DBWeeklyPlayerStats, DBPlayer)
-        .join(DBPlayer, DBWeeklyPlayerStats.player_id == DBPlayer.id)
-        .filter(DBWeeklyPlayerStats.weekly_team_stats_id == weekly_team.id)
-        .all(),
-        key=lambda row: (
-            1 if row[0].slot_position in _BENCH_SLOTS else 0,
-            _POSITION_ORDER.get(row[0].slot_position, _POSITION_ORDER.get(row[1].position, 7)),
-            -row[0].actual_points,
-        ),
+
+@router.put("/{team_db_id}/weekly/{week}/reset-slots")
+async def reset_weekly_slots(
+    request: Request,
+    team_db_id: int,
+    week: int,
+    db: Session = Depends(get_db),
+):
+    """Reset all slot positions back to the original ESPN import values."""
+    team = db.query(DBTeam).filter(DBTeam.id == team_db_id).first()
+    if not team:
+        return HTMLResponse("Team not found", status_code=404)
+
+    weekly_team = db.query(DBWeeklyTeamStats).filter_by(
+        team_id=team_db_id, week=week
+    ).first()
+    if not weekly_team:
+        return HTMLResponse("Weekly data not found", status_code=404)
+
+    # Copy espn_slot_position back to slot_position for all players this week
+    (
+        db.query(DBWeeklyPlayerStats)
+        .filter_by(weekly_team_stats_id=weekly_team.id)
+        .filter(DBWeeklyPlayerStats.espn_slot_position.isnot(None))
+        .update(
+            {DBWeeklyPlayerStats.slot_position: DBWeeklyPlayerStats.espn_slot_position},
+            synchronize_session='fetch',
+        )
     )
+    db.commit()
 
-    year = _get_league_year(db, team)
-    matchups = _build_matchup_data(db, weekly_players, team_db_id, week, year)
-
-    return templates.TemplateResponse(
-        "teams/_weekly_lineup.html",
-        {
-            "request": request,
-            "team": team,
-            "selected_week": week,
-            "weekly_team": weekly_team,
-            "weekly_players": weekly_players,
-            "matchups": matchups,
-        },
-    )
+    return _render_weekly_lineup(request, db, team, team_db_id, week)

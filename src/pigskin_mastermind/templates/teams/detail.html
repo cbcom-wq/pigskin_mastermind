@@ -336,5 +336,28 @@ function generateProjections(teamId, week) {
 document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') deselectRow();
 });
+
+/* ---------- Reset to ESPN ---------- */
+function resetToESPN(teamId, week) {
+    fetch('/teams/' + teamId + '/weekly/' + week + '/reset-slots', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(function(resp) {
+        if (!resp.ok) throw new Error('Reset failed');
+        return resp.text();
+    })
+    .then(function(html) {
+        var container = document.getElementById('weekly-lineup-container');
+        if (container) {
+            container.outerHTML = html;
+        }
+        if (typeof showToast === 'function') showToast('Lineup reset to ESPN', 'success');
+    })
+    .catch(function(err) {
+        if (typeof showToast === 'function') showToast('Failed to reset lineup', 'error');
+    });
+}
 </script>
 {% endif %}
+{% endblock %}

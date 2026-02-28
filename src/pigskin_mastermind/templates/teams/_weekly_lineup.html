@@ -1,5 +1,35 @@
 <!-- Weekly Lineup Fragment (interactive) -->
+{% set lineup_modified = weekly_players | selectattr('0.espn_slot_position') | selectattr('0.slot_position') | list | length > 0 and
+   weekly_players | map(attribute='0') | selectattr('espn_slot_position') | list | length > 0 %}
+{% set modified_players = [] %}
+{% for wp, player in weekly_players %}
+    {% if wp.espn_slot_position and wp.slot_position != wp.espn_slot_position %}
+        {% if modified_players.append(player.id) %}{% endif %}
+    {% endif %}
+{% endfor %}
+{% set is_lineup_modified = modified_players | length > 0 %}
 <div id="weekly-lineup-container">
+    {% if is_lineup_modified %}
+    <div class="px-6 py-2.5 bg-amber-50 border-b border-amber-200 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+            <svg class="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+            </svg>
+            <span class="text-sm font-medium text-amber-800">Lineup modified from ESPN</span>
+            <span class="text-xs text-amber-600">({{ modified_players|length }} player{{ 's' if modified_players|length != 1 else '' }} moved)</span>
+        </div>
+        <button
+            onclick="resetToESPN({{ team.id }}, {{ selected_week }})"
+            class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-amber-700 bg-amber-100 hover:bg-amber-200 rounded-lg transition-colors"
+        >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+            </svg>
+            Reset to ESPN
+        </button>
+    </div>
+    {% endif %}
+
     <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between flex-wrap gap-3">
         <div class="flex items-center gap-3">
             <h3 class="text-lg font-bold text-slate-800">Week {{ selected_week }} Lineup</h3>
@@ -44,21 +74,27 @@
             <tbody class="divide-y divide-slate-100">
                 {% for wp, player in weekly_players %}
                 {% set is_bench = wp.slot_position in ['BE', 'IR'] %}
+                {% set is_moved = wp.espn_slot_position and wp.slot_position != wp.espn_slot_position %}
                 {% set matchup = matchups.get(player.id, {}) if matchups else {} %}
                 {% set def_rank = matchup.get('def_rank') %}
                 {% set opponent = matchup.get('opponent', '') %}
                 <tr
-                    class="lineup-row hover:bg-slate-50 transition-colors cursor-pointer {% if is_bench %}opacity-60{% endif %}"
+                    class="lineup-row hover:bg-slate-50 transition-colors cursor-pointer {% if is_bench %}opacity-60{% endif %} {% if is_moved %}border-l-3 border-l-amber-400{% endif %}"
                     data-player-id="{{ player.id }}"
                     data-slot="{{ wp.slot_position or '' }}"
                     data-position="{{ player.position }}"
                     onclick="handleRowClick(this)"
                 >
                     <td class="px-4 py-3">
-                        <span class="inline-flex items-center justify-center px-2 h-6 rounded text-xs font-semibold
-                            {% if is_bench %}bg-slate-100 text-slate-500{% else %}bg-blue-50 text-blue-700{% endif %}">
-                            {{ wp.slot_position or '-' }}
-                        </span>
+                        <div class="flex items-center gap-1">
+                            <span class="inline-flex items-center justify-center px-2 h-6 rounded text-xs font-semibold
+                                {% if is_bench %}bg-slate-100 text-slate-500{% else %}bg-blue-50 text-blue-700{% endif %}">
+                                {{ wp.slot_position or '-' }}
+                            </span>
+                            {% if is_moved %}
+                            <span class="text-[10px] text-amber-500" title="ESPN: {{ wp.espn_slot_position }}">⇄</span>
+                            {% endif %}
+                        </div>
                     </td>
                     <td class="px-4 py-3">
                         <div class="flex items-center gap-2">
