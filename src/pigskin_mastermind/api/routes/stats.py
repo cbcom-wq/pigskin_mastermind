@@ -5,9 +5,10 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 
 from pigskin_mastermind.api.database import get_db
-from pigskin_mastermind.models.database import DBPlayer, DBLeague, DBTeam, get_scoring_settings
+from pigskin_mastermind.models.database import DBPlayer, DBLeague, DBTeam, DBWeeklyTeamStats, DBWeeklyPlayerStats, get_scoring_settings
 from pigskin_mastermind.services.stats_service import StatsService
 from pigskin_mastermind.services.projection_criteria_builder import ProjectionCriteriaBuilder
+from pigskin_mastermind.services.sportsbook_projection_service import SportsbookProjectionService
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
@@ -335,6 +336,57 @@ async def get_team_weekly_projections(
             projections[player.id] = {
                 "projected_points": report["projected_points"],
                 "criteria_used": report.get("criteria_used", {}),
+            }
+        except Exception:
+            projections[player.id] = {"projected_points": None, "error": True}
+
+    return {"projections": projections}
+
+
+@router.get("/teams/{team_db_id}/sportsbook-projections")
+async def get_team_sportsbook_projections(
+    team_db_id: int,
+    week: int = Query(..., ge=1, le=22),
+    league_id: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Generate sportsbook-based projections for all players on a team's weekly roster.
+
+    Looks up each player's name in the stored sportsbook prop lines and
+    converts them to projected fantasy points using the league (or default)
+    scoring settings.
+    """
+    team = db.query(DBTeam).filter_by(id=team_db_id).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    weekly_team = db.query(DBWeeklyTeamStats).filter_by(
+        team_id=team_db_id, week=week
+    ).first()
+    if not weekly_team:
+        raise HTTPException(status_code=404, detail="No weekly data for this week")
+
+    rows = (
+        db.query(DBWeeklyPlayerStats, DBPlayer)
+        .join(DBPlayer, DBWeeklyPlayerStats.player_id == DBPlayer.id)
+        .filter(DBWeeklyPlayerStats.weekly_team_stats_id == weekly_team.id)
+        .all()
+    )
+
+    # Use the team's league if caller didn't specify one
+    effective_league_id = league_id or team.league_id
+    service = SportsbookProjectionService(db)
+    projections = {}
+
+    for wp, player in rows:
+        try:
+            result = service.project_player(
+                player.name,
+                league_id=effective_league_id,
+            )
+            projections[player.id] = {
+                "projected_points": result["total_projected_points"],
+                "categories": result["categories"],
             }
         except Exception:
             projections[player.id] = {"projected_points": None, "error": True}

@@ -253,8 +253,8 @@ class DBSportsbookOdds(Base):
     __tablename__ = "sportsbook_odds"
     __table_args__ = (
         UniqueConstraint(
-            'event_id', 'bookmaker', 'market', 'outcome_name',
-            name='uq_odds_event_bookmaker_market_outcome',
+            'event_id', 'bookmaker', 'market', 'outcome_name', 'description',
+            name='uq_odds_event_bookmaker_market_outcome_desc',
         ),
     )
 

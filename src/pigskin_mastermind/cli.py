@@ -587,5 +587,33 @@ def odds_props(player, event_id, market, bookmaker):
         db.close()
 
 
+@odds.command('seed-props')
+@click.option('--all-stars', is_flag=True, default=False,
+              help='Seed all built-in star players, not just your roster')
+@click.option('--clear', is_flag=True, default=False,
+              help='Delete previously seeded data before inserting')
+def odds_seed_props(all_stars, clear):
+    """Seed realistic sample player-prop lines for offline testing.
+
+    By default seeds props only for players already on your roster.
+    Use --all-stars to also include ~60 well-known NFL players.
+    Use --clear to remove previously-seeded rows first.
+    """
+    from pigskin_mastermind.services.sportsbook_seed import seed_sample_props
+
+    db = _get_odds_db()
+    try:
+        count = seed_sample_props(
+            db,
+            roster_only=not all_stars,
+            clear_existing=clear,
+        )
+        click.echo(f"Seeded {count} sample prop row(s) into sportsbook_odds.")
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+    finally:
+        db.close()
+
+
 if __name__ == '__main__':
     main()

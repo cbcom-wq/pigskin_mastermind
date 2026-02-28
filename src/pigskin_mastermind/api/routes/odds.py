@@ -117,3 +117,28 @@ async def import_player_props(
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Odds API error: {exc}")
     return {"status": "success", "rows_upserted": count}
+
+
+@router.post("/seed")
+async def seed_sample_props(
+    all_stars: bool = Query(False, description="Include all built-in star players, not just roster"),
+    clear: bool = Query(False, description="Delete previously seeded rows before inserting"),
+    db: Session = Depends(get_db),
+):
+    """Seed realistic sample player-prop lines for offline / offseason testing.
+
+    Inserts historically-plausible 2025 NFL Week 10 prop data from three
+    bookmakers (DraftKings, FanDuel, BetMGM) so the sportsbook projection
+    pipeline can be tested without a live API or active season.
+
+    By default only seeds props for players already on your roster.
+    Pass ``all_stars=true`` to include ~60 well-known NFL players.
+    Pass ``clear=true`` to wipe previously seeded rows first.
+    """
+    from pigskin_mastermind.services.sportsbook_seed import seed_sample_props as do_seed
+
+    try:
+        count = do_seed(db, roster_only=not all_stars, clear_existing=clear)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Seed error: {exc}")
+    return {"status": "success", "rows_seeded": count}

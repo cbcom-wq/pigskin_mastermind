@@ -384,6 +384,52 @@ function generateProjections(teamId, week) {
     });
 }
 
+/* ---------- Sportsbook Projection Generation ---------- */
+function generateSportsbookProjections(teamId, week) {
+    var btn = document.getElementById('generate-sb-projections-btn');
+    var spinner = document.getElementById('sb-proj-spinner');
+    var btnText = document.getElementById('sb-proj-btn-text');
+    btn.disabled = true;
+    spinner.classList.remove('hidden');
+    btnText.textContent = 'Loading…';
+
+    fetch('/api/stats/teams/' + teamId + '/sportsbook-projections?week=' + week)
+    .then(function(resp) {
+        if (!resp.ok) throw new Error('Sportsbook projection failed');
+        return resp.json();
+    })
+    .then(function(data) {
+        var projections = data.projections || {};
+        var cells = document.querySelectorAll('.sb-proj-cell');
+        cells.forEach(function(cell) {
+            var pid = cell.getAttribute('data-player-id');
+            var proj = projections[pid];
+            if (proj && proj.projected_points !== null && proj.projected_points > 0) {
+                // Build a tooltip showing the category breakdown
+                var tooltip = '';
+                if (proj.categories && proj.categories.length) {
+                    tooltip = proj.categories.map(function(c) {
+                        return c.label + ': ' + c.expected_stat + ' × ' + c.multiplier + ' = ' + c.fantasy_points + ' pts';
+                    }).join('\n');
+                }
+                cell.innerHTML = '<span class="font-semibold text-emerald-700 cursor-help" title="' + tooltip.replace(/"/g, '&quot;') + '">' + proj.projected_points.toFixed(1) + '</span>';
+            } else {
+                cell.innerHTML = '<span class="text-slate-400 text-xs">N/A</span>';
+            }
+        });
+        btnText.textContent = 'Sportsbook Done';
+        if (typeof showToast === 'function') showToast('Sportsbook projections loaded', 'success');
+    })
+    .catch(function(err) {
+        btnText.textContent = 'Sportsbook Proj';
+        if (typeof showToast === 'function') showToast('Failed to load sportsbook projections', 'error');
+    })
+    .finally(function() {
+        btn.disabled = false;
+        spinner.classList.add('hidden');
+    });
+}
+
 // ESC key to deselect
 document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') deselectRow();

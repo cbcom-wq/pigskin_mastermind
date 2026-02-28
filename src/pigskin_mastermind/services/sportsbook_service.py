@@ -277,7 +277,7 @@ class SportsbookService:
 
         # Build the set of unique keys we need to look up
         keys = [
-            (r["event_id"], r["bookmaker"], r["market"], r["outcome_name"])
+            (r["event_id"], r["bookmaker"], r["market"], r["outcome_name"], r.get("description"))
             for r in rows
         ]
 
@@ -296,16 +296,17 @@ class SportsbookService:
                 existing.bookmaker,
                 existing.market,
                 existing.outcome_name,
+                existing.description,
             )
             existing_map[key] = existing
 
         count = 0
         for row in rows:
-            key = (row["event_id"], row["bookmaker"], row["market"], row["outcome_name"])
+            key = (row["event_id"], row["bookmaker"], row["market"], row["outcome_name"], row.get("description"))
             existing = existing_map.get(key)
             if existing:
                 for attr, value in row.items():
-                    if attr not in ("event_id", "bookmaker", "market", "outcome_name"):
+                    if attr not in ("event_id", "bookmaker", "market", "outcome_name", "description"):
                         setattr(existing, attr, value)
             else:
                 new_obj = DBSportsbookOdds(**row)
