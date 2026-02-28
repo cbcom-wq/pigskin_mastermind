@@ -233,16 +233,51 @@
 /* ---------- Interactive Lineup Slot Swap ---------- */
 var selectedRow = null;
 
+// Slot eligibility rules (mirrors backend _SLOT_ELIGIBLE_POSITIONS)
+var SLOT_ELIGIBLE = {
+    'QB': ['QB'], 'RB': ['RB'], 'WR': ['WR'], 'TE': ['TE'],
+    'FLEX': ['RB','WR','TE'], 'RB/WR/TE': ['RB','WR','TE'],
+    'K': ['K'], 'D/ST': ['DEF','D/ST','DST'], 'DEF': ['DEF','D/ST','DST'], 'DST': ['DEF','D/ST','DST'],
+    'BE': null, 'IR': null, 'OP': ['QB','RB','WR','TE']
+};
+
+function isEligible(position, slot) {
+    var allowed = SLOT_ELIGIBLE[slot];
+    if (allowed === null || allowed === undefined) return true; // bench/IR accept all
+    return allowed.indexOf(position) !== -1;
+}
+
 function handleRowClick(row) {
     if (selectedRow === null) {
         // First click: select this row
         selectedRow = row;
         row.classList.add('ring-2', 'ring-field-500', 'bg-field-50');
         document.getElementById('swap-hint').classList.remove('hidden');
+
+        // Dim ineligible swap targets
+        var selectedPos = selectedRow.getAttribute('data-position');
+        var selectedSlot = selectedRow.getAttribute('data-slot');
+        document.querySelectorAll('.lineup-row').forEach(function(r) {
+            if (r === selectedRow) return;
+            var targetSlot = r.getAttribute('data-slot');
+            var targetPos = r.getAttribute('data-position');
+            // Check both directions: can selected player go to target's slot AND target player go to selected's slot?
+            if (!isEligible(selectedPos, targetSlot) || !isEligible(targetPos, selectedSlot)) {
+                r.classList.add('opacity-30');
+                r.style.cursor = 'not-allowed';
+                r.setAttribute('data-ineligible', 'true');
+            }
+        });
     } else if (selectedRow === row) {
         // Clicked same row: deselect
         deselectRow();
     } else {
+        // Check eligibility before swapping
+        if (row.getAttribute('data-ineligible') === 'true') {
+            if (typeof showToast === 'function') showToast('Player is not eligible for that slot', 'warning');
+            return;
+        }
+
         // Second click: swap the two players' slots
         var playerId1 = parseInt(selectedRow.getAttribute('data-player-id'));
         var slot1 = selectedRow.getAttribute('data-slot');
@@ -259,6 +294,12 @@ function deselectRow() {
         selectedRow.classList.remove('ring-2', 'ring-field-500', 'bg-field-50');
         selectedRow = null;
     }
+    // Remove dimming from all rows
+    document.querySelectorAll('.lineup-row').forEach(function(r) {
+        r.classList.remove('opacity-30');
+        r.style.cursor = 'pointer';
+        r.removeAttribute('data-ineligible');
+    });
     document.getElementById('swap-hint').classList.add('hidden');
 }
 
@@ -277,11 +318,22 @@ function performSwap(player1Id, newSlot1, player2Id, newSlot2) {
         })
     })
     .then(function(resp) {
+        // Check for toast error response (empty body with HX-Trigger header)
+        var trigger = resp.headers.get('HX-Trigger');
+        if (trigger) {
+            try {
+                var data = JSON.parse(trigger);
+                if (data.showToast) {
+                    if (typeof showToast === 'function') showToast(data.showToast.message, data.showToast.type);
+                    return null;
+                }
+            } catch(e) {}
+        }
         if (!resp.ok) throw new Error('Swap failed');
         return resp.text();
     })
     .then(function(html) {
-        // Replace the lineup container with the returned fragment
+        if (!html) return;
         var container = document.getElementById('weekly-lineup-container');
         if (container) {
             container.outerHTML = html;

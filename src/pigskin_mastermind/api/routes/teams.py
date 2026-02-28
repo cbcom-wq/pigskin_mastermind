@@ -321,6 +321,33 @@ def _render_weekly_lineup(request, db, team, team_db_id, week):
     )
 
 
+# Slot eligibility: which player positions can fill each lineup slot
+_SLOT_ELIGIBLE_POSITIONS = {
+    'QB': {'QB'},
+    'RB': {'RB'},
+    'WR': {'WR'},
+    'TE': {'TE'},
+    'FLEX': {'RB', 'WR', 'TE'},
+    'RB/WR/TE': {'RB', 'WR', 'TE'},
+    'K': {'K'},
+    'D/ST': {'DEF', 'D/ST', 'DST'},
+    'DEF': {'DEF', 'D/ST', 'DST'},
+    'DST': {'DEF', 'D/ST', 'DST'},
+    'BE': {'QB', 'RB', 'WR', 'TE', 'K', 'DEF', 'D/ST', 'DST'},
+    'IR': {'QB', 'RB', 'WR', 'TE', 'K', 'DEF', 'D/ST', 'DST'},
+    'OP': {'QB', 'RB', 'WR', 'TE'},
+}
+
+
+def _is_eligible_for_slot(position: str, slot: str) -> bool:
+    """Check if a player position is eligible for a given lineup slot."""
+    eligible = _SLOT_ELIGIBLE_POSITIONS.get(slot)
+    if eligible is None:
+        # Unknown slot — allow bench/IR-like behavior
+        return slot in _BENCH_SLOTS
+    return position in eligible
+
+
 @router.put("/{team_db_id}/weekly/{week}/slots")
 async def update_weekly_slots(
     request: Request,
@@ -339,6 +366,25 @@ async def update_weekly_slots(
     ).first()
     if not weekly_team:
         return HTMLResponse("Weekly data not found", status_code=404)
+
+    # Validate eligibility before applying any changes
+    for change in body.changes:
+        wp = (
+            db.query(DBWeeklyPlayerStats)
+            .filter_by(
+                player_id=change.player_id,
+                weekly_team_stats_id=weekly_team.id,
+            )
+            .first()
+        )
+        if not wp:
+            continue
+        player = db.query(DBPlayer).filter_by(id=change.player_id).first()
+        if player and not _is_eligible_for_slot(player.position, change.new_slot):
+            return _toast_response(
+                f"{player.name} ({player.position}) cannot play the {change.new_slot} slot",
+                "error",
+            )
 
     # Apply each slot change
     for change in body.changes:
