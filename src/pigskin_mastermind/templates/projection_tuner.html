@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+
+{% block title %}Projection Tuner — Pigskin Mastermind{% endblock %}
+{% block page_title %}Projection Algorithm Tuner{% endblock %}
+
+{% block content %}
+<div class="max-w-[1400px] mx-auto space-y-5">
+    <!-- Header -->
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div>
+                <p class="text-xs font-semibold uppercase tracking-wider text-pigskin-500">Developer Tool</p>
+                <h2 class="text-2xl font-bold text-slate-800 mt-1">Projection Algorithm Tuner</h2>
+                <p class="text-sm text-slate-500 mt-1">Understand, adjust, and simulate projection formula changes</p>
+            </div>
+            <div class="flex items-center gap-3">
+                <button onclick="TunerApp.resetAll()" class="px-4 py-2 text-sm font-medium text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors">
+                    ↺ Reset All to Defaults
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 xl:grid-cols-12 gap-5">
+        <!-- LEFT PANEL: Algorithm Documentation -->
+        <div class="xl:col-span-3 space-y-3">
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                <div class="p-4 border-b border-slate-100 bg-slate-50">
+                    <h3 class="text-sm font-bold text-slate-700 uppercase tracking-wider">📖 Algorithm Reference</h3>
+                    <p class="text-xs text-slate-500 mt-1">How each criteria is computed and used</p>
+                </div>
+                <div class="divide-y divide-slate-100 max-h-[800px] overflow-y-auto">
+                    {% for group_label, group_key in [("Base Criteria", "base"), ("Weekly-Specific", "weekly"), ("Yearly-Specific", "yearly")] %}
+                    <div>
+                        <button onclick="this.nextElementSibling.classList.toggle('hidden')" class="w-full px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500 hover:bg-slate-50 flex items-center justify-between">
+                            {{ group_label }}
+                            <svg class="w-4 h-4 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                        </button>
+                        <div class="space-y-0 divide-y divide-slate-50">
+                            {% for doc in criteria_docs %}
+                            {% if doc.group == group_key %}
+                            <div class="px-4 py-3">
+                                <p class="text-xs font-semibold text-slate-700">{{ doc.name }}</p>
+                                <p class="text-[11px] text-slate-500 mt-1">{{ doc.description }}</p>
+                                <div class="mt-2 space-y-1">
+                                    <p class="text-[10px] text-slate-400"><span class="font-semibold text-slate-500">Range:</span> {{ doc.range }}</p>
+                                    <p class="text-[10px] text-slate-400"><span class="font-semibold text-slate-500">Source:</span> {{ doc.data_source }}</p>
+                                    <p class="text-[10px] text-slate-400"><span class="font-semibold text-slate-500">Role:</span> {{ doc.role }}</p>
+                                </div>
+                            </div>
+                            {% endif %}
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- CENTER PANEL: Coefficient Editor -->
+        <div class="xl:col-span-4 space-y-3">
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                <div class="p-4 border-b border-slate-100 bg-slate-50">
+                    <h3 class="text-sm font-bold text-slate-700 uppercase tracking-wider">🎛️ Coefficient Editor</h3>
+                    <p class="text-xs text-slate-500 mt-1">Adjust multipliers to tune the algorithm</p>
+                </div>
+                <div class="divide-y divide-slate-100 max-h-[800px] overflow-y-auto" id="coefficient-editor">
+                    {% for group_label, group_key in [("Base Criteria", "base"), ("Weekly-Specific", "weekly"), ("Yearly-Specific", "yearly")] %}
+                    <div>
+                        <div class="px-4 py-3 bg-slate-50 flex items-center justify-between">
+                            <span class="text-xs font-bold uppercase tracking-wider text-slate-500">{{ group_label }}</span>
+                            <button onclick="TunerApp.resetGroup('{{ group_key }}')" class="text-[10px] font-semibold text-pigskin-500 hover:text-pigskin-700">Reset Group</button>
+                        </div>
+                        {% for coeff in coefficients %}
+                        {% if coeff.group == group_key %}
+                        <div class="px-4 py-3" data-coeff-key="{{ coeff.key }}">
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-xs font-semibold text-slate-700">{{ coeff.name }}</label>
+                                <div class="flex items-center gap-2">
+                                    <input type="number"
+                                           id="num-{{ coeff.key }}"
+                                           value="{{ coeff.default }}"
+                                           step="{{ coeff.step }}"
+                                           min="{{ coeff.min }}"
+                                           max="{{ coeff.max }}"
+                                           data-default="{{ coeff.default }}"
+                                           class="w-20 px-2 py-1 text-xs text-right border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-pigskin-400 coeff-input"
+                                           oninput="TunerApp.syncSlider('{{ coeff.key }}')">
+                                </div>
+                            </div>
+                            <input type="range"
+                                   id="slider-{{ coeff.key }}"
+                                   value="{{ coeff.default }}"
+                                   step="{{ coeff.step }}"
+                                   min="{{ coeff.min }}"
+                                   max="{{ coeff.max }}"
+                                   data-default="{{ coeff.default }}"
+                                   class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-pigskin-500 coeff-slider"
+                                   oninput="TunerApp.syncInput('{{ coeff.key }}')">
+                            <div class="flex justify-between mt-1">
+                                <span class="text-[10px] text-slate-400">{{ coeff.min }}</span>
+                                <span class="text-[10px] text-slate-400 italic">{{ coeff.formula }}</span>
+                                <span class="text-[10px] text-slate-400">{{ coeff.max }}</span>
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT PANEL: Simulation & Results -->
+        <div class="xl:col-span-5 space-y-3">
+            <!-- Simulation Controls -->
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                <div class="p-4 border-b border-slate-100 bg-slate-50">
+                    <h3 class="text-sm font-bold text-slate-700 uppercase tracking-wider">📊 Simulation</h3>
+                </div>
+                <div class="p-4 space-y-4">
+                    <!-- Mode Tabs -->
+                    <div class="flex border border-slate-200 rounded-lg overflow-hidden">
+                        <button id="tab-single" onclick="TunerApp.setMode('single')" class="flex-1 px-4 py-2 text-xs font-semibold bg-pigskin-500 text-white">Single Player</button>
+                        <button id="tab-bulk" onclick="TunerApp.setMode('bulk')" class="flex-1 px-4 py-2 text-xs font-semibold bg-white text-slate-600 hover:bg-slate-50">Bulk Backtest</button>
+                    </div>
+
+                    <!-- Common Controls -->
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Type</label>
+                            <select id="sim-type" class="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+                                <option value="weekly">Weekly</option>
+                                <option value="yearly">Yearly</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Year</label>
+                            <select id="sim-year" class="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+                                {% for y in available_years %}
+                                <option value="{{ y }}">{{ y }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+
+                    <div id="week-control" class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Week</label>
+                            <input id="sim-week" type="number" min="1" max="22" value="1" class="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+                        </div>
+                        <div></div>
+                    </div>
+
+                    <!-- Single Player Controls -->
+                    <div id="single-controls">
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Position</label>
+                                <select id="filter-pos" onchange="TunerApp.filterPlayers()" class="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+                                    <option value="">All</option>
+                                    <option value="QB">QB</option>
+                                    <option value="RB">RB</option>
+                                    <option value="WR">WR</option>
+                                    <option value="TE">TE</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Player</label>
+                                <select id="sim-player" class="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+                                    {% for p in players %}
+                                    <option value="{{ p.id }}" data-pos="{{ p.position }}">{{ p.name }} ({{ p.position }} · {{ p.nfl_team }})</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Bulk Controls -->
+                    <div id="bulk-controls" class="hidden">
+                        <div>
+                            <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Position Group</label>
+                            <select id="bulk-position" class="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+                                <option value="">All Positions</option>
+                                <option value="QB">QB</option>
+                                <option value="RB">RB</option>
+                                <option value="WR">WR</option>
+                                <option value="TE">TE</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <button id="sim-run-btn" onclick="TunerApp.runSimulation()" class="w-full px-4 py-2.5 bg-pigskin-500 hover:bg-pigskin-600 text-white text-sm font-semibold rounded-lg transition-colors flex items-center justify-center gap-2">
+                        <span id="sim-spinner" class="hidden">
+                            <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                            </svg>
+                        </span>
+                        Run Simulation
+                    </button>
+                </div>
+            </div>
+
+            <!-- Results Container -->
+            <div id="results-container" class="space-y-3">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="/static/js/projection-tuner.js"></script>
+{% endblock %}
