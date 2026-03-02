@@ -16,6 +16,7 @@ from pigskin_mastermind.services.projection_tuner import (
     get_default_coefficients,
     get_coefficient_metadata,
     get_criteria_docs,
+    active_players_query,
 )
 
 router = APIRouter(tags=["projection-tuner"])
@@ -187,11 +188,7 @@ async def criteria_grid(
     from pigskin_mastermind.services.projection_tuner import ProjectionTunerService
 
     # Build player list
-    query = db.query(DBPlayer).filter(
-        DBPlayer.position.in_(["QB", "RB", "WR", "TE"])
-    )
-    if req.position:
-        query = query.filter(DBPlayer.position == req.position.upper())
+    query = active_players_query(db, req.position)
     if req.player_ids:
         query = query.filter(DBPlayer.id.in_(req.player_ids))
     players = query.order_by(DBPlayer.position, DBPlayer.name).limit(req.limit).all()
@@ -281,12 +278,7 @@ async def get_players_for_tuner(
     db: Session = Depends(get_db),
 ):
     """Return players list, optionally filtered by position."""
-    query = db.query(DBPlayer).filter(
-        DBPlayer.position.in_(["QB", "RB", "WR", "TE"])
-    )
-    if position:
-        query = query.filter(DBPlayer.position == position.upper())
-    players = query.order_by(DBPlayer.name).all()
+    players = active_players_query(db, position).order_by(DBPlayer.name).all()
     return [
         {
             "id": p.id,

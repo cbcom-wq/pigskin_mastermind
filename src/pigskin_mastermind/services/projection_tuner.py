@@ -9,12 +9,13 @@ import math
 from typing import Dict, Any, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, func, or_
 
 from pigskin_mastermind.models.database import (
     DBPlayer,
     DBPlayerGameLog,
     DBPlayerSeasonStats,
+    DBWeeklyPlayerStats,
 )
 from pigskin_mastermind.models.projection_criteria import (
     PlayerProjectionCriteria,
@@ -418,6 +419,52 @@ def get_criteria_docs() -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Player eligibility filter
+# ---------------------------------------------------------------------------
+
+MIN_AVG_POINTS = 5.0  # players averaging below this are excluded from the tuner
+
+
+def active_players_query(db: Session, position: Optional[str] = None):
+    """Return a SQLAlchemy query of 'active' skill-position players.
+
+    A player is considered active if they average >= MIN_AVG_POINTS per game
+    across any data we have (season stats or weekly ESPN stats).  Players who
+    never registered meaningful fantasy production are hidden from the tuner to
+    keep results clean.
+    """
+    # Subquery A: players with season-stats average >= threshold
+    season_eligible = (
+        db.query(DBPlayerSeasonStats.player_id)
+        .filter(DBPlayerSeasonStats.fantasy_points_avg >= MIN_AVG_POINTS)
+        .scalar_subquery()
+    )
+
+    # Subquery B: players whose ESPN weekly actual_points avg >= threshold
+    # (only counting weeks where they actually played, i.e. actual_points > 0)
+    weekly_eligible = (
+        db.query(DBWeeklyPlayerStats.player_id)
+        .filter(DBWeeklyPlayerStats.actual_points > 0)
+        .group_by(DBWeeklyPlayerStats.player_id)
+        .having(func.avg(DBWeeklyPlayerStats.actual_points) >= MIN_AVG_POINTS)
+        .scalar_subquery()
+    )
+
+    query = db.query(DBPlayer).filter(
+        DBPlayer.position.in_(["QB", "RB", "WR", "TE"]),
+        or_(
+            DBPlayer.id.in_(season_eligible),
+            DBPlayer.id.in_(weekly_eligible),
+        ),
+    )
+
+    if position:
+        query = query.filter(DBPlayer.position == position.upper())
+
+    return query
+
+
+# ---------------------------------------------------------------------------
 # ProjectionTunerService
 # ---------------------------------------------------------------------------
 
@@ -514,10 +561,7 @@ class ProjectionTunerService:
         Returns:
             Dict with mae, rmse, player_results list, and summary stats.
         """
-        query = self.db.query(DBPlayer)
-        if position:
-            query = query.filter(DBPlayer.position == position.upper())
-        players = query.all()
+        players = active_players_query(self.db, position).all()
 
         results: List[Dict[str, Any]] = []
         for player in players:
@@ -551,10 +595,7 @@ class ProjectionTunerService:
         year: int,
     ) -> Dict[str, Any]:
         """Run yearly projections across players and compare to actuals."""
-        query = self.db.query(DBPlayer)
-        if position:
-            query = query.filter(DBPlayer.position == position.upper())
-        players = query.all()
+        players = active_players_query(self.db, position).all()
 
         results: List[Dict[str, Any]] = []
         for player in players:
