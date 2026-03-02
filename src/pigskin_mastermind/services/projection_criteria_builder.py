@@ -104,7 +104,7 @@ class ProjectionCriteriaBuilder:
                     def_rank = max(1, min(32, rank_val))
 
         # Team offense level from team scoring
-        team_offense = self._compute_team_offense_level(player.nfl_team, year)
+        team_offense = self._compute_team_offense_level(player.nfl_team, year, week=week)
 
         # Offensive momentum from recent team scoring
         momentum = self._compute_momentum(player.nfl_team, year, num_weeks=4)
@@ -447,37 +447,103 @@ class ProjectionCriteriaBuilder:
         )
         return game_log.opponent if game_log else None
 
-    def _compute_team_offense_level(self, nfl_team: str, year: int) -> float:
-        """Compute team offense strength as 0-100 blending points + yards ranks."""
+    def _compute_team_offense_level(
+        self, nfl_team: str, year: int, week: Optional[int] = None
+    ) -> float:
+        """Compute team offense strength as 0–100 based on points scored per game.
+
+        Year selection:
+          - week > 6 (or week=None for yearly callers that already pass prev_year):
+            use the supplied *year*.
+          - week <= 6: use *year - 1* (not enough current-season data yet).
+
+        Data source priority:
+          1. DBNFLTeamStats season aggregates (week=None) — populated by NFL sync.
+          2. Average of DBNFLTeamStats per-week rows — also from NFL sync.
+          3. Sum of DBWeeklyPlayerStats.actual_points per NFL team per week (ESPN) —
+             always available after ESPN sync; no year filter (week numbers repeat
+             across seasons but ESPN data is typically a single season).
+        """
+        data_year = (year - 1) if (week is not None and week <= 6) else year
+
+        def _pct_rank(values: list, team_val: float) -> float:
+            n = len(values)
+            if n == 0:
+                return 50.0
+            return (sum(1 for v in values if v < team_val) / n) * 100
+
+        # ── Source 1: NFL sync season aggregate rows ─────────────────────────
         team_stat = (
             self.db.query(DBNFLTeamStats)
-            .filter_by(nfl_team=nfl_team, year=year, week=None)
+            .filter_by(nfl_team=nfl_team, year=data_year, week=None)
             .first()
         )
-        if not team_stat:
-            return 50.0
-
-        all_teams = (
+        all_season = (
             self.db.query(DBNFLTeamStats)
-            .filter_by(year=year, week=None)
+            .filter_by(year=data_year, week=None)
             .all()
         )
-        if not all_teams:
+        if team_stat and all_season and team_stat.points_scored > 0:
+            pts_pct = _pct_rank([t.points_scored for t in all_season], team_stat.points_scored)
+            yds_pct = _pct_rank([t.total_yards for t in all_season], team_stat.total_yards)
+            return max(0.0, min(100.0, pts_pct * 0.5 + yds_pct * 0.5))
+
+        # ── Source 2: NFL sync per-week rows → compute per-team averages ─────
+        all_weekly = (
+            self.db.query(DBNFLTeamStats)
+            .filter(
+                DBNFLTeamStats.year == data_year,
+                DBNFLTeamStats.week.isnot(None),
+            )
+            .all()
+        )
+        if all_weekly:
+            team_pts_by_team: Dict[str, list] = defaultdict(list)
+            team_yds_by_team: Dict[str, list] = defaultdict(list)
+            for row in all_weekly:
+                team_pts_by_team[row.nfl_team].append(row.points_scored)
+                team_yds_by_team[row.nfl_team].append(row.total_yards)
+
+            if nfl_team in team_pts_by_team:
+                team_pts_avg = sum(team_pts_by_team[nfl_team]) / len(team_pts_by_team[nfl_team])
+                team_yds_avg = sum(team_yds_by_team[nfl_team]) / len(team_yds_by_team[nfl_team])
+                all_pts_avgs = [sum(v) / len(v) for v in team_pts_by_team.values() if v]
+                all_yds_avgs = [sum(v) / len(v) for v in team_yds_by_team.values() if v]
+                pts_pct = _pct_rank(all_pts_avgs, team_pts_avg)
+                yds_pct = _pct_rank(all_yds_avgs, team_yds_avg)
+                return max(0.0, min(100.0, pts_pct * 0.5 + yds_pct * 0.5))
+
+        # ── Source 3: ESPN weekly player stats — sum actual_points per NFL team ─
+        # Sum each skill-position player's actual_points grouped by (nfl_team, week).
+        # Average across weeks to get a mean team fantasy output per game.
+        espn_rows = (
+            self.db.query(
+                DBPlayer.nfl_team,
+                DBWeeklyPlayerStats.week,
+                func.sum(DBWeeklyPlayerStats.actual_points).label('team_pts'),
+            )
+            .join(DBPlayer, DBWeeklyPlayerStats.player_id == DBPlayer.id)
+            .filter(
+                DBWeeklyPlayerStats.actual_points > 0,
+                DBPlayer.position.in_(["QB", "RB", "WR", "TE"]),
+            )
+            .group_by(DBPlayer.nfl_team, DBWeeklyPlayerStats.week)
+            .all()
+        )
+        if not espn_rows:
             return 50.0
 
-        total = len(all_teams)
+        weekly_by_team: Dict[str, list] = defaultdict(list)
+        for row in espn_rows:
+            if row.nfl_team:
+                weekly_by_team[row.nfl_team].append(float(row.team_pts))
 
-        def _rank_pct(values, team_val):
-            rank = sum(1 for v in values if v < team_val)
-            return (rank / total) * 100 if total else 50.0
+        if nfl_team not in weekly_by_team:
+            return 50.0
 
-        yards_list = [t.total_yards for t in all_teams]
-        points_list = [t.points_scored for t in all_teams]
-
-        yards_pct = _rank_pct(yards_list, team_stat.total_yards)
-        points_pct = _rank_pct(points_list, team_stat.points_scored)
-
-        return max(0, min(100, points_pct * 0.5 + yards_pct * 0.5))
+        team_avg = sum(weekly_by_team[nfl_team]) / len(weekly_by_team[nfl_team])
+        all_avgs = [sum(v) / len(v) for v in weekly_by_team.values() if v]
+        return max(0.0, min(100.0, _pct_rank(all_avgs, team_avg)))
 
     def _compute_momentum(
         self, nfl_team: str, year: int, num_weeks: int = 4

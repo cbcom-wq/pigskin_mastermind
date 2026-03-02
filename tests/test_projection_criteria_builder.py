@@ -973,7 +973,7 @@ class TestBuilderUsesComputedTeamStats:
         db.commit()
 
         builder = ProjectionCriteriaBuilder(db)
-        criteria = builder.build_weekly_criteria(qb.id, week=5, year=2024)
+        criteria = builder.build_weekly_criteria(qb.id, week=7, year=2024)
 
         # DAL has more yards/points than NYG → team_offense_level > 50
         assert criteria.team_offense_level > 50.0
