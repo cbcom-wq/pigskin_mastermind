@@ -9,7 +9,7 @@ from sqlalchemy import desc, func
 
 from pigskin_mastermind.models.database import (
     DBPlayer, DBPlayerGameLog, DBPlayerSeasonStats, DBNFLTeamStats,
-    DBWeeklyTeamStats
+    DBWeeklyTeamStats, DBWeeklyPlayerStats
 )
 from pigskin_mastermind.models.projection_criteria import (
     WeeklyProjectionCriteria,
@@ -217,16 +217,31 @@ class ProjectionCriteriaBuilder:
 
         Used as a fallback when DBPlayerSeasonStats.fantasy_points_avg is 0.0,
         which happens when only the ESPN import has run (not the NFL data import).
+        Falls back further to DBWeeklyPlayerStats.actual_points if no game logs exist.
         """
         logs = (
             self.db.query(DBPlayerGameLog)
             .filter_by(player_id=player_id)
             .all()
         )
-        if not logs:
-            return 0.0
-        total = sum(g.fantasy_points for g in logs)
-        return total / len(logs)
+        if logs:
+            total = sum(g.fantasy_points for g in logs)
+            return total / len(logs)
+
+        # Tertiary fallback: use ESPN weekly player stats (actual_points from matchups)
+        weekly_stats = (
+            self.db.query(DBWeeklyPlayerStats)
+            .filter(
+                DBWeeklyPlayerStats.player_id == player_id,
+                DBWeeklyPlayerStats.actual_points > 0,
+            )
+            .all()
+        )
+        if weekly_stats:
+            total = sum(w.actual_points for w in weekly_stats)
+            return total / len(weekly_stats)
+
+        return 0.0
 
     def _compute_trend_score(
         self, player_id: int, year: int, num_weeks: int = 4
@@ -240,7 +255,43 @@ class ProjectionCriteriaBuilder:
             .all()
         )
         if not recent_logs:
-            return 0.0
+            # Fall back to DBWeeklyPlayerStats (ESPN matchup data)
+            recent_weekly = (
+                self.db.query(DBWeeklyPlayerStats)
+                .filter(
+                    DBWeeklyPlayerStats.player_id == player_id,
+                    DBWeeklyPlayerStats.actual_points > 0,
+                )
+                .order_by(desc(DBWeeklyPlayerStats.week))
+                .limit(num_weeks)
+                .all()
+            )
+            if not recent_weekly:
+                return 0.0
+
+            weights = list(range(len(recent_weekly), 0, -1))
+            total_weight = sum(weights)
+            recent_avg = sum(
+                w * s.actual_points for w, s in zip(weights, recent_weekly)
+            ) / total_weight
+
+            all_weekly = (
+                self.db.query(DBWeeklyPlayerStats)
+                .filter(
+                    DBWeeklyPlayerStats.player_id == player_id,
+                    DBWeeklyPlayerStats.actual_points > 0,
+                )
+                .all()
+            )
+            season_avg = (
+                sum(s.actual_points for s in all_weekly) / len(all_weekly)
+                if all_weekly else recent_avg
+            )
+            if season_avg == 0:
+                return 0.0
+            confidence = len(recent_weekly) / num_weeks
+            raw_deviation = ((recent_avg - season_avg) / season_avg) * 100
+            return max(-100, min(100, max(-100, min(100, raw_deviation)) * confidence))
 
         # Linear recency weights: most recent gets highest weight
         weights = list(range(len(recent_logs), 0, -1))  # e.g. [4,3,2,1]

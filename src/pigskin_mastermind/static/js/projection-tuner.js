@@ -402,6 +402,131 @@ const TunerApp = (() => {
         container.innerHTML = html;
     }
 
+    // ── Diagnose Data ────────────────────────────────────────────────
+
+    async function runDiagnose() {
+        if (mode !== 'single') {
+            alert('Diagnostics are only available for single-player mode.');
+            return;
+        }
+        const playerId = parseInt(document.getElementById('sim-player').value);
+        const year = parseInt(document.getElementById('sim-year').value);
+        const btn = document.getElementById('diag-btn');
+        btn.disabled = true;
+        btn.textContent = '⏳ Diagnosing…';
+
+        try {
+            const resp = await fetch(
+                `/api/projection-tuner/diagnose/${playerId}?year=${year}`
+            );
+            const data = await resp.json();
+            renderDiagnostics(data);
+        } catch (err) {
+            document.getElementById('results-container').innerHTML = `
+                <div class="bg-red-50 border border-red-200 rounded-xl p-4">
+                    <p class="text-sm text-red-700 font-medium">Diagnostic error: ${err.message}</p>
+                </div>`;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '🔍 Diagnose';
+        }
+    }
+
+    function renderDiagnostics(data) {
+        const container = document.getElementById('results-container');
+        if (data.error) {
+            container.innerHTML = `<div class="bg-amber-50 border border-amber-200 rounded-xl p-4"><p class="text-sm text-amber-700">${data.error}</p></div>`;
+            return;
+        }
+
+        const { player, year, checks, criteria_sources, warnings } = data;
+
+        const statusBadge = (s) => {
+            if (s === 'ok') return '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-field-100 text-field-700">✓ OK</span>';
+            if (s === 'fallback') return '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700">⚠ Fallback</span>';
+            if (s === 'partial') return '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-700">~ Partial</span>';
+            return '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700">✗ Missing</span>';
+        };
+
+        let html = `<div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+            <div class="p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+                <h4 class="text-sm font-bold text-slate-700">🔍 Data Diagnostic — ${player.name} (${year})</h4>
+                <span class="text-xs text-slate-500">${player.position} · ${player.nfl_team}</span>
+            </div>`;
+
+        // Warnings
+        if (warnings && warnings.length) {
+            html += `<div class="p-4 bg-red-50 border-b border-red-100 space-y-1">`;
+            for (const w of warnings) {
+                html += `<p class="text-xs text-red-700 font-medium">${w}</p>`;
+            }
+            html += `</div>`;
+        }
+
+        html += `<div class="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">`;
+
+        // Data source checks
+        const {season_stats, game_logs, weekly_player_stats, nfl_team_stats, player_metadata} = checks;
+
+        html += `<div>
+            <h5 class="text-xs font-bold text-slate-600 uppercase tracking-wider mb-2">Data Sources</h5>
+            <div class="space-y-2 text-xs">
+                <div class="flex items-center justify-between p-2 rounded bg-slate-50">
+                    <span class="font-semibold text-slate-700">Season Stats (${year})</span>
+                    ${season_stats.found
+                        ? `<span class="text-field-600 font-semibold">✓ Found — ${season_stats.games_played} games, avg ${season_stats.fantasy_points_avg} pts</span>`
+                        : `<span class="text-red-600 font-semibold">✗ Not found</span>`}
+                </div>
+                <div class="p-2 rounded bg-slate-50">
+                    <div class="flex items-center justify-between">
+                        <span class="font-semibold text-slate-700">Game Logs (${year})</span>
+                        ${game_logs.count > 0
+                            ? `<span class="text-field-600 font-semibold">✓ ${game_logs.count} games, avg ${game_logs.fantasy_points_avg} pts</span>`
+                            : `<span class="text-red-600 font-semibold">✗ No game logs</span>`}
+                    </div>
+                    ${game_logs.count > 0 ? `<p class="text-slate-400 mt-1">Weeks: ${game_logs.weeks.join(', ')}</p>` : ''}
+                </div>
+                <div class="p-2 rounded bg-slate-50">
+                    <div class="flex items-center justify-between">
+                        <span class="font-semibold text-slate-700">Weekly ESPN Stats</span>
+                        ${weekly_player_stats.count > 0
+                            ? `<span class="text-field-600 font-semibold">✓ ${weekly_player_stats.count} weeks, avg ${weekly_player_stats.actual_points_avg} pts</span>`
+                            : `<span class="text-amber-600 font-semibold">⚠ No weekly stats</span>`}
+                    </div>
+                    ${weekly_player_stats.count > 0 ? `<p class="text-slate-400 mt-1">Weeks with data: ${weekly_player_stats.weeks_with_data.join(', ')}</p>` : ''}
+                </div>
+                <div class="flex items-center justify-between p-2 rounded bg-slate-50">
+                    <span class="font-semibold text-slate-700">NFL Team Stats (${player.nfl_team})</span>
+                    ${nfl_team_stats.found
+                        ? `<span class="text-field-600 font-semibold">✓ ${nfl_team_stats.points_scored} pts, ${nfl_team_stats.total_yards} yds</span>`
+                        : `<span class="text-red-600 font-semibold">✗ Not found</span>`}
+                </div>
+                <div class="flex items-center justify-between p-2 rounded bg-slate-50">
+                    <span class="font-semibold text-slate-700">Player Metadata</span>
+                    <span class="text-slate-600">Age: ${player_metadata.age}, Status: ${player_metadata.injury_status}</span>
+                </div>
+            </div>
+        </div>`;
+
+        // Criteria sources
+        html += `<div>
+            <h5 class="text-xs font-bold text-slate-600 uppercase tracking-wider mb-2">Criteria Data Sources</h5>
+            <div class="space-y-1.5 text-xs">`;
+        for (const [key, info] of Object.entries(criteria_sources)) {
+            html += `<div class="flex items-center justify-between p-2 rounded bg-slate-50">
+                <span class="text-slate-600 font-medium">${key.replace(/_/g, ' ')}</span>
+                <div class="text-right">
+                    ${statusBadge(info.status)}
+                    <p class="text-[10px] text-slate-400 mt-0.5">${info.source}</p>
+                </div>
+            </div>`;
+        }
+        html += `</div></div>`;
+
+        html += `</div></div>`;
+        container.innerHTML = html;
+    }
+
     // ── Type change handler ──────────────────────────────────────────
 
     document.addEventListener('DOMContentLoaded', () => {
@@ -428,5 +553,6 @@ const TunerApp = (() => {
         setMode,
         filterPlayers,
         runSimulation,
+        runDiagnose,
     };
 })();

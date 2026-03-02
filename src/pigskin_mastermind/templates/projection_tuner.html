@@ -190,15 +190,20 @@
                         </div>
                     </div>
 
-                    <button id="sim-run-btn" onclick="TunerApp.runSimulation()" class="w-full px-4 py-2.5 bg-pigskin-500 hover:bg-pigskin-600 text-white text-sm font-semibold rounded-lg transition-colors flex items-center justify-center gap-2">
-                        <span id="sim-spinner" class="hidden">
-                            <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
-                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                            </svg>
-                        </span>
-                        Run Simulation
-                    </button>
+                    <div class="flex gap-2">
+                        <button id="sim-run-btn" onclick="TunerApp.runSimulation()" class="flex-1 px-4 py-2.5 bg-pigskin-500 hover:bg-pigskin-600 text-white text-sm font-semibold rounded-lg transition-colors flex items-center justify-center gap-2">
+                            <span id="sim-spinner" class="hidden">
+                                <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                </svg>
+                            </span>
+                            Run Simulation
+                        </button>
+                        <button id="diag-btn" onclick="TunerApp.runDiagnose()" title="Diagnose data availability" class="px-3 py-2.5 border border-slate-300 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors text-sm font-semibold">
+                            🔍 Diagnose
+                        </button>
+                    </div>
                 </div>
             </div>
 
