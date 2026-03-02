@@ -543,7 +543,159 @@ const TunerApp = (() => {
         }
     });
 
-    // ── Public API ───────────────────────────────────────────────────
+    // ── Criteria Grid ────────────────────────────────────────────────
+
+    let gridData = null;
+    let gridSortCol = null;
+    let gridSortAsc = true;
+
+    const INVERTED_COLS = new Set(['injury_risk_score', 'opposing_defense_vs_position_rank']);
+
+    function normalizeVal(val, s) {
+        if (s.max === s.min) return 0.5;
+        return Math.max(0, Math.min(1, (val - s.min) / (s.max - s.min)));
+    }
+
+    function heatBg(norm, inverted) {
+        const t = inverted ? 1 - norm : norm;
+        return `hsl(${Math.round(t * 120)},60%,92%)`;
+    }
+
+    function fmtVal(v) {
+        if (v === null || v === undefined) return '<span class="text-slate-300">—</span>';
+        const n = parseFloat(v);
+        if (isNaN(n)) return String(v);
+        const cls = n === 0 ? ' class="text-slate-300 font-medium"' : '';
+        return `<span${cls}>${n.toFixed(2)}</span>`;
+    }
+
+    function loadGrid() {
+        const position = document.getElementById('grid-position').value;
+        const year = parseInt(document.getElementById('grid-year').value, 10);
+        const type = document.getElementById('grid-type').value;
+        const weekEl = document.getElementById('grid-week');
+        const week = type === 'weekly' && weekEl ? parseInt(weekEl.value, 10) : null;
+
+        const btn = document.getElementById('grid-load-btn');
+        const spinner = document.getElementById('grid-spinner');
+        const container = document.getElementById('grid-container');
+
+        btn.disabled = true;
+        spinner.classList.remove('hidden');
+        container.innerHTML = '<p class="text-xs text-slate-400 italic p-4">Loading…</p>';
+
+        const body = { year, projection_type: type };
+        if (position) body.position = position;
+        if (week !== null) body.week = week;
+
+        fetch('/api/projection-tuner/criteria-grid', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        })
+        .then(r => r.json())
+        .then(data => {
+            gridData = data;
+            gridSortCol = null;
+            renderGrid(data);
+        })
+        .catch(err => {
+            container.innerHTML = `<p class="text-xs text-red-500 p-4">Error: ${err}</p>`;
+        })
+        .finally(() => {
+            btn.disabled = false;
+            spinner.classList.add('hidden');
+        });
+    }
+
+    function renderGrid(data) {
+        const container = document.getElementById('grid-container');
+        if (!data || !data.rows || data.rows.length === 0) {
+            container.innerHTML = '<p class="text-xs text-slate-400 italic p-4">No players found.</p>';
+            return;
+        }
+
+        const rows = [...data.rows];
+        if (gridSortCol) {
+            rows.sort((a, b) => {
+                let va, vb;
+                if (['player_name', 'position', 'nfl_team'].includes(gridSortCol)) {
+                    va = a[gridSortCol] || ''; vb = b[gridSortCol] || '';
+                    return gridSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+                }
+                if (gridSortCol === 'projected') { va = a.projected ?? -Infinity; vb = b.projected ?? -Infinity; }
+                else if (gridSortCol === 'actual') { va = a.actual ?? -Infinity; vb = b.actual ?? -Infinity; }
+                else { va = a.criteria[gridSortCol] ?? -Infinity; vb = b.criteria[gridSortCol] ?? -Infinity; }
+                return gridSortAsc ? va - vb : vb - va;
+            });
+        }
+
+        const cols = data.criteria_cols;
+        const stats = data.col_stats;
+        const colLabel = c => c.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+        const sortIcon = col => {
+            if (gridSortCol !== col) return '<span class="text-slate-300 ml-1">⇅</span>';
+            return gridSortAsc ? '<span class="text-pigskin-600 ml-1">↑</span>' : '<span class="text-pigskin-600 ml-1">↓</span>';
+        };
+
+        const thCls = 'sticky top-0 bg-white px-3 py-2 text-left text-[10px] font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap border-b border-r border-slate-200 cursor-pointer hover:bg-slate-50 select-none';
+        const th1Cls = 'sticky top-0 left-0 z-20 bg-white px-3 py-2 text-left text-[10px] font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap border-b border-r border-slate-200 cursor-pointer hover:bg-slate-50 select-none';
+        const tdCls = 'px-3 py-1.5 border-b border-r border-slate-100 whitespace-nowrap text-right';
+        const td1Cls = 'sticky left-0 bg-white px-3 py-1.5 border-b border-r border-slate-200 whitespace-nowrap font-medium text-slate-700';
+
+        let html = `<table class="min-w-full text-xs border-collapse"><thead><tr>
+            <th class="${th1Cls}" onclick="TunerApp.sortGrid('player_name')">Player ${sortIcon('player_name')}</th>
+            <th class="${thCls}" onclick="TunerApp.sortGrid('position')">Pos ${sortIcon('position')}</th>
+            <th class="${thCls}" onclick="TunerApp.sortGrid('nfl_team')">Team ${sortIcon('nfl_team')}</th>
+            ${cols.map(c => `<th class="${thCls}" onclick="TunerApp.sortGrid('${c}')" title="${c}">${colLabel(c)} ${sortIcon(c)}</th>`).join('')}
+            <th class="${thCls}" onclick="TunerApp.sortGrid('projected')">Projected ${sortIcon('projected')}</th>
+            <th class="${thCls}" onclick="TunerApp.sortGrid('actual')">Actual ${sortIcon('actual')}</th>
+        </tr></thead><tbody>`;
+
+        for (const row of rows) {
+            html += `<tr class="hover:bg-slate-50/50 transition-colors">
+                <td class="${td1Cls}">${row.player_name}</td>
+                <td class="${tdCls} text-center">${row.position}</td>
+                <td class="${tdCls} text-center text-slate-500">${row.nfl_team || '—'}</td>`;
+            for (const col of cols) {
+                const val = row.criteria[col];
+                const s = stats[col];
+                let bg = '';
+                if (val !== null && val !== undefined && s && s.max !== s.min) {
+                    bg = ` style="background:${heatBg(normalizeVal(val, s), INVERTED_COLS.has(col))}"`;
+                }
+                html += `<td class="${tdCls}"${bg}>${fmtVal(val)}</td>`;
+            }
+            html += `<td class="${tdCls} font-semibold text-slate-700">${fmtVal(row.projected)}</td>
+                <td class="${tdCls} text-slate-500">${fmtVal(row.actual)}</td></tr>`;
+        }
+
+        html += '</tbody></table>';
+        const note = data.truncated
+            ? `<p class="text-[10px] text-amber-600 px-3 py-1 border-t border-slate-100">Showing first ${data.player_count} players — narrow by position.</p>`
+            : `<p class="text-[10px] text-slate-400 px-3 py-1 border-t border-slate-100">${data.player_count} players loaded.</p>`;
+        container.innerHTML = html + note;
+    }
+
+    function sortGrid(col) {
+        if (gridSortCol === col) { gridSortAsc = !gridSortAsc; }
+        else { gridSortCol = col; gridSortAsc = ['player_name', 'position', 'nfl_team'].includes(col); }
+        if (gridData) renderGrid(gridData);
+    }
+
+    // ── Grid type visibility ──────────────────────────────────────────
+
+    function initGridTypeToggle() {
+        const gridType = document.getElementById('grid-type');
+        if (!gridType) return;
+        gridType.addEventListener('change', () => {
+            const wrap = document.getElementById('grid-week-wrap');
+            if (wrap) wrap.style.display = gridType.value === 'yearly' ? 'none' : '';
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', initGridTypeToggle);
+// ── Public API ──────────────────────────────────────────────────────── ───────────────────────────────────────────────────
 
     return {
         syncInput,
@@ -554,5 +706,7 @@ const TunerApp = (() => {
         filterPlayers,
         runSimulation,
         runDiagnose,
+        loadGrid,
+        sortGrid,
     };
 })();

@@ -39,6 +39,15 @@ class SimulateBulkRequest(BaseModel):
     coefficients: Optional[Dict[str, float]] = None
 
 
+class CriteriaGridRequest(BaseModel):
+    position: Optional[str] = None
+    year: int
+    week: Optional[int] = None
+    projection_type: str = "weekly"
+    player_ids: Optional[List[int]] = None  # None = all matching players
+    limit: int = 50
+
+
 # ── Page route ────────────────────────────────────────────────────────────
 
 @router.get("/projection-tuner")
@@ -162,6 +171,107 @@ async def simulate_bulk(
         "year": req.year,
         "week": req.week,
         "projection_type": req.projection_type,
+    }
+
+
+@router.post("/api/projection-tuner/criteria-grid")
+async def criteria_grid(
+    req: CriteriaGridRequest,
+    db: Session = Depends(get_db),
+):
+    """Return a criteria spreadsheet for multiple players.
+
+    Each row is a player; columns are the criteria fields plus projected/actual points.
+    Used to assess whether auto-derived criteria values look sensible.
+    """
+    from pigskin_mastermind.services.projection_tuner import ProjectionTunerService
+
+    # Build player list
+    query = db.query(DBPlayer).filter(
+        DBPlayer.position.in_(["QB", "RB", "WR", "TE"])
+    )
+    if req.position:
+        query = query.filter(DBPlayer.position == req.position.upper())
+    if req.player_ids:
+        query = query.filter(DBPlayer.id.in_(req.player_ids))
+    players = query.order_by(DBPlayer.position, DBPlayer.name).limit(req.limit).all()
+
+    service = ProjectionTunerService(db)
+    rows = []
+    for player in players:
+        try:
+            if req.projection_type == "yearly":
+                result = service.project_yearly(player.id, req.year)
+            else:
+                if req.week is None:
+                    # No week specified — build criteria directly without projection
+                    from pigskin_mastermind.services.projection_criteria_builder import (
+                        ProjectionCriteriaBuilder,
+                    )
+                    builder = ProjectionCriteriaBuilder(db)
+                    # Use week=1 as a placeholder for criteria derivation
+                    criteria = builder.build_weekly_criteria(player.id, 1, req.year)
+                    result = {
+                        "criteria": service._criteria_to_dict(criteria),
+                        "total": None,
+                        "actual_points": None,
+                    }
+                else:
+                    result = service.project_weekly(player.id, req.week, req.year)
+        except (ValueError, Exception):
+            continue
+
+        rows.append({
+            "player_id": player.id,
+            "player_name": player.name,
+            "position": player.position,
+            "nfl_team": player.nfl_team,
+            "projected": result.get("total"),
+            "actual": result.get("actual_points"),
+            "criteria": result.get("criteria", {}),
+        })
+
+    # Determine column order: base fields first, then type-specific
+    base_cols = [
+        "historical_average_points",
+        "player_skill_level",
+        "team_offense_level",
+        "opponent_defense_level",
+        "positional_touch_percentage",
+        "recent_trend_score",
+        "fantasy_points_per_touch",
+        "injury_risk_score",
+    ]
+    weekly_cols = [
+        "opposing_defense_vs_position_rank",
+        "offensive_momentum_score",
+        "weather_impact_score",
+    ]
+    yearly_cols = [
+        "age_deviation_from_optimum",
+        "coaching_stability_score",
+    ]
+    extra_cols = weekly_cols if req.projection_type == "weekly" else yearly_cols
+    criteria_cols = base_cols + extra_cols
+
+    # Compute per-column min/max for heat-map normalization
+    col_stats: Dict[str, Any] = {}
+    for col in criteria_cols:
+        vals = [r["criteria"].get(col) for r in rows if r["criteria"].get(col) is not None]
+        if vals:
+            col_stats[col] = {"min": min(vals), "max": max(vals)}
+        else:
+            col_stats[col] = {"min": 0, "max": 0}
+
+    return {
+        "rows": rows,
+        "criteria_cols": criteria_cols,
+        "col_stats": col_stats,
+        "projection_type": req.projection_type,
+        "year": req.year,
+        "week": req.week,
+        "player_count": len(rows),
+        "truncated": len(players) == req.limit,
     }
 
 
