@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+from dataclasses import asdict
 
 import pytest
 from sqlalchemy import create_engine
@@ -404,8 +405,7 @@ class TestResultSerialisation:
             sample_count=100,
             per_position_mae={"QB": 2.1, "RB": 4.9},
         )
-        d = {"coefficients": vr.coefficients, "mae": vr.mae, "rmse": vr.rmse,
-             "sample_count": vr.sample_count, "per_position_mae": vr.per_position_mae}
+        d = asdict(vr)
         rebuilt = VariationResult(**d)
         assert rebuilt.mae == 3.5
         assert rebuilt.per_position_mae["QB"] == 2.1

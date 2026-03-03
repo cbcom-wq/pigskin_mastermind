@@ -347,7 +347,7 @@ class ProjectionAlgorithmTuner:
                     "default": round(old_val, 6),
                     "tuned": round(new_val, 6),
                     "change_pct": round(
-                        ((new_val - old_val) / abs(old_val) * 100) if old_val else 0.0,
+                        ((new_val - old_val) / abs(old_val) * 100) if abs(old_val) > 1e-9 else 0.0,
                         2,
                     ),
                 }
