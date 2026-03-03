@@ -22,6 +22,7 @@ from pigskin_mastermind.models.database import (
 from pigskin_mastermind.models.projection_criteria import WeeklyProjectionCriteria
 from pigskin_mastermind.services.projection_algorithm_tuner import (
     ProjectionAlgorithmTuner,
+    SampleComparisonRow,
     TuningRunResult,
     VariationResult,
     _calculate_weekly_projection,
@@ -320,6 +321,33 @@ class TestTunerRun:
         result = tuner.run(year=2024, max_variations=50)
         assert result.best.mae <= result.default_result.mae
 
+    def test_run_includes_sample_comparisons_and_filters(self, populated_db):
+        tuner = ProjectionAlgorithmTuner(populated_db)
+        result = tuner.run(
+            year=2024,
+            weeks=[10, 11],
+            positions=["QB"],
+            max_variations=5,
+        )
+
+        assert result.run_filters["weeks"] == [10, 11]
+        assert result.run_filters["positions"] == ["QB"]
+        assert result.run_filters["simulated_weeks"] == [10, 11]
+        assert result.run_filters["simulated_positions"] == ["QB"]
+        assert len(result.sample_comparisons) == result.sample_count
+
+        sample = result.sample_comparisons[0]
+        assert isinstance(sample, SampleComparisonRow)
+        assert sample.player_id in result.run_filters["simulated_player_ids"]
+        assert sample.week in result.run_filters["simulated_weeks"]
+        assert sample.position in result.run_filters["simulated_positions"]
+        assert sample.default_error == pytest.approx(
+            abs(sample.default_projected_points - sample.actual_points), abs=1e-3
+        )
+        assert sample.tuned_error == pytest.approx(
+            abs(sample.tuned_projected_points - sample.actual_points), abs=1e-3
+        )
+
 
 # ---------------------------------------------------------------------------
 # Persistence tests
@@ -342,6 +370,51 @@ class TestTunerPersistence:
             assert len(loaded) == 1
             assert loaded[0].year == 2024
             assert loaded[0].best.mae == result.best.mae
+            assert loaded[0].run_filters == result.run_filters
+            assert len(loaded[0].sample_comparisons) == result.sample_count
+            loaded_sample = loaded[0].sample_comparisons[0]
+            original_sample = result.sample_comparisons[0]
+            assert loaded_sample.player_id == original_sample.player_id
+            assert loaded_sample.week == original_sample.week
+            assert loaded_sample.actual_points == original_sample.actual_points
+            assert (
+                loaded_sample.default_projected_points
+                == original_sample.default_projected_points
+            )
+            assert (
+                loaded_sample.tuned_projected_points
+                == original_sample.tuned_projected_points
+            )
+
+    def test_load_legacy_result_without_new_fields(self, db):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tuner = ProjectionAlgorithmTuner(db, results_dir=tmpdir)
+            variation = VariationResult(
+                coefficients=AlgorithmCoefficients().to_dict(),
+                mae=1.0,
+                rmse=1.5,
+                sample_count=4,
+                per_position_mae={"QB": 1.0},
+            )
+            payload = {
+                "run_id": "legacy_1",
+                "timestamp": "2024-01-01T00:00:00+00:00",
+                "year": 2024,
+                "weeks": [1],
+                "player_count": 1,
+                "sample_count": 4,
+                "variations_tested": 1,
+                "best": asdict(variation),
+                "top_variations": [asdict(variation)],
+                "default_result": asdict(variation),
+            }
+            with open(os.path.join(tmpdir, "tuning_legacy_1.json"), "w") as f:
+                json.dump(payload, f)
+
+            loaded = tuner.load_results()
+            assert len(loaded) == 1
+            assert loaded[0].run_filters == {}
+            assert loaded[0].sample_comparisons == []
 
     def test_load_empty_dir(self, db):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -419,3 +492,5 @@ class TestResultSerialisation:
         assert rebuilt.year == result.year
         assert rebuilt.best.mae == result.best.mae
         assert rebuilt.sample_count == result.sample_count
+        assert rebuilt.run_filters == result.run_filters
+        assert len(rebuilt.sample_comparisons) == len(result.sample_comparisons)

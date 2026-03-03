@@ -8,6 +8,7 @@
 const TunerApp = (() => {
     let mode = 'single'; // 'single' | 'bulk'
     let debounceTimer = null;
+    let algorithmPollTimer = null;
 
     // ── Slider / Input Sync ──────────────────────────────────────────
 
@@ -683,6 +684,355 @@ const TunerApp = (() => {
         if (gridData) renderGrid(gridData);
     }
 
+    // ── Algorithm Tuning (background runs) ───────────────────────────
+
+    function numFmt(v, digits = 2) {
+        if (v === null || v === undefined) return '—';
+        const n = Number(v);
+        return Number.isFinite(n) ? n.toFixed(digits) : '—';
+    }
+
+    function renderAlgorithmStatus(payload, tone = 'info') {
+        const el = document.getElementById('alg-job-status');
+        if (!el) return;
+        const styles = {
+            info: 'text-slate-600',
+            success: 'text-field-700',
+            error: 'text-red-600',
+        };
+        const cls = styles[tone] || styles.info;
+        const pct = payload && payload.progress_pct !== undefined ? ` (${payload.progress_pct}%)` : '';
+        const msg = payload && payload.message ? payload.message : '';
+        const status = payload && payload.status ? payload.status : 'idle';
+        const runId = payload && payload.run_id ? ` · run ${payload.run_id}` : '';
+        el.className = `text-xs ${cls}`;
+        el.textContent = `${status}${pct}${msg ? ` · ${msg}` : ''}${runId}`;
+    }
+
+    function updateAlgorithmRunDetailLink(runId) {
+        const link = document.getElementById('alg-run-detail-link');
+        if (!link) return;
+        if (!runId) {
+            link.href = '#';
+            link.className = 'mt-2 inline-flex items-center text-xs font-semibold text-slate-400 pointer-events-none';
+            return;
+        }
+        link.href = `/projection-tuner/runs/${encodeURIComponent(runId)}`;
+        link.className = 'mt-2 inline-flex items-center text-xs font-semibold text-pigskin-600 hover:text-pigskin-700';
+    }
+
+    function algorithmRequestBody() {
+        const year = parseInt(document.getElementById('alg-year').value, 10);
+        const weeksRaw = (document.getElementById('alg-weeks').value || '').trim();
+        const maxVariations = parseInt(document.getElementById('alg-max-variations').value, 10);
+        const topN = parseInt(document.getElementById('alg-top-n').value, 10);
+        const posSelect = document.getElementById('alg-positions');
+        const positions = posSelect
+            ? Array.from(posSelect.selectedOptions).map(o => o.value).filter(Boolean)
+            : [];
+
+        const body = {
+            year: year,
+            max_variations: maxVariations,
+            top_n: topN,
+        };
+        if (positions.length) body.positions = positions;
+        if (weeksRaw) {
+            const parsedWeeks = weeksRaw
+                .split(',')
+                .map(w => parseInt(w.trim(), 10))
+                .filter(w => Number.isFinite(w));
+            if (parsedWeeks.length) body.weeks = parsedWeeks;
+        }
+        return body;
+    }
+
+    async function runAlgorithmTuning() {
+        const btn = document.getElementById('alg-run-btn');
+        if (!btn) return;
+        btn.disabled = true;
+        renderAlgorithmStatus({ status: 'submitting', progress_pct: 0, message: 'Submitting run request' });
+
+        try {
+            const resp = await fetch('/api/projection-tuner/algorithm/run', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(algorithmRequestBody()),
+            });
+            const data = await resp.json();
+            if (data.error) {
+                renderAlgorithmStatus({ status: 'error', progress_pct: 0, message: data.error }, 'error');
+                btn.disabled = false;
+                return;
+            }
+            renderAlgorithmStatus(data, 'info');
+            await pollAlgorithmJob(data.job_id);
+        } catch (err) {
+            renderAlgorithmStatus({ status: 'error', progress_pct: 0, message: err.message }, 'error');
+            btn.disabled = false;
+        }
+    }
+
+    async function pollAlgorithmJob(jobId) {
+        if (!jobId) return;
+        if (algorithmPollTimer) {
+            clearInterval(algorithmPollTimer);
+            algorithmPollTimer = null;
+        }
+
+        const runBtn = document.getElementById('alg-run-btn');
+        const pollOnce = async () => {
+            try {
+                const resp = await fetch(`/api/projection-tuner/algorithm/jobs/${encodeURIComponent(jobId)}`);
+                const data = await resp.json();
+                if (data.error) {
+                    renderAlgorithmStatus({ status: 'error', progress_pct: 0, message: data.error }, 'error');
+                    if (runBtn) runBtn.disabled = false;
+                    if (algorithmPollTimer) {
+                        clearInterval(algorithmPollTimer);
+                        algorithmPollTimer = null;
+                    }
+                    return;
+                }
+
+                const tone = data.status === 'completed'
+                    ? 'success'
+                    : data.status === 'failed'
+                        ? 'error'
+                        : 'info';
+                renderAlgorithmStatus(data, tone);
+
+                if (data.status === 'completed' || data.status === 'failed') {
+                    if (algorithmPollTimer) {
+                        clearInterval(algorithmPollTimer);
+                        algorithmPollTimer = null;
+                    }
+                    if (runBtn) runBtn.disabled = false;
+
+                    if (data.status === 'completed') {
+                        renderAlgorithmResult(data);
+                        await loadAlgorithmHistory(data.run_id || null);
+                    }
+                }
+            } catch (err) {
+                renderAlgorithmStatus({ status: 'error', progress_pct: 0, message: err.message }, 'error');
+                if (runBtn) runBtn.disabled = false;
+                if (algorithmPollTimer) {
+                    clearInterval(algorithmPollTimer);
+                    algorithmPollTimer = null;
+                }
+            }
+        };
+
+        await pollOnce();
+        algorithmPollTimer = setInterval(() => {
+            pollOnce();
+        }, 2000);
+    }
+
+    function renderAlgorithmResult(data) {
+        const container = document.getElementById('alg-results');
+        if (!container) return;
+        if (!data || data.error) {
+            container.innerHTML = `<p class="text-xs text-red-600">${data && data.error ? data.error : 'Unable to render run output.'}</p>`;
+            return;
+        }
+
+        const summary = data.summary || {};
+        const visuals = data.visuals || {};
+        const kpi = visuals.kpis || {};
+        const topVariations = visuals.top_variations || [];
+        const perPos = visuals.per_position_comparison || [];
+        const coefficientChanges = visuals.coefficient_changes || [];
+        const runDetailLink = summary.run_id
+            ? `<a href="/projection-tuner/runs/${encodeURIComponent(summary.run_id)}" class="text-xs font-semibold text-pigskin-600 hover:text-pigskin-700">View detail page</a>`
+            : '';
+
+        let html = `<div class="space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                    <p class="text-xs text-slate-500 uppercase tracking-wider font-semibold">Run ${summary.run_id || '—'}</p>
+                    <p class="text-xs text-slate-400">Year ${summary.year || '—'} · ${summary.sample_count || 0} samples · ${summary.player_count || 0} players</p>
+                </div>
+                <div class="flex items-center gap-3">
+                    ${runDetailLink}
+                    <p class="text-xs text-slate-400">${summary.timestamp || ''}</p>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+                <div class="bg-white border border-slate-200 rounded-lg p-2 text-center">
+                    <p class="text-[10px] uppercase text-slate-400">Default MAE</p>
+                    <p class="text-sm font-bold text-slate-700">${numFmt(kpi.default_mae, 3)}</p>
+                </div>
+                <div class="bg-white border border-pigskin-200 rounded-lg p-2 text-center">
+                    <p class="text-[10px] uppercase text-pigskin-500">Tuned MAE</p>
+                    <p class="text-sm font-bold text-pigskin-700">${numFmt(kpi.tuned_mae, 3)}</p>
+                </div>
+                <div class="bg-white border border-field-200 rounded-lg p-2 text-center">
+                    <p class="text-[10px] uppercase text-field-500">MAE Reduction</p>
+                    <p class="text-sm font-bold text-field-700">${numFmt(kpi.mae_reduction, 3)}</p>
+                </div>
+                <div class="bg-white border border-slate-200 rounded-lg p-2 text-center">
+                    <p class="text-[10px] uppercase text-slate-400">Improvement %</p>
+                    <p class="text-sm font-bold text-slate-700">${numFmt(kpi.mae_improvement_pct, 2)}%</p>
+                </div>
+                <div class="bg-white border border-slate-200 rounded-lg p-2 text-center">
+                    <p class="text-[10px] uppercase text-slate-400">Variations Tested</p>
+                    <p class="text-sm font-bold text-slate-700">${summary.variations_tested || kpi.variations_tested || 0}</p>
+                </div>
+            </div>`;
+
+        if (perPos.length) {
+            html += `<div>
+                <h5 class="text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">Per-position MAE</h5>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-xs bg-white border border-slate-200 rounded-lg overflow-hidden">
+                        <thead class="bg-slate-50 text-slate-500 uppercase tracking-wider">
+                            <tr>
+                                <th class="text-left px-2 py-1.5">Pos</th>
+                                <th class="text-right px-2 py-1.5">Default</th>
+                                <th class="text-right px-2 py-1.5">Tuned</th>
+                                <th class="text-right px-2 py-1.5">Reduction</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100">
+                            ${perPos.map(r => `
+                                <tr>
+                                    <td class="px-2 py-1.5 font-semibold text-slate-700">${r.position}</td>
+                                    <td class="px-2 py-1.5 text-right">${numFmt(r.default_mae, 3)}</td>
+                                    <td class="px-2 py-1.5 text-right">${numFmt(r.tuned_mae, 3)}</td>
+                                    <td class="px-2 py-1.5 text-right font-semibold ${r.mae_reduction >= 0 ? 'text-field-700' : 'text-red-600'}">${numFmt(r.mae_reduction, 3)}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>`;
+        }
+
+        if (topVariations.length) {
+            html += `<div>
+                <h5 class="text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">Top Variations</h5>
+                <div class="overflow-x-auto max-h-56">
+                    <table class="w-full text-xs bg-white border border-slate-200 rounded-lg overflow-hidden">
+                        <thead class="bg-slate-50 text-slate-500 uppercase tracking-wider sticky top-0">
+                            <tr>
+                                <th class="text-left px-2 py-1.5">Rank</th>
+                                <th class="text-right px-2 py-1.5">MAE</th>
+                                <th class="text-right px-2 py-1.5">RMSE</th>
+                                <th class="text-right px-2 py-1.5">Samples</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100">
+                            ${topVariations.map(r => `
+                                <tr>
+                                    <td class="px-2 py-1.5 font-semibold text-slate-700">#${r.rank}</td>
+                                    <td class="px-2 py-1.5 text-right">${numFmt(r.mae, 3)}</td>
+                                    <td class="px-2 py-1.5 text-right">${numFmt(r.rmse, 3)}</td>
+                                    <td class="px-2 py-1.5 text-right text-slate-600">${r.sample_count}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>`;
+        }
+
+        if (coefficientChanges.length) {
+            html += `<div>
+                <h5 class="text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">Coefficient Changes</h5>
+                <div class="overflow-x-auto max-h-56">
+                    <table class="w-full text-xs bg-white border border-slate-200 rounded-lg overflow-hidden">
+                        <thead class="bg-slate-50 text-slate-500 uppercase tracking-wider sticky top-0">
+                            <tr>
+                                <th class="text-left px-2 py-1.5">Coefficient</th>
+                                <th class="text-right px-2 py-1.5">Default</th>
+                                <th class="text-right px-2 py-1.5">Tuned</th>
+                                <th class="text-right px-2 py-1.5">Change %</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100">
+                            ${coefficientChanges.map(r => `
+                                <tr>
+                                    <td class="px-2 py-1.5 text-slate-700">${r.key}</td>
+                                    <td class="px-2 py-1.5 text-right">${numFmt(r.default, 4)}</td>
+                                    <td class="px-2 py-1.5 text-right">${numFmt(r.tuned, 4)}</td>
+                                    <td class="px-2 py-1.5 text-right font-semibold ${Number(r.change_pct) >= 0 ? 'text-field-700' : 'text-red-600'}">${numFmt(r.change_pct, 2)}%</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>`;
+        }
+
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    async function loadAlgorithmHistory(selectedRunId = null) {
+        const select = document.getElementById('alg-history-select');
+        if (!select) return;
+        try {
+            const resp = await fetch('/api/projection-tuner/algorithm/runs?limit=50');
+            const data = await resp.json();
+            if (data.error) {
+                select.innerHTML = `<option value="">${data.error}</option>`;
+                return;
+            }
+
+            const runs = data.runs || [];
+            if (!runs.length) {
+                select.innerHTML = '<option value="">No saved runs</option>';
+                updateAlgorithmRunDetailLink(null);
+                return;
+            }
+
+            const previous = select.value;
+            select.innerHTML = runs.map(r => {
+                const stamp = r.timestamp ? new Date(r.timestamp).toLocaleString() : '';
+                return `<option value="${r.run_id}">${r.year} · ${stamp} · MAE ${numFmt(r.best_mae, 3)}</option>`;
+            }).join('');
+
+            const targetRun = selectedRunId || previous || runs[0].run_id;
+            if (targetRun) {
+                select.value = targetRun;
+                updateAlgorithmRunDetailLink(targetRun);
+                await loadAlgorithmRun(targetRun);
+            }
+        } catch (err) {
+            select.innerHTML = `<option value="">Failed to load history (${err.message})</option>`;
+            updateAlgorithmRunDetailLink(null);
+        }
+    }
+
+    async function loadAlgorithmRun(runId) {
+        const container = document.getElementById('alg-results');
+        if (!container || !runId) return;
+        updateAlgorithmRunDetailLink(runId);
+        container.innerHTML = '<p class="text-xs text-slate-400 italic">Loading run details…</p>';
+        try {
+            const resp = await fetch(`/api/projection-tuner/algorithm/runs/${encodeURIComponent(runId)}`);
+            const data = await resp.json();
+            renderAlgorithmResult(data);
+        } catch (err) {
+            container.innerHTML = `<p class="text-xs text-red-600">Failed to load run: ${err.message}</p>`;
+        }
+    }
+
+    function loadAlgorithmRunFromHistory() {
+        const select = document.getElementById('alg-history-select');
+        if (!select || !select.value) return;
+        updateAlgorithmRunDetailLink(select.value);
+        loadAlgorithmRun(select.value);
+    }
+
+    function initAlgorithmTuning() {
+        updateAlgorithmRunDetailLink(null);
+        loadAlgorithmHistory();
+    }
+
     // ── Grid type visibility ──────────────────────────────────────────
 
     function initGridTypeToggle() {
@@ -695,6 +1045,7 @@ const TunerApp = (() => {
     }
 
     document.addEventListener('DOMContentLoaded', initGridTypeToggle);
+    document.addEventListener('DOMContentLoaded', initAlgorithmTuning);
 // ── Public API ──────────────────────────────────────────────────────── ───────────────────────────────────────────────────
 
     return {
@@ -708,5 +1059,8 @@ const TunerApp = (() => {
         runDiagnose,
         loadGrid,
         sortGrid,
+        runAlgorithmTuning,
+        loadAlgorithmHistory,
+        loadAlgorithmRunFromHistory,
     };
 })();

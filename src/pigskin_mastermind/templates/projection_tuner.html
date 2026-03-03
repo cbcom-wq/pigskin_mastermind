@@ -274,6 +274,81 @@
             <p class="text-xs text-slate-400 italic p-4">Click "Load Grid" to populate the criteria spreadsheet.</p>
         </div>
     </div>
+
+    <!-- ALGORITHM TUNING: Background large-scale optimization -->
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        <div class="p-4 border-b border-slate-100 bg-slate-50">
+            <h3 class="text-sm font-bold text-slate-700 uppercase tracking-wider">🧪 Algorithm Tuning Runs</h3>
+            <p class="text-xs text-slate-500 mt-1">Run large-scale coefficient sweeps against historical data in the background with run history and rich output.</p>
+        </div>
+
+        <div class="p-4 space-y-4">
+            <div class="grid grid-cols-1 md:grid-cols-5 gap-3">
+                <div>
+                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Year</label>
+                    <select id="alg-year" class="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+                        {% for y in available_years %}
+                        <option value="{{ y }}">{{ y }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Weeks (optional)</label>
+                    <input id="alg-weeks" type="text" placeholder="e.g. 1,2,3,4" class="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+                </div>
+                <div>
+                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Positions (optional)</label>
+                    <select id="alg-positions" multiple class="mt-1 w-full px-2 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400 h-[84px]">
+                        <option value="QB">QB</option>
+                        <option value="RB">RB</option>
+                        <option value="WR">WR</option>
+                        <option value="TE">TE</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Max Variations</label>
+                    <input id="alg-max-variations" type="number" min="2" max="2000" value="250" class="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+                </div>
+                <div>
+                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Top N</label>
+                    <input id="alg-top-n" type="number" min="1" max="50" value="10" class="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+                </div>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+                <button id="alg-run-btn" onclick="TunerApp.runAlgorithmTuning()" class="px-4 py-2.5 bg-pigskin-500 hover:bg-pigskin-600 text-white text-sm font-semibold rounded-lg transition-colors">
+                    Start Background Tuning
+                </button>
+                <button onclick="TunerApp.loadAlgorithmHistory()" class="px-4 py-2.5 border border-slate-300 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors text-sm font-semibold">
+                    Refresh Run History
+                </button>
+                <div id="alg-job-status" class="text-xs text-slate-500"></div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-3">
+                <div>
+                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Saved Runs</label>
+                    <select id="alg-history-select" onchange="TunerApp.loadAlgorithmRunFromHistory()" class="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+                        {% if algorithm_runs %}
+                        {% for run in algorithm_runs %}
+                        <option value="{{ run.run_id }}">{{ run.year }} · {{ run.timestamp }} · MAE {{ "%.3f"|format(run.best_mae) }}</option>
+                        {% endfor %}
+                        {% else %}
+                        <option value="">No runs loaded</option>
+                        {% endif %}
+                    </select>
+                    <a id="alg-run-detail-link"
+                       href="{% if selected_algorithm_run_id %}/projection-tuner/runs/{{ selected_algorithm_run_id }}{% else %}#{% endif %}"
+                       class="mt-2 inline-flex items-center text-xs font-semibold {% if selected_algorithm_run_id %}text-pigskin-600 hover:text-pigskin-700{% else %}text-slate-400 pointer-events-none{% endif %}">
+                        Open Run Detail Page
+                    </a>
+                </div>
+                <div id="alg-results" class="border border-slate-200 rounded-lg p-3 bg-slate-50 min-h-[120px]">
+                    <p class="text-xs text-slate-400 italic">Run the algorithm tuner or select a saved run to see detailed results.</p>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script src="/static/js/projection-tuner.js"></script>

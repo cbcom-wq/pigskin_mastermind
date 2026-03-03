@@ -614,9 +614,17 @@ class ProjectionCriteriaBuilder:
     def _compute_touch_share(
         self, player_id: int, position: str, nfl_team: str, year: int
     ) -> float:
-        """Compute actual touch/target share relative to team totals (0-100).
+        """Compute touch/target share relative to SAME-POSITION team totals (0-100).
 
-        Falls back to snap_pct * 100 if team data is unavailable.
+        Filters team data to the same positional group so the denominator
+        reflects relevant competition (WRs+TEs compete for targets; RBs
+        compete for carries+targets; QBs for pass attempts).  Falls back to
+        ``snap_pct * 100`` when position-specific team data is unavailable.
+
+        For WR/TE and RB the receiving component prefers ``targets``; when
+        targets are absent (ESPN does not always export them) it falls back to
+        ``rec`` (receptions) so players with known production are not silently
+        assigned 0%.
         """
         player_season = (
             self.db.query(DBPlayerSeasonStats)
@@ -626,37 +634,56 @@ class ProjectionCriteriaBuilder:
         if not player_season:
             return 0.0
 
-        # Get all same-team players for this year
+        pos_upper = position.upper()
+
+        # K/DEF have no relevant touch-based denominator — use snap_pct directly
+        if pos_upper not in ('QB', 'RB', 'WR', 'TE'):
+            if player_season.snap_pct:
+                return min(player_season.snap_pct * 100, 100)
+            return 0.0
+
+        # Positional group that shares the same opportunity pool
+        if pos_upper == 'QB':
+            pos_group = ['QB']
+        elif pos_upper == 'RB':
+            pos_group = ['RB']
+        else:  # WR or TE
+            pos_group = ['WR', 'TE']
+
+        # Restrict to same-position players on the same team for this year
         team_seasons = (
             self.db.query(DBPlayerSeasonStats)
             .join(DBPlayer)
-            .filter(DBPlayer.nfl_team == nfl_team, DBPlayerSeasonStats.year == year)
+            .filter(
+                DBPlayer.nfl_team == nfl_team,
+                DBPlayer.position.in_(pos_group),
+                DBPlayerSeasonStats.year == year,
+            )
             .all()
         )
 
         if not team_seasons:
-            # Fall back to snap_pct
+            # Fall back to snap_pct when no position-matching teammates found
             if player_season.snap_pct:
                 return min(player_season.snap_pct * 100, 100)
             return 0.0
 
-        pos_upper = position.upper()
         if pos_upper == 'QB':
             team_total = sum(s.pass_att or 0 for s in team_seasons)
             player_val = player_season.pass_att or 0
         elif pos_upper == 'RB':
+            # targets preferred; fall back to rec when targets not populated
             team_total = sum(
-                (s.rush_att or 0) + (s.targets or 0) for s in team_seasons
+                (s.rush_att or 0) + (s.targets or s.rec or 0) for s in team_seasons
             )
-            player_val = (player_season.rush_att or 0) + (player_season.targets or 0)
-        elif pos_upper in ('WR', 'TE'):
-            team_total = sum(s.targets or 0 for s in team_seasons)
-            player_val = player_season.targets or 0
-        else:
-            # K/DEF — fall back to snap_pct
-            if player_season.snap_pct:
-                return min(player_season.snap_pct * 100, 100)
-            return 0.0
+            player_val = (
+                (player_season.rush_att or 0)
+                + (player_season.targets or player_season.rec or 0)
+            )
+        else:  # WR or TE
+            # targets preferred; fall back to rec when targets not populated
+            team_total = sum(s.targets or s.rec or 0 for s in team_seasons)
+            player_val = player_season.targets or player_season.rec or 0
 
         if team_total == 0:
             if player_season.snap_pct:
@@ -681,15 +708,17 @@ class ProjectionCriteriaBuilder:
         if pos_upper == 'QB':
             denom = (season.pass_att or 0) + (season.rush_att or 0)
         elif pos_upper == 'RB':
-            denom = (season.rush_att or 0) + (season.targets or 0)
+            # targets preferred; fall back to rec when targets not populated
+            denom = (season.rush_att or 0) + (season.targets or season.rec or 0)
         elif pos_upper in ('WR', 'TE'):
-            denom = season.targets or 0
+            # targets preferred; fall back to rec when targets not populated
+            denom = season.targets or season.rec or 0
         else:
             # K/DEF — use generic
             denom = (
                 (season.pass_att or 0)
                 + (season.rush_att or 0)
-                + (season.rec or 0)
+                + (season.targets or season.rec or 0)
             )
 
         if denom == 0:

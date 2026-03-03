@@ -428,6 +428,115 @@ class TestPositionEfficiency:
         # 240 / 150 = 1.6
         assert eff == pytest.approx(1.6, rel=0.01)
 
+    def test_wr_efficiency_fallback_to_rec_when_no_targets(self, db):
+        """WR efficiency falls back to rec when targets is 0 (ESPN often omits targets)."""
+        team = DBTeam(team_id="teff1", name="EffTeam1", owner="Owner")
+        db.add(team)
+        db.flush()
+
+        wr = DBPlayer(player_id="we2", name="WR NoTargets", position="WR",
+                      nfl_team="DEN", team_id=team.id, stats={})
+        db.add(wr)
+        db.flush()
+
+        db.add(DBPlayerSeasonStats(
+            player_id=wr.id, year=2024, games_played=16,
+            targets=0, rec=80, fantasy_points_total=160.0,
+            fantasy_points_avg=10.0,
+        ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        eff = builder._compute_position_efficiency(wr.id, 'WR', 2024)
+        # Falls back to rec: 160 / 80 = 2.0  (not 0.0)
+        assert eff == pytest.approx(2.0, rel=0.01)
+
+    def test_rb_efficiency_fallback_to_rec_when_no_targets(self, db):
+        """RB efficiency falls back to rec for receiving component when targets is 0."""
+        team = DBTeam(team_id="teff2", name="EffTeam2", owner="Owner")
+        db.add(team)
+        db.flush()
+
+        rb = DBPlayer(player_id="rbe1", name="RB NoTargets", position="RB",
+                      nfl_team="CLE", team_id=team.id, stats={})
+        db.add(rb)
+        db.flush()
+
+        db.add(DBPlayerSeasonStats(
+            player_id=rb.id, year=2024, games_played=16,
+            rush_att=200, targets=0, rec=40, fantasy_points_total=240.0,
+            fantasy_points_avg=15.0,
+        ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        eff = builder._compute_position_efficiency(rb.id, 'RB', 2024)
+        # Falls back to rec: 240 / (200 + 40) = 1.0  (not 0.0)
+        assert eff == pytest.approx(1.0, rel=0.01)
+
+
+class TestTouchSharePositionFiltering:
+    """Verify that _compute_touch_share denominators are position-scoped."""
+
+    def test_rb_denominator_excludes_wr_targets(self, db):
+        """RB touch share should not be diluted by WR targets in the denominator."""
+        team = DBTeam(team_id="tts1", name="TSTeam1", owner="Owner")
+        db.add(team)
+        db.flush()
+
+        rb = DBPlayer(player_id="ts_rb1", name="RB1", position="RB",
+                      nfl_team="PIT", team_id=team.id, stats={})
+        wr = DBPlayer(player_id="ts_wr1", name="WR1", position="WR",
+                      nfl_team="PIT", team_id=team.id, stats={})
+        db.add_all([rb, wr])
+        db.flush()
+
+        # RB: 200 rush + 50 targets = 250 opportunities
+        db.add(DBPlayerSeasonStats(
+            player_id=rb.id, year=2024, games_played=16,
+            rush_att=200, targets=50, fantasy_points_total=200.0,
+        ))
+        # WR: 150 targets — should NOT appear in RB denominator
+        db.add(DBPlayerSeasonStats(
+            player_id=wr.id, year=2024, games_played=16,
+            targets=150, fantasy_points_total=120.0,
+        ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        share = builder._compute_touch_share(rb.id, 'RB', 'PIT', 2024)
+        # Only RBs: 250 / 250 = 100% (WR's 150 targets excluded)
+        assert share == pytest.approx(100.0, rel=0.01)
+
+    def test_wr_touch_share_fallback_to_rec_when_no_targets(self, db):
+        """WR touch share falls back to rec when targets is 0."""
+        team = DBTeam(team_id="tts2", name="TSTeam2", owner="Owner")
+        db.add(team)
+        db.flush()
+
+        wr1 = DBPlayer(player_id="ts_wr2", name="WR2", position="WR",
+                       nfl_team="SEA", team_id=team.id, stats={})
+        wr2 = DBPlayer(player_id="ts_wr3", name="WR3", position="WR",
+                       nfl_team="SEA", team_id=team.id, stats={})
+        db.add_all([wr1, wr2])
+        db.flush()
+
+        # Both WRs have targets=0 but have receptions (ESPN didn't export targets)
+        db.add(DBPlayerSeasonStats(
+            player_id=wr1.id, year=2024, games_played=16,
+            targets=0, rec=80, fantasy_points_total=160.0,
+        ))
+        db.add(DBPlayerSeasonStats(
+            player_id=wr2.id, year=2024, games_played=16,
+            targets=0, rec=40, fantasy_points_total=80.0,
+        ))
+        db.commit()
+
+        builder = ProjectionCriteriaBuilder(db)
+        share = builder._compute_touch_share(wr1.id, 'WR', 'SEA', 2024)
+        # Falls back to rec: 80 / (80 + 40) ≈ 66.7%  (not 0.0)
+        assert share == pytest.approx(66.7, rel=0.01)
+
 
 class TestMultiSeasonAvg:
     def test_weighted_average_across_seasons(self, db):

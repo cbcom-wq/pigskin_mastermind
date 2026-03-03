@@ -30,6 +30,14 @@ def test_dashboard_stat_cards_are_links():
     assert 'href="/players"' in content
 
 
+def test_dashboard_sidebar_has_projection_tuner_link():
+    """Projection tuner should be discoverable from sidebar navigation."""
+    client = TestClient(app)
+    response = client.get("/")
+    assert response.status_code == 200
+    assert 'href="/projection-tuner"' in response.text
+
+
 def test_dashboard_recent_team_cards_are_links(db):
     """Test that recent team cards link to their detail pages."""
     from pigskin_mastermind.models.database import DBTeam

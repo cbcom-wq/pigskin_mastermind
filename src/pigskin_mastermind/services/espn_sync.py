@@ -872,7 +872,15 @@ class ESPNSyncService:
                     points_total / season.games_played
                     if season.games_played > 0 else 0.0
                 )
-                total_touches = season.pass_att + season.rush_att + season.rec
+                # Prefer targets (opportunities) over rec (completions) for the
+                # receiving component so efficiency reflects true opportunity rate.
+                # Falls back to rec when ESPN does not export receivingTargets.
+                recv_touches = (
+                    season.targets
+                    if season.targets and season.targets > 0
+                    else (season.rec or 0)
+                )
+                total_touches = (season.pass_att or 0) + (season.rush_att or 0) + recv_touches
                 season.fantasy_points_per_touch = (
                     points_total / total_touches if total_touches > 0 else 0.0
                 )
@@ -1088,7 +1096,15 @@ class ESPNSyncService:
                 points_total / season.games_played
                 if season.games_played > 0 else 0.0
             )
-            total_touches = season.pass_att + season.rush_att + season.rec
+            # Prefer targets (opportunities) over rec (completions) for the
+            # receiving component so efficiency reflects true opportunity rate.
+            # Falls back to rec when ESPN does not export receivingTargets.
+            recv_touches = (
+                season.targets
+                if season.targets and season.targets > 0
+                else (season.rec or 0)
+            )
+            total_touches = (season.pass_att or 0) + (season.rush_att or 0) + recv_touches
             season.fantasy_points_per_touch = (
                 points_total / total_touches if total_touches > 0 else 0.0
             )

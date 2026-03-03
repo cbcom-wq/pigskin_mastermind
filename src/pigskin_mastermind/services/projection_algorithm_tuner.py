@@ -52,6 +52,21 @@ class VariationResult:
 
 
 @dataclass
+class SampleComparisonRow:
+    """Projected vs actual values for one player-week sample."""
+
+    player_id: int
+    player_name: str
+    week: int
+    position: str
+    actual_points: float
+    default_projected_points: float
+    tuned_projected_points: float
+    default_error: float
+    tuned_error: float
+
+
+@dataclass
 class TuningRunResult:
     """Full output of one tuning run."""
 
@@ -65,16 +80,23 @@ class TuningRunResult:
     best: VariationResult
     top_variations: List[VariationResult]
     default_result: VariationResult
+    run_filters: Dict[str, Any] = field(default_factory=dict)
+    sample_comparisons: List[SampleComparisonRow] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "TuningRunResult":
-        data["best"] = VariationResult(**data["best"])
-        data["top_variations"] = [VariationResult(**v) for v in data["top_variations"]]
-        data["default_result"] = VariationResult(**data["default_result"])
-        return cls(**data)
+        payload = dict(data)
+        payload["best"] = VariationResult(**payload["best"])
+        payload["top_variations"] = [VariationResult(**v) for v in payload["top_variations"]]
+        payload["default_result"] = VariationResult(**payload["default_result"])
+        payload["run_filters"] = payload.get("run_filters", {})
+        payload["sample_comparisons"] = [
+            SampleComparisonRow(**row) for row in payload.get("sample_comparisons", [])
+        ]
+        return cls(**payload)
 
 
 # ---------------------------------------------------------------------------
@@ -283,19 +305,38 @@ class ProjectionAlgorithmTuner:
         default_coeffs = AlgorithmCoefficients()
         default_result = self._evaluate(default_coeffs, samples)
 
+        best_result = results[0]
+        best_coeffs = AlgorithmCoefficients.from_dict(best_result.coefficients)
         unique_players = {s[2] for s in samples}  # player_id stored at idx 2
+        simulated_weeks = sorted({s[3] for s in samples})  # week stored at idx 3
+        simulated_positions = sorted({s[4] for s in samples})  # position stored at idx 4
+        sample_comparisons = self._build_sample_comparisons(
+            samples,
+            default_coeffs,
+            best_coeffs,
+        )
+        run_filters = {
+            "weeks": sorted(set(weeks)) if weeks else None,
+            "player_ids": sorted(set(player_ids)) if player_ids else None,
+            "positions": sorted(set(positions)) if positions else None,
+            "simulated_weeks": simulated_weeks,
+            "simulated_player_ids": sorted(unique_players),
+            "simulated_positions": simulated_positions,
+        }
 
         run_result = TuningRunResult(
             run_id=datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"),
             timestamp=datetime.now(timezone.utc).isoformat(),
             year=year,
-            weeks=sorted({s[3] for s in samples}),  # week stored at idx 3
+            weeks=simulated_weeks,
             player_count=len(unique_players),
             sample_count=len(samples),
             variations_tested=len(variations),
-            best=results[0],
+            best=best_result,
             top_variations=results[:top_n],
             default_result=default_result,
+            run_filters=run_filters,
+            sample_comparisons=sample_comparisons,
         )
 
         return run_result
@@ -376,6 +417,7 @@ class ProjectionAlgorithmTuner:
             "best_coefficients": best.coefficients,
             "coefficient_changes": coefficient_changes,
             "per_position_mae": best.per_position_mae,
+            "run_filters": result.run_filters,
             "top_variations_summary": [
                 {
                     "rank": i + 1,
@@ -395,8 +437,8 @@ class ProjectionAlgorithmTuner:
         weeks: Optional[List[int]],
         player_ids: Optional[List[int]],
         positions: Optional[List[str]],
-    ) -> List[Tuple[WeeklyProjectionCriteria, float, int, int, str]]:
-        """Return list of (criteria, actual_points, player_id, week, position).
+    ) -> List[Tuple[WeeklyProjectionCriteria, float, int, int, str, str]]:
+        """Return list of (criteria, actual_points, player_id, week, position, player_name).
 
         Only game-log entries where the player was active and has a
         corresponding season-stats record are included.
@@ -412,7 +454,7 @@ class ProjectionAlgorithmTuner:
         # Optionally filter by position
         position_set = set(positions) if positions else None
 
-        samples: List[Tuple[WeeklyProjectionCriteria, float, int, int, str]] = []
+        samples: List[Tuple[WeeklyProjectionCriteria, float, int, int, str, str]] = []
         for log in logs:
             player = self.db.get(DBPlayer, log.player_id)
             if not player:
@@ -426,20 +468,27 @@ class ProjectionAlgorithmTuner:
             except (ValueError, Exception):
                 continue
             samples.append(
-                (criteria, log.fantasy_points or 0.0, log.player_id, log.week, player.position)
+                (
+                    criteria,
+                    log.fantasy_points or 0.0,
+                    log.player_id,
+                    log.week,
+                    player.position,
+                    player.name or "",
+                )
             )
         return samples
 
     @staticmethod
     def _evaluate(
         coeffs: AlgorithmCoefficients,
-        samples: List[Tuple[WeeklyProjectionCriteria, float, int, int, str]],
+        samples: List[Tuple[WeeklyProjectionCriteria, float, int, int, str, str]],
     ) -> VariationResult:
         """Compute accuracy metrics for a set of coefficients."""
         errors: List[float] = []
         position_errors: Dict[str, List[float]] = {}
 
-        for criteria, actual, _pid, _week, pos in samples:
+        for criteria, actual, _pid, _week, pos, _pname in samples:
             projected = _calculate_weekly_projection(criteria, coeffs)
             err = abs(projected - actual)
             errors.append(err)
@@ -460,3 +509,29 @@ class ProjectionAlgorithmTuner:
             sample_count=n,
             per_position_mae=per_pos_mae,
         )
+
+    @staticmethod
+    def _build_sample_comparisons(
+        samples: List[Tuple[WeeklyProjectionCriteria, float, int, int, str, str]],
+        default_coeffs: AlgorithmCoefficients,
+        tuned_coeffs: AlgorithmCoefficients,
+    ) -> List[SampleComparisonRow]:
+        rows: List[SampleComparisonRow] = []
+        for criteria, actual, player_id, week, position, player_name in samples:
+            default_projected = _calculate_weekly_projection(criteria, default_coeffs)
+            tuned_projected = _calculate_weekly_projection(criteria, tuned_coeffs)
+            rows.append(
+                SampleComparisonRow(
+                    player_id=player_id,
+                    player_name=player_name,
+                    week=week,
+                    position=position,
+                    actual_points=round(actual, 4),
+                    default_projected_points=round(default_projected, 4),
+                    tuned_projected_points=round(tuned_projected, 4),
+                    default_error=round(abs(default_projected - actual), 4),
+                    tuned_error=round(abs(tuned_projected - actual), 4),
+                )
+            )
+        rows.sort(key=lambda row: (row.week, row.player_id))
+        return rows

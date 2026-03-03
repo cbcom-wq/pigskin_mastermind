@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block title %}Projection Tuner Run {{ run_id }} — Pigskin Mastermind{% endblock %}
+{% block page_title %}Projection Tuner Run Detail{% endblock %}
+
+{% block content %}
+<div class="max-w-[1300px] mx-auto space-y-4">
+    <div>
+        <a href="/projection-tuner" class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+            </svg>
+            Back to Projection Tuner
+        </a>
+    </div>
+
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+        <p class="text-xs text-slate-500 uppercase tracking-wider font-semibold">Run {{ run_id }}</p>
+        {% if error %}
+        <p class="mt-2 text-sm text-red-600">{{ error }}</p>
+        {% else %}
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mt-3">
+            <div class="bg-slate-50 rounded-lg p-3 text-center">
+                <p class="text-[10px] uppercase text-slate-400">Year</p>
+                <p class="text-sm font-bold text-slate-700">{{ summary.year }}</p>
+            </div>
+            <div class="bg-slate-50 rounded-lg p-3 text-center">
+                <p class="text-[10px] uppercase text-slate-400">Players Simulated</p>
+                <p class="text-sm font-bold text-slate-700">{{ detail.player_count }}</p>
+            </div>
+            <div class="bg-slate-50 rounded-lg p-3 text-center">
+                <p class="text-[10px] uppercase text-slate-400">Sample Rows</p>
+                <p class="text-sm font-bold text-slate-700">{{ detail.sample_count }}</p>
+            </div>
+            <div class="bg-slate-50 rounded-lg p-3 text-center">
+                <p class="text-[10px] uppercase text-slate-400">Default MAE</p>
+                <p class="text-sm font-bold text-slate-700">{{ "%.3f"|format(summary.default_mae) }}</p>
+            </div>
+            <div class="bg-pigskin-50 border border-pigskin-200 rounded-lg p-3 text-center">
+                <p class="text-[10px] uppercase text-pigskin-500">Tuned MAE</p>
+                <p class="text-sm font-bold text-pigskin-700">{{ "%.3f"|format(summary.best_mae) }}</p>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    {% if not error %}
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        <div class="p-4 border-b border-slate-100 bg-slate-50">
+            <h3 class="text-sm font-bold text-slate-700 uppercase tracking-wider">Players Simulated</h3>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead class="bg-slate-50 text-xs text-slate-500 uppercase tracking-wider">
+                    <tr>
+                        <th class="text-left px-4 py-2">Player</th>
+                        <th class="text-left px-4 py-2">Position</th>
+                        <th class="text-right px-4 py-2">Samples</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100">
+                    {% for p in detail.players_simulated %}
+                    <tr>
+                        <td class="px-4 py-2 text-slate-700">{{ p.player_name }}</td>
+                        <td class="px-4 py-2 text-slate-600">{{ p.position }}</td>
+                        <td class="px-4 py-2 text-right font-semibold text-slate-700">{{ p.samples }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        <div class="p-4 border-b border-slate-100 bg-slate-50">
+            <h3 class="text-sm font-bold text-slate-700 uppercase tracking-wider">Projected vs Actual Samples (Per Week)</h3>
+        </div>
+        <div class="overflow-x-auto max-h-[520px] overflow-y-auto">
+            <table class="w-full text-xs">
+                <thead class="bg-slate-50 text-slate-500 uppercase tracking-wider sticky top-0">
+                    <tr>
+                        <th class="text-left px-3 py-2">Week</th>
+                        <th class="text-left px-3 py-2">Player</th>
+                        <th class="text-left px-3 py-2">Pos</th>
+                        <th class="text-right px-3 py-2">Actual</th>
+                        <th class="text-right px-3 py-2">Default Proj</th>
+                        <th class="text-right px-3 py-2">Tuned Proj</th>
+                        <th class="text-right px-3 py-2">Default Err</th>
+                        <th class="text-right px-3 py-2">Tuned Err</th>
+                        <th class="text-right px-3 py-2">Err Δ</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100">
+                    {% for row in detail.projected_vs_actual %}
+                    <tr>
+                        <td class="px-3 py-1.5 text-slate-600">{{ row.week }}</td>
+                        <td class="px-3 py-1.5 text-slate-700">{{ row.player_name }}</td>
+                        <td class="px-3 py-1.5 text-slate-600">{{ row.position }}</td>
+                        <td class="px-3 py-1.5 text-right text-slate-700">{{ "%.2f"|format(row.actual_points) }}</td>
+                        <td class="px-3 py-1.5 text-right text-slate-600">{{ "%.2f"|format(row.default_projected_points) }}</td>
+                        <td class="px-3 py-1.5 text-right text-pigskin-700">{{ "%.2f"|format(row.tuned_projected_points) }}</td>
+                        <td class="px-3 py-1.5 text-right text-slate-600">{{ "%.2f"|format(row.default_error) }}</td>
+                        <td class="px-3 py-1.5 text-right text-slate-600">{{ "%.2f"|format(row.tuned_error) }}</td>
+                        <td class="px-3 py-1.5 text-right font-semibold {% if row.error_delta >= 0 %}text-field-700{% else %}text-red-600{% endif %}">
+                            {{ "%.2f"|format(row.error_delta) }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

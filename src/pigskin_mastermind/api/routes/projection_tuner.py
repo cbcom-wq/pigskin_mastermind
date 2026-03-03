@@ -1,16 +1,19 @@
 """API routes for the Projection Algorithm Tuner developer tool."""
 
+import threading
+import uuid
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Request, Query
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
-from typing import Optional, Dict, List, Any
+from sqlalchemy.orm import Session, sessionmaker
+from typing import Optional, Dict, List, Any, Tuple
 
 from pigskin_mastermind.api.database import get_db
 from pigskin_mastermind.models.database import (
     DBPlayer, DBPlayerGameLog, DBPlayerSeasonStats,
     DBNFLTeamStats, DBWeeklyPlayerStats,
 )
+from pigskin_mastermind.services.projection_algorithm_tuner import ProjectionAlgorithmTuner
 from pigskin_mastermind.services.projection_tuner import (
     ProjectionTunerService,
     get_default_coefficients,
@@ -49,6 +52,260 @@ class CriteriaGridRequest(BaseModel):
     limit: int = 50
 
 
+class AlgorithmRunRequest(BaseModel):
+    year: int
+    weeks: Optional[List[int]] = None
+    player_ids: Optional[List[int]] = None
+    positions: Optional[List[str]] = None
+    max_variations: int = 250
+    top_n: int = 10
+
+
+_VALID_POSITIONS = {"QB", "RB", "WR", "TE", "K", "DEF"}
+_MAX_TUNING_VARIATIONS = 2000
+_MAX_TOP_N = 50
+_tuning_jobs: Dict[str, Dict[str, Any]] = {}
+_tuning_jobs_lock = threading.Lock()
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _normalise_algorithm_request(req: AlgorithmRunRequest) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    if req.max_variations < 2 or req.max_variations > _MAX_TUNING_VARIATIONS:
+        return None, f"max_variations must be between 2 and {_MAX_TUNING_VARIATIONS}"
+    if req.top_n < 1 or req.top_n > _MAX_TOP_N:
+        return None, f"top_n must be between 1 and {_MAX_TOP_N}"
+    if req.top_n > req.max_variations:
+        return None, "top_n cannot be greater than max_variations"
+
+    weeks = None
+    if req.weeks:
+        weeks = sorted({int(w) for w in req.weeks})
+        if any(w < 1 or w > 22 for w in weeks):
+            return None, "weeks must be between 1 and 22"
+
+    player_ids = None
+    if req.player_ids:
+        player_ids = sorted({int(pid) for pid in req.player_ids if int(pid) > 0})
+        if not player_ids:
+            return None, "player_ids must contain at least one positive id"
+
+    positions = None
+    if req.positions:
+        positions = sorted({p.upper() for p in req.positions if p})
+        invalid = [p for p in positions if p not in _VALID_POSITIONS]
+        if invalid:
+            return None, f"Unsupported positions: {', '.join(invalid)}"
+
+    return {
+        "year": req.year,
+        "weeks": weeks,
+        "player_ids": player_ids,
+        "positions": positions,
+        "max_variations": req.max_variations,
+        "top_n": req.top_n,
+    }, None
+
+
+def _snapshot_job(job_id: str) -> Optional[Dict[str, Any]]:
+    with _tuning_jobs_lock:
+        job = _tuning_jobs.get(job_id)
+        if not job:
+            return None
+        return dict(job)
+
+
+def _update_job(job_id: str, **updates: Any) -> None:
+    with _tuning_jobs_lock:
+        if job_id not in _tuning_jobs:
+            return
+        _tuning_jobs[job_id].update(updates)
+
+
+def _build_algorithm_visuals(result: Any, report: Dict[str, Any]) -> Dict[str, Any]:
+    default_per_pos = result.default_result.per_position_mae or {}
+    tuned_per_pos = result.best.per_position_mae or {}
+    per_position = []
+    for pos in sorted(set(default_per_pos.keys()) | set(tuned_per_pos.keys())):
+        default_mae = default_per_pos.get(pos)
+        tuned_mae = tuned_per_pos.get(pos)
+        delta = None
+        if default_mae is not None and tuned_mae is not None:
+            delta = round(default_mae - tuned_mae, 4)
+        per_position.append(
+            {
+                "position": pos,
+                "default_mae": default_mae,
+                "tuned_mae": tuned_mae,
+                "mae_reduction": delta,
+            }
+        )
+
+    top_variations = []
+    for idx, variation in enumerate(result.top_variations, start=1):
+        top_variations.append(
+            {
+                "rank": idx,
+                "mae": variation.mae,
+                "rmse": variation.rmse,
+                "sample_count": variation.sample_count,
+                "coefficients": variation.coefficients,
+            }
+        )
+
+    coefficient_changes = []
+    for key, vals in report.get("coefficient_changes", {}).items():
+        coefficient_changes.append(
+            {
+                "key": key,
+                "default": vals.get("default"),
+                "tuned": vals.get("tuned"),
+                "change_pct": vals.get("change_pct"),
+            }
+        )
+    coefficient_changes.sort(key=lambda c: abs(c.get("change_pct", 0.0)), reverse=True)
+
+    return {
+        "kpis": {
+            "default_mae": report["default_accuracy"]["mae"],
+            "tuned_mae": report["best_accuracy"]["mae"],
+            "default_rmse": report["default_accuracy"]["rmse"],
+            "tuned_rmse": report["best_accuracy"]["rmse"],
+            "mae_reduction": report["improvement"]["mae_reduction"],
+            "mae_improvement_pct": report["improvement"]["mae_improvement_pct"],
+            "players_evaluated": report["summary"]["players_evaluated"],
+            "total_samples": report["summary"]["total_samples"],
+            "variations_tested": report["summary"]["variations_tested"],
+        },
+        "top_variations": top_variations,
+        "per_position_comparison": per_position,
+        "coefficient_changes": coefficient_changes,
+    }
+
+
+def _build_algorithm_run_summary(result: Any) -> Dict[str, Any]:
+    default_mae = result.default_result.mae
+    best_mae = result.best.mae
+    mae_reduction = round(default_mae - best_mae, 4)
+    mae_pct = round((mae_reduction / default_mae * 100) if default_mae else 0.0, 2)
+    return {
+        "run_id": result.run_id,
+        "timestamp": result.timestamp,
+        "year": result.year,
+        "weeks": result.weeks,
+        "player_count": result.player_count,
+        "sample_count": result.sample_count,
+        "variations_tested": result.variations_tested,
+        "default_mae": default_mae,
+        "best_mae": best_mae,
+        "mae_reduction": mae_reduction,
+        "mae_improvement_pct": mae_pct,
+    }
+
+
+def _build_algorithm_run_detail(result: Any) -> Dict[str, Any]:
+    players: Dict[int, Dict[str, Any]] = {}
+    projected_vs_actual: List[Dict[str, Any]] = []
+
+    for sample in result.sample_comparisons:
+        projected_vs_actual.append(
+            {
+                "player_id": sample.player_id,
+                "player_name": sample.player_name,
+                "position": sample.position,
+                "week": sample.week,
+                "actual_points": sample.actual_points,
+                "default_projected_points": sample.default_projected_points,
+                "tuned_projected_points": sample.tuned_projected_points,
+                "default_error": sample.default_error,
+                "tuned_error": sample.tuned_error,
+                "error_delta": round(sample.default_error - sample.tuned_error, 4),
+            }
+        )
+        if sample.player_id not in players:
+            players[sample.player_id] = {
+                "player_id": sample.player_id,
+                "player_name": sample.player_name,
+                "position": sample.position,
+                "samples": 0,
+            }
+        players[sample.player_id]["samples"] += 1
+
+    players_simulated = sorted(
+        players.values(),
+        key=lambda p: (-p["samples"], p["position"], p["player_name"]),
+    )
+    return {
+        "player_count": len(players_simulated),
+        "sample_count": len(projected_vs_actual),
+        "players_simulated": players_simulated,
+        "projected_vs_actual": projected_vs_actual,
+    }
+
+
+def _run_algorithm_job(job_id: str, req_data: Dict[str, Any], db_factory: Any) -> None:
+    _update_job(
+        job_id,
+        status="running",
+        progress_pct=5,
+        started_at=_utc_now_iso(),
+        message="Preparing historical samples",
+    )
+    job_db = db_factory()
+    try:
+        tuner = ProjectionAlgorithmTuner(job_db)
+        _update_job(
+            job_id,
+            progress_pct=20,
+            message="Evaluating coefficient variations",
+        )
+        result = tuner.run(
+            year=req_data["year"],
+            weeks=req_data["weeks"],
+            player_ids=req_data["player_ids"],
+            positions=req_data["positions"],
+            max_variations=req_data["max_variations"],
+            top_n=req_data["top_n"],
+        )
+        _update_job(
+            job_id,
+            progress_pct=85,
+            message="Saving and summarizing results",
+        )
+        saved_path = tuner.save_result(result)
+        report = tuner.generate_analysis_report(result)
+        visuals = _build_algorithm_visuals(result, report)
+        detail = _build_algorithm_run_detail(result)
+
+        _update_job(
+            job_id,
+            status="completed",
+            progress_pct=100,
+            finished_at=_utc_now_iso(),
+            message="Completed",
+            run_id=result.run_id,
+            saved_path=saved_path,
+            summary=_build_algorithm_run_summary(result),
+            result=result.to_dict(),
+            report=report,
+            visuals=visuals,
+            detail=detail,
+        )
+    except Exception as exc:
+        _update_job(
+            job_id,
+            status="failed",
+            progress_pct=100,
+            finished_at=_utc_now_iso(),
+            message="Failed",
+            error=str(exc),
+        )
+    finally:
+        job_db.close()
+
+
 # ── Page route ────────────────────────────────────────────────────────────
 
 @router.get("/projection-tuner")
@@ -58,6 +315,10 @@ async def projection_tuner_page(
 ):
     """Render the Projection Algorithm Tuner page."""
     from pigskin_mastermind.api.main import templates
+
+    tuner = ProjectionAlgorithmTuner(db)
+    recent_runs = sorted(tuner.load_results(), key=lambda r: r.timestamp, reverse=True)[:50]
+    recent_run_summaries = [_build_algorithm_run_summary(r) for r in recent_runs]
 
     # Get available players for the dropdown
     players = (
@@ -85,6 +346,50 @@ async def projection_tuner_page(
             "coefficients": get_coefficient_metadata(),
             "criteria_docs": get_criteria_docs(),
             "defaults": get_default_coefficients(),
+            "algorithm_runs": recent_run_summaries,
+            "selected_algorithm_run_id": (
+                recent_run_summaries[0]["run_id"] if recent_run_summaries else None
+            ),
+        },
+    )
+
+
+@router.get("/projection-tuner/runs/{run_id}")
+async def projection_tuner_run_detail_page(
+    request: Request,
+    run_id: str,
+    db: Session = Depends(get_db),
+):
+    """Render a detail page for one persisted algorithm tuning run."""
+    from pigskin_mastermind.api.main import templates
+
+    tuner = ProjectionAlgorithmTuner(db)
+    run = next((r for r in tuner.load_results() if r.run_id == run_id), None)
+    if not run:
+        return templates.TemplateResponse(
+            "projection_tuner_run_detail.html",
+            {
+                "request": request,
+                "run_id": run_id,
+                "error": f"Run {run_id} not found",
+                "summary": None,
+                "detail": {
+                    "player_count": 0,
+                    "sample_count": 0,
+                    "players_simulated": [],
+                    "projected_vs_actual": [],
+                },
+            },
+        )
+
+    return templates.TemplateResponse(
+        "projection_tuner_run_detail.html",
+        {
+            "request": request,
+            "run_id": run_id,
+            "error": None,
+            "summary": _build_algorithm_run_summary(run),
+            "detail": _build_algorithm_run_detail(run),
         },
     )
 
@@ -98,6 +403,94 @@ async def get_defaults():
         "coefficients": get_coefficient_metadata(),
         "criteria_docs": get_criteria_docs(),
         "defaults": get_default_coefficients(),
+    }
+
+
+@router.post("/api/projection-tuner/algorithm/run")
+async def start_algorithm_tuning_run(
+    req: AlgorithmRunRequest,
+    db: Session = Depends(get_db),
+):
+    """Start a background projection-algorithm tuning run."""
+    req_data, error = _normalise_algorithm_request(req)
+    if error:
+        return {"error": error}
+
+    job_id = uuid.uuid4().hex
+    created_at = _utc_now_iso()
+    with _tuning_jobs_lock:
+        _tuning_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "progress_pct": 0,
+            "created_at": created_at,
+            "started_at": None,
+            "finished_at": None,
+            "message": "Queued",
+            "error": None,
+            "request": req_data,
+        }
+
+    db_factory = sessionmaker(autocommit=False, autoflush=False, bind=db.get_bind())
+    worker = threading.Thread(
+        target=_run_algorithm_job,
+        args=(job_id, req_data, db_factory),
+        daemon=True,
+    )
+    worker.start()
+
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "progress_pct": 0,
+        "created_at": created_at,
+    }
+
+
+@router.get("/api/projection-tuner/algorithm/jobs/{job_id}")
+async def get_algorithm_tuning_job(job_id: str):
+    """Return background algorithm tuning job status and output when available."""
+    job = _snapshot_job(job_id)
+    if not job:
+        return {"error": f"Job {job_id} not found"}
+    return job
+
+
+@router.get("/api/projection-tuner/algorithm/runs")
+async def list_algorithm_tuning_runs(
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """List persisted algorithm tuning runs (newest first)."""
+    tuner = ProjectionAlgorithmTuner(db)
+    runs = tuner.load_results()
+    runs.sort(key=lambda r: r.timestamp, reverse=True)
+    runs = runs[:limit]
+    return {
+        "runs": [_build_algorithm_run_summary(r) for r in runs],
+        "count": len(runs),
+    }
+
+
+@router.get("/api/projection-tuner/algorithm/runs/{run_id}")
+async def get_algorithm_tuning_run(
+    run_id: str,
+    db: Session = Depends(get_db),
+):
+    """Return full output for a single persisted tuning run."""
+    tuner = ProjectionAlgorithmTuner(db)
+    run = next((r for r in tuner.load_results() if r.run_id == run_id), None)
+    if not run:
+        return {"error": f"Run {run_id} not found"}
+
+    report = tuner.generate_analysis_report(run)
+    visuals = _build_algorithm_visuals(run, report)
+    return {
+        "summary": _build_algorithm_run_summary(run),
+        "detail": _build_algorithm_run_detail(run),
+        "result": run.to_dict(),
+        "report": report,
+        "visuals": visuals,
     }
 
 
