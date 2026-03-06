@@ -9,8 +9,12 @@ from sqlalchemy import desc, func
 
 from pigskin_mastermind.models.database import (
     DBPlayer, DBPlayerGameLog, DBPlayerSeasonStats, DBNFLTeamStats,
-    DBWeeklyTeamStats, DBWeeklyPlayerStats
+    DBWeeklyTeamStats, DBWeeklyPlayerStats, DBLeague,
 )
+
+import logging
+
+logger = logging.getLogger(__name__)
 from pigskin_mastermind.models.projection_criteria import (
     WeeklyProjectionCriteria,
     YearlyProjectionCriteria,
@@ -32,6 +36,245 @@ class ProjectionCriteriaBuilder:
 
     def __init__(self, db: Session):
         self.db = db
+        # Track players already checked this session to avoid repeated work
+        self._ensured_players: set = set()
+
+    # ------------------------------------------------------------------
+    # On-demand per-player data population
+    # ------------------------------------------------------------------
+
+    # A player with fewer game logs than this is considered to have
+    # incomplete data (likely only rostered weeks from a fantasy team
+    # import).  fetch_player_full_stats will be called to fill the gaps.
+    _MIN_GAME_LOGS_FOR_COMPLETE = 6
+
+    def _player_has_complete_data(
+        self, player_id: int, year: int,
+    ) -> bool:
+        """Return True if the player has adequate data for the year.
+
+        "Adequate" means a DBPlayerSeasonStats row with real points AND
+        enough game logs to suggest a full-season import (not just a few
+        rostered weeks from a fantasy team sync).
+        """
+        season = (
+            self.db.query(DBPlayerSeasonStats)
+            .filter_by(player_id=player_id, year=year)
+            .first()
+        )
+        if not (season
+                and season.games_played
+                and season.games_played > 0
+                and season.fantasy_points_total
+                and season.fantasy_points_total > 0):
+            return False
+
+        # Check game log coverage — partial roster data often has only
+        # 1-5 game logs even though the player played 10+ NFL games
+        log_count = (
+            self.db.query(DBPlayerGameLog)
+            .filter_by(player_id=player_id, year=year)
+            .count()
+        )
+        return log_count >= self._MIN_GAME_LOGS_FOR_COMPLETE
+
+    def _ensure_player_stats(
+        self, player_id: int, year: int,
+    ) -> None:
+        """Ensure a player has structured game logs and season stats.
+
+        Mirrors the on-demand import that the player detail page performs
+        so the tuner sees the same data quality for every player, not just
+        those previously viewed in the team/player pages.
+
+        Order of operations:
+          1. Skip if we already checked this player+year this session.
+          2. Skip if the player has complete data (season stats with
+             real points AND >= _MIN_GAME_LOGS_FOR_COMPLETE game logs).
+          3. Try to parse the player's existing ``DBPlayer.stats`` JSON
+             blob into game logs + season stats (offline, no network).
+          4. If still incomplete, try promoting any DBWeeklyPlayerStats
+             rows to game logs, then aggregate.
+          5. If still incomplete and ESPN credentials are configured,
+             fetch full per-week stats from the ESPN API.
+        """
+        cache_key = (player_id, year)
+        if cache_key in self._ensured_players:
+            return
+        self._ensured_players.add(cache_key)
+
+        # Check if we already have complete data
+        if self._player_has_complete_data(player_id, year):
+            return
+
+        player = self.db.query(DBPlayer).filter_by(id=player_id).first()
+        if not player:
+            return
+
+        # ── Step 1: parse existing JSON blob (offline) ────────────────
+        if player.stats and isinstance(player.stats, dict):
+            has_weekly_keys = any(
+                k != '0' and k.isdigit()
+                for k in player.stats.keys()
+            )
+            if has_weekly_keys:
+                try:
+                    from pigskin_mastermind.services.espn_sync import ESPNSyncService
+                    sync = ESPNSyncService(self.db)
+                    sync._populate_single_player_stats(player, year)
+                    self.db.flush()
+                    logger.debug(
+                        "Populated stats from JSON blob for player %s (id=%d)",
+                        player.name, player_id,
+                    )
+                    # Re-check — if this produced complete data, we're done
+                    if self._player_has_complete_data(player_id, year):
+                        return
+                except Exception:
+                    pass  # Non-critical — continue with other paths
+
+        # ── Step 2: promote weekly player stats → game logs → season ──
+        has_weekly = (
+            self.db.query(DBWeeklyPlayerStats)
+            .filter(
+                DBWeeklyPlayerStats.player_id == player_id,
+                DBWeeklyPlayerStats.actual_points > 0,
+            )
+            .first()
+        )
+        if has_weekly:
+            try:
+                from pigskin_mastermind.services.nfl_data_service import NFLDataService
+                nfl_svc = NFLDataService(self.db)
+                nfl_svc.compute_season_stats_from_game_logs(year)
+                logger.debug(
+                    "Promoted weekly stats for player %s (id=%d)",
+                    player.name, player_id,
+                )
+                # Re-check
+                if self._player_has_complete_data(player_id, year):
+                    return
+            except Exception:
+                pass
+
+        # ── Step 3: ESPN API fetch (requires credentials) ─────────────
+        if player.player_id and player.player_id.startswith('espn_'):
+            league = self.db.query(DBLeague).first()
+            if league and league.espn_s2 and league.swid:
+                try:
+                    from pigskin_mastermind.services.espn_sync import ESPNSyncService
+                    sync = ESPNSyncService(self.db)
+                    sync.fetch_player_full_stats(
+                        db_player_id=player_id,
+                        league_id=league.league_id,
+                        espn_s2=league.espn_s2,
+                        swid=league.swid,
+                        year=year,
+                    )
+                    self.db.flush()
+                    logger.debug(
+                        "Fetched ESPN full stats for player %s (id=%d)",
+                        player.name, player_id,
+                    )
+                except Exception:
+                    pass  # Non-critical — criteria builder will use fallbacks
+
+    def ensure_players_stats(
+        self, player_ids: List[int], year: int,
+    ) -> None:
+        """Batch version of _ensure_player_stats for multiple players.
+
+        Runs the offline paths (JSON parsing, WPS promotion) first as a
+        single batch, then falls back to per-player ESPN fetches only for
+        players that still lack data.
+        """
+        # Quick filter: which players actually need work?
+        needs_work = []
+        for pid in player_ids:
+            cache_key = (pid, year)
+            if cache_key in self._ensured_players:
+                continue
+            if self._player_has_complete_data(pid, year):
+                self._ensured_players.add(cache_key)
+                continue
+            needs_work.append(pid)
+
+        if not needs_work:
+            return
+
+        # ── Batch step 1: parse JSON blobs for all players at once ────
+        players_with_json = (
+            self.db.query(DBPlayer)
+            .filter(
+                DBPlayer.id.in_(needs_work),
+                DBPlayer.stats.isnot(None),
+            )
+            .all()
+        )
+        if players_with_json:
+            try:
+                from pigskin_mastermind.services.espn_sync import ESPNSyncService
+                sync = ESPNSyncService(self.db)
+                for player in players_with_json:
+                    if not player.stats or not isinstance(player.stats, dict):
+                        continue
+                    has_weekly_keys = any(
+                        k != '0' and k.isdigit()
+                        for k in player.stats.keys()
+                    )
+                    if has_weekly_keys:
+                        try:
+                            sync._populate_single_player_stats(player, year)
+                        except Exception:
+                            pass
+                self.db.flush()
+            except Exception:
+                pass
+
+        # ── Batch step 2: promote all weekly stats → game logs at once ─
+        try:
+            from pigskin_mastermind.services.nfl_data_service import NFLDataService
+            nfl_svc = NFLDataService(self.db)
+            nfl_svc.compute_season_stats_from_game_logs(year)
+        except Exception:
+            pass
+
+        # ── Batch step 3: ESPN fetch for any still-missing players ─────
+        still_missing = []
+        for pid in needs_work:
+            if self._player_has_complete_data(pid, year):
+                self._ensured_players.add((pid, year))
+            else:
+                still_missing.append(pid)
+
+        if still_missing:
+            league = self.db.query(DBLeague).first()
+            if league and league.espn_s2 and league.swid:
+                try:
+                    from pigskin_mastermind.services.espn_sync import ESPNSyncService
+                    sync = ESPNSyncService(self.db)
+                    for pid in still_missing:
+                        player = self.db.query(DBPlayer).filter_by(id=pid).first()
+                        if (player
+                                and player.player_id
+                                and player.player_id.startswith('espn_')):
+                            try:
+                                sync.fetch_player_full_stats(
+                                    db_player_id=pid,
+                                    league_id=league.league_id,
+                                    espn_s2=league.espn_s2,
+                                    swid=league.swid,
+                                    year=year,
+                                )
+                            except Exception:
+                                pass
+                    self.db.flush()
+                except Exception:
+                    pass
+
+        # Mark all as checked
+        for pid in needs_work:
+            self._ensured_players.add((pid, year))
 
     def build_weekly_criteria(
         self,
@@ -51,6 +294,7 @@ class ProjectionCriteriaBuilder:
         Returns:
             WeeklyProjectionCriteria populated from stats.
         """
+        self._ensure_player_stats(player_id, year)
         self._ensure_team_stats(year)
 
         player = self.db.query(DBPlayer).filter_by(id=player_id).first()
@@ -155,6 +399,7 @@ class ProjectionCriteriaBuilder:
 
         # Use previous year's stats for yearly projection
         prev_year = year - 1
+        self._ensure_player_stats(player_id, prev_year)
         self._ensure_team_stats(prev_year)
         season = (
             self.db.query(DBPlayerSeasonStats)
@@ -287,7 +532,9 @@ class ProjectionCriteriaBuilder:
                 sum(s.actual_points for s in all_weekly) / len(all_weekly)
                 if all_weekly else recent_avg
             )
-            if season_avg == 0:
+            # Guard: need at least 2 data points and a meaningful baseline
+            # to compute a stable deviation percentage
+            if season_avg < 1.0 or len(all_weekly) < 2:
                 return 0.0
             confidence = len(recent_weekly) / num_weeks
             raw_deviation = ((recent_avg - season_avg) / season_avg) * 100
@@ -307,7 +554,18 @@ class ProjectionCriteriaBuilder:
         )
         season_avg = season.fantasy_points_avg if season else recent_avg
 
-        if season_avg == 0:
+        # Guard: need a meaningful baseline (>= 1 point) and at least 2
+        # game logs to produce a stable trend — prevents wild ±100 swings
+        # when the season average is near zero
+        if season_avg < 1.0:
+            return 0.0
+
+        all_logs_count = (
+            self.db.query(DBPlayerGameLog)
+            .filter_by(player_id=player_id, year=year)
+            .count()
+        )
+        if all_logs_count < 2:
             return 0.0
 
         # Apply confidence multiplier to dampen small-sample swings
@@ -319,7 +577,12 @@ class ProjectionCriteriaBuilder:
     def _compute_skill_composite(
         self, player_id: int, position: str, year: int
     ) -> float:
-        """Multi-factor skill score (0-100) blending points, efficiency, consistency, volume."""
+        """Multi-factor skill score (0-100) blending points, efficiency, consistency, volume.
+
+        Falls back to ESPN weekly actual_points when no DBPlayerSeasonStats
+        exist for this player (or the whole position group), so ESPN-only
+        players still receive a meaningful skill ranking.
+        """
         all_seasons = (
             self.db.query(DBPlayerSeasonStats)
             .join(DBPlayer)
@@ -328,7 +591,8 @@ class ProjectionCriteriaBuilder:
         )
 
         if not all_seasons:
-            return 50.0
+            # No season stats for any player at this position — try ESPN weekly
+            return self._estimate_skill_from_weekly(player_id, position)
 
         # Find this player's season
         player_season = None
@@ -337,7 +601,10 @@ class ProjectionCriteriaBuilder:
                 player_season = s
                 break
         if player_season is None:
-            return 50.0
+            # Other same-position players have season stats but this one doesn't.
+            # Estimate from ESPN weekly data, but cap at peer median (can't rank
+            # properly without comparable stats).
+            return self._estimate_skill_from_weekly(player_id, position)
 
         total = len(all_seasons)
 
@@ -439,13 +706,36 @@ class ProjectionCriteriaBuilder:
     def _get_week_opponent(
         self, player_id: int, week: int, year: int
     ) -> Optional[str]:
-        """Get the opponent team for a player in a given week."""
+        """Get the opponent team for a player in a given week.
+
+        Data-source priority:
+          1. DBPlayerGameLog.opponent (NFL data import)
+          2. DBWeeklyTeamStats.opponent_name via DBWeeklyPlayerStats (ESPN sync)
+        """
         game_log = (
             self.db.query(DBPlayerGameLog)
             .filter_by(player_id=player_id, year=year, week=week)
             .first()
         )
-        return game_log.opponent if game_log else None
+        if game_log and game_log.opponent:
+            return game_log.opponent
+
+        # Fallback: ESPN weekly data links player → weekly_team_stats → opponent
+        weekly = (
+            self.db.query(DBWeeklyPlayerStats)
+            .filter_by(player_id=player_id, week=week)
+            .first()
+        )
+        if weekly and weekly.weekly_team_stats_id:
+            team_week = (
+                self.db.query(DBWeeklyTeamStats)
+                .filter_by(id=weekly.weekly_team_stats_id)
+                .first()
+            )
+            if team_week and team_week.opponent_name:
+                return team_week.opponent_name
+
+        return None
 
     def _compute_team_offense_level(
         self, nfl_team: str, year: int, week: Optional[int] = None
@@ -609,7 +899,91 @@ class ProjectionCriteriaBuilder:
                 pass
         return None
 
-    # ── New helpers for improved criteria derivation ──────────────────────
+    # ── ESPN-based fallback helpers ─────────────────────────────────────
+
+    def _estimate_touch_share_from_weekly(
+        self, player_id: int, position: str, nfl_team: str,
+    ) -> float:
+        """Estimate touch share from ESPN weekly fantasy points among same-position teammates.
+
+        Used when no DBPlayerSeasonStats exists for the player.  Computes the
+        player's proportion of total same-position fantasy output on the team.
+        """
+        pos_upper = position.upper()
+        if pos_upper == 'QB':
+            pos_group = ['QB']
+        elif pos_upper == 'RB':
+            pos_group = ['RB']
+        else:
+            pos_group = ['WR', 'TE']
+
+        # All weekly stats for same-position teammates on this NFL team
+        team_weekly = (
+            self.db.query(
+                DBWeeklyPlayerStats.player_id,
+                func.sum(DBWeeklyPlayerStats.actual_points).label('total_pts'),
+            )
+            .join(DBPlayer, DBWeeklyPlayerStats.player_id == DBPlayer.id)
+            .filter(
+                DBPlayer.nfl_team == nfl_team,
+                DBPlayer.position.in_(pos_group),
+                DBWeeklyPlayerStats.actual_points > 0,
+            )
+            .group_by(DBWeeklyPlayerStats.player_id)
+            .all()
+        )
+        if not team_weekly:
+            return 0.0
+
+        team_total = sum(float(r.total_pts) for r in team_weekly)
+        if team_total <= 0:
+            return 0.0
+
+        player_total = next(
+            (float(r.total_pts) for r in team_weekly if r.player_id == player_id),
+            0.0,
+        )
+        return max(0, min(100, (player_total / team_total) * 100))
+
+    def _estimate_skill_from_weekly(
+        self, player_id: int, position: str,
+    ) -> float:
+        """Estimate a skill composite from ESPN weekly actual_points when season stats are absent.
+
+        Ranks this player's per-game average among all same-position players
+        who have weekly data, producing a 0-100 percentile.
+        """
+        all_weekly = (
+            self.db.query(
+                DBWeeklyPlayerStats.player_id,
+                func.avg(DBWeeklyPlayerStats.actual_points).label('avg_pts'),
+                func.count(DBWeeklyPlayerStats.id).label('game_count'),
+            )
+            .join(DBPlayer, DBWeeklyPlayerStats.player_id == DBPlayer.id)
+            .filter(
+                DBPlayer.position == position,
+                DBWeeklyPlayerStats.actual_points > 0,
+            )
+            .group_by(DBWeeklyPlayerStats.player_id)
+            .having(func.count(DBWeeklyPlayerStats.id) >= 2)
+            .all()
+        )
+        if not all_weekly:
+            return 50.0
+
+        player_avg = next(
+            (float(r.avg_pts) for r in all_weekly if r.player_id == player_id),
+            None,
+        )
+        if player_avg is None:
+            return 50.0
+
+        all_avgs = sorted(float(r.avg_pts) for r in all_weekly)
+        total = len(all_avgs)
+        rank = sum(1 for v in all_avgs if v < player_avg)
+        return max(0, min(100, (rank / total) * 100))
+
+    # ── Touch share ──────────────────────────────────────────────────────
 
     def _compute_touch_share(
         self, player_id: int, position: str, nfl_team: str, year: int
@@ -619,7 +993,9 @@ class ProjectionCriteriaBuilder:
         Filters team data to the same positional group so the denominator
         reflects relevant competition (WRs+TEs compete for targets; RBs
         compete for carries+targets; QBs for pass attempts).  Falls back to
-        ``snap_pct * 100`` when position-specific team data is unavailable.
+        ``snap_pct * 100`` when position-specific team data is unavailable,
+        and ultimately to ESPN weekly fantasy-point share among same-position
+        teammates when no season stats exist at all.
 
         For WR/TE and RB the receiving component prefers ``targets``; when
         targets are absent (ESPN does not always export them) it falls back to
@@ -632,7 +1008,9 @@ class ProjectionCriteriaBuilder:
             .first()
         )
         if not player_season:
-            return 0.0
+            return self._estimate_touch_share_from_weekly(
+                player_id, position, nfl_team
+            )
 
         pos_upper = position.upper()
 
@@ -695,35 +1073,59 @@ class ProjectionCriteriaBuilder:
     def _compute_position_efficiency(
         self, player_id: int, position: str, year: int
     ) -> float:
-        """Position-aware fantasy points per touch/opportunity."""
+        """Position-aware fantasy points per touch/opportunity.
+
+        Falls back to ESPN weekly stats (actual_points / games) when no
+        season stats exist, producing a coarse per-game efficiency proxy
+        rather than returning 0.0.
+        """
         season = (
             self.db.query(DBPlayerSeasonStats)
             .filter_by(player_id=player_id, year=year)
             .first()
         )
-        if not season or not season.fantasy_points_total:
-            return 0.0
+        if season and season.fantasy_points_total:
+            pos_upper = position.upper()
+            if pos_upper == 'QB':
+                denom = (season.pass_att or 0) + (season.rush_att or 0)
+            elif pos_upper == 'RB':
+                # targets preferred; fall back to rec when targets not populated
+                denom = (season.rush_att or 0) + (season.targets or season.rec or 0)
+            elif pos_upper in ('WR', 'TE'):
+                # targets preferred; fall back to rec when targets not populated
+                denom = season.targets or season.rec or 0
+            else:
+                # K/DEF — use generic
+                denom = (
+                    (season.pass_att or 0)
+                    + (season.rush_att or 0)
+                    + (season.targets or season.rec or 0)
+                )
 
-        pos_upper = position.upper()
-        if pos_upper == 'QB':
-            denom = (season.pass_att or 0) + (season.rush_att or 0)
-        elif pos_upper == 'RB':
-            # targets preferred; fall back to rec when targets not populated
-            denom = (season.rush_att or 0) + (season.targets or season.rec or 0)
-        elif pos_upper in ('WR', 'TE'):
-            # targets preferred; fall back to rec when targets not populated
-            denom = season.targets or season.rec or 0
-        else:
-            # K/DEF — use generic
-            denom = (
-                (season.pass_att or 0)
-                + (season.rush_att or 0)
-                + (season.targets or season.rec or 0)
+            if denom > 0:
+                return season.fantasy_points_total / denom
+
+            # Season stats exist but no volume breakdown — use pre-computed value
+            if season.fantasy_points_per_touch and season.fantasy_points_per_touch > 0:
+                return season.fantasy_points_per_touch
+
+        # Fallback: ESPN weekly stats — crude per-game proxy
+        weekly_stats = (
+            self.db.query(DBWeeklyPlayerStats)
+            .filter(
+                DBWeeklyPlayerStats.player_id == player_id,
+                DBWeeklyPlayerStats.actual_points > 0,
             )
+            .all()
+        )
+        if weekly_stats:
+            total_pts = sum(w.actual_points for w in weekly_stats)
+            # Use count of games as a rough "touches" proxy — yields
+            # per-game efficiency which is on a different scale than
+            # per-touch, but far better than 0.0 for ranking purposes.
+            return total_pts / len(weekly_stats)
 
-        if denom == 0:
-            return 0.0
-        return season.fantasy_points_total / denom
+        return 0.0
 
     def _compute_weighted_historical_avg(
         self, player_id: int, target_year: int

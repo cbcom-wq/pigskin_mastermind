@@ -13,7 +13,38 @@
                 <h2 class="text-2xl font-bold text-slate-800 mt-1">Projection Algorithm Tuner</h2>
                 <p class="text-sm text-slate-500 mt-1">Understand, adjust, and simulate projection formula changes</p>
             </div>
-            <div class="flex items-center gap-3">
+            <div class="flex flex-wrap items-center gap-3">
+                <div class="flex items-center gap-2">
+                    <select id="import-year" class="px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+                        {% for y in available_years %}
+                        <option value="{{ y }}">{{ y }}</option>
+                        {% endfor %}
+                        {% if not available_years %}
+                        <option value="2025">2025</option>
+                        <option value="2024">2024</option>
+                        <option value="2023">2023</option>
+                        {% endif %}
+                    </select>
+                    <button id="import-btn" onclick="TunerApp.importNFLData()" class="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 border border-emerald-600 rounded-lg transition-colors flex items-center gap-2">
+                        <span id="import-spinner" class="hidden">
+                            <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                            </svg>
+                        </span>
+                        ⬇ Import NFL Data
+                    </button>
+                    <button id="compute-btn" onclick="TunerApp.computeFromLogs()" title="Aggregate existing ESPN game logs into season stats (no internet needed)" class="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 border border-sky-600 rounded-lg transition-colors flex items-center gap-2">
+                        <span id="compute-spinner" class="hidden">
+                            <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                            </svg>
+                        </span>
+                        ⚙ Compute from Logs
+                    </button>
+                </div>
+                <span id="import-status" class="text-xs text-slate-500"></span>
                 <button onclick="TunerApp.resetAll()" class="px-4 py-2 text-sm font-medium text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors">
                     ↺ Reset All to Defaults
                 </button>
@@ -61,8 +92,40 @@
         <div class="xl:col-span-4 space-y-3">
             <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                 <div class="p-4 border-b border-slate-100 bg-slate-50">
-                    <h3 class="text-sm font-bold text-slate-700 uppercase tracking-wider">🎛️ Coefficient Editor</h3>
-                    <p class="text-xs text-slate-500 mt-1">Adjust multipliers to tune the algorithm</p>
+                    <div class="flex items-center justify-between mb-2">
+                        <h3 class="text-sm font-bold text-slate-700 uppercase tracking-wider">🎛️ Coefficient Editor</h3>
+                        <p class="text-xs text-slate-500">Adjust multipliers to tune the algorithm</p>
+                    </div>
+                    <div id="coeff-pos-tabs" class="flex flex-wrap gap-1">
+                        <button onclick="TunerApp.setEditorPosition('default')" id="coeff-tab-default"
+                                class="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-pigskin-500 text-white transition-colors">
+                            Global
+                        </button>
+                        <button onclick="TunerApp.setEditorPosition('QB')" id="coeff-tab-QB"
+                                class="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors">
+                            QB
+                        </button>
+                        <button onclick="TunerApp.setEditorPosition('RB')" id="coeff-tab-RB"
+                                class="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors">
+                            RB
+                        </button>
+                        <button onclick="TunerApp.setEditorPosition('WR')" id="coeff-tab-WR"
+                                class="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors">
+                            WR
+                        </button>
+                        <button onclick="TunerApp.setEditorPosition('TE')" id="coeff-tab-TE"
+                                class="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors">
+                            TE
+                        </button>
+                        <button onclick="TunerApp.setEditorPosition('K')" id="coeff-tab-K"
+                                class="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors">
+                            K
+                        </button>
+                        <button onclick="TunerApp.setEditorPosition('DEF')" id="coeff-tab-DEF"
+                                class="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors">
+                            DEF
+                        </button>
+                    </div>
                 </div>
                 <div class="divide-y divide-slate-100 max-h-[800px] overflow-y-auto" id="coefficient-editor">
                     {% for group_label, group_key in [("Base Criteria", "base"), ("Weekly-Specific", "weekly"), ("Yearly-Specific", "yearly")] %}
@@ -351,5 +414,5 @@
     </div>
 </div>
 
-<script src="/static/js/projection-tuner.js"></script>
+<script src="/static/js/projection-tuner.js?v=4"></script>
 {% endblock %}

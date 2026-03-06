@@ -8,7 +8,7 @@ from sqlalchemy import func
 from typing import Optional
 
 from pigskin_mastermind.api.database import get_db
-from pigskin_mastermind.models.database import DBPlayer, DBTeam, DBPlayerSeasonStats
+from pigskin_mastermind.models.database import DBPlayer, DBTeam, DBPlayerSeasonStats, DBPlayerGameLog
 from pigskin_mastermind.services.stats_service import StatsService
 
 router = APIRouter(tags=["players"])
@@ -32,9 +32,16 @@ async def player_detail_page(
     stats_svc = StatsService(db)
 
     # On-demand: fetch full weekly stats from ESPN for this player
-    # if we don't already have game logs for them
+    # if we don't already have comprehensive game logs for them.
+    # Players imported via team sync often only have data for weeks
+    # they were rostered, not their full NFL season.
+    MIN_GAME_LOGS = 6  # below this, data is likely incomplete
     has_season_stats = db.query(DBPlayerSeasonStats).filter_by(player_id=player_id).first()
-    if not has_season_stats:
+    game_log_count = (
+        db.query(DBPlayerGameLog).filter_by(player_id=player_id).count()
+    )
+    needs_import = (not has_season_stats) or (game_log_count < MIN_GAME_LOGS)
+    if needs_import:
         try:
             from pigskin_mastermind.services.espn_sync import ESPNSyncService
             from pigskin_mastermind.models.database import DBLeague

@@ -20,8 +20,13 @@ from pigskin_mastermind.models.database import (
     DBTeam,
 )
 from pigskin_mastermind.models.projection_criteria import WeeklyProjectionCriteria
+from pigskin_mastermind.models.algorithm_coefficients import (
+    PositionCoefficients,
+    TUNABLE_POSITIONS,
+)
 from pigskin_mastermind.services.projection_algorithm_tuner import (
     ProjectionAlgorithmTuner,
+    PositionTuningResult,
     SampleComparisonRow,
     TuningRunResult,
     VariationResult,
@@ -494,3 +499,216 @@ class TestResultSerialisation:
         assert rebuilt.sample_count == result.sample_count
         assert rebuilt.run_filters == result.run_filters
         assert len(rebuilt.sample_comparisons) == len(result.sample_comparisons)
+
+
+# ---------------------------------------------------------------------------
+# PositionCoefficients tests
+# ---------------------------------------------------------------------------
+
+
+class TestPositionCoefficients:
+    def test_from_global_copies_to_all_positions(self):
+        base = AlgorithmCoefficients(skill_multiplier=0.2)
+        pc = PositionCoefficients.from_global(base)
+
+        for pos in TUNABLE_POSITIONS:
+            coeffs = pc.get_for_position(pos)
+            assert coeffs.skill_multiplier == 0.2
+            # Verify it's a copy, not the same object
+            assert coeffs is not base
+
+    def test_from_global_defaults(self):
+        pc = PositionCoefficients.from_global()
+        defaults = AlgorithmCoefficients()
+
+        for pos in TUNABLE_POSITIONS:
+            assert pc.get_for_position(pos).to_dict() == defaults.to_dict()
+
+    def test_get_for_position_falls_back_to_default(self):
+        pc = PositionCoefficients(
+            default=AlgorithmCoefficients(skill_multiplier=0.3),
+            by_position={"QB": AlgorithmCoefficients(skill_multiplier=0.5)},
+        )
+        assert pc.get_for_position("QB").skill_multiplier == 0.5
+        assert pc.get_for_position("RB").skill_multiplier == 0.3
+        assert pc.get_for_position("UNKNOWN").skill_multiplier == 0.3
+
+    def test_to_dict_from_dict_roundtrip(self):
+        pc = PositionCoefficients.from_global(
+            AlgorithmCoefficients(skill_multiplier=0.15)
+        )
+        pc.by_position["QB"] = AlgorithmCoefficients(skill_multiplier=0.25)
+
+        data = pc.to_dict()
+        rebuilt = PositionCoefficients.from_dict(data)
+
+        assert rebuilt.get_for_position("QB").skill_multiplier == 0.25
+        assert rebuilt.get_for_position("RB").skill_multiplier == 0.15
+        assert rebuilt.default.skill_multiplier == 0.15
+
+    def test_from_dict_legacy_flat_format(self):
+        """Legacy flat dict should be treated as global defaults."""
+        legacy = {"skill_multiplier": 0.2, "offense_multiplier": 0.08}
+        pc = PositionCoefficients.from_dict(legacy)
+
+        for pos in TUNABLE_POSITIONS:
+            assert pc.get_for_position(pos).skill_multiplier == 0.2
+            assert pc.get_for_position(pos).offense_multiplier == 0.08
+
+    def test_from_dict_empty(self):
+        pc = PositionCoefficients.from_dict({})
+        defaults = AlgorithmCoefficients()
+        assert pc.default.to_dict() == defaults.to_dict()
+
+    def test_positions_property(self):
+        pc = PositionCoefficients(
+            default=AlgorithmCoefficients(),
+            by_position={
+                "QB": AlgorithmCoefficients(),
+                "WR": AlgorithmCoefficients(),
+            },
+        )
+        assert sorted(pc.positions) == ["QB", "WR"]
+
+
+# ---------------------------------------------------------------------------
+# Per-position tuning run tests
+# ---------------------------------------------------------------------------
+
+
+class TestPerPositionTuning:
+    def test_run_per_position_returns_result(self, populated_db):
+        tuner = ProjectionAlgorithmTuner(populated_db)
+        result = tuner.run_per_position(
+            year=2024,
+            max_variations=5,
+            top_n=3,
+        )
+        assert isinstance(result, TuningRunResult)
+        assert result.sample_count > 0
+        assert result.per_position_results  # should have position keys
+        assert result.combined_coefficients  # should have combined coefficients
+        assert result.run_filters.get("per_position") is True
+
+    def test_run_per_position_has_all_sampled_positions(self, populated_db):
+        tuner = ProjectionAlgorithmTuner(populated_db)
+        result = tuner.run_per_position(
+            year=2024,
+            max_variations=5,
+        )
+        # The populated_db has QB and RB
+        assert "QB" in result.per_position_results
+        assert "RB" in result.per_position_results
+
+    def test_run_per_position_each_position_tuned_independently(self, populated_db):
+        tuner = ProjectionAlgorithmTuner(populated_db)
+        result = tuner.run_per_position(
+            year=2024,
+            max_variations=10,
+        )
+        # Each position result should have its own best coefficients
+        qb_result = result.per_position_results["QB"]
+        rb_result = result.per_position_results["RB"]
+
+        if isinstance(qb_result, dict):
+            qb_best = qb_result["best"]["coefficients"]
+            rb_best = rb_result["best"]["coefficients"]
+        else:
+            qb_best = qb_result.best.coefficients
+            rb_best = rb_result.best.coefficients
+
+        # They CAN be the same if the optimal is the same, but the
+        # structure should exist independently
+        assert isinstance(qb_best, dict)
+        assert isinstance(rb_best, dict)
+
+    def test_run_per_position_combined_coefficients_structure(self, populated_db):
+        tuner = ProjectionAlgorithmTuner(populated_db)
+        result = tuner.run_per_position(
+            year=2024,
+            max_variations=5,
+        )
+        combined = result.combined_coefficients
+        assert "default" in combined
+        assert "QB" in combined
+        assert "RB" in combined
+        # Each entry should be a full coefficient dict
+        assert "skill_multiplier" in combined["default"]
+        assert "skill_multiplier" in combined["QB"]
+
+    def test_run_per_position_best_at_least_as_good(self, populated_db):
+        """Combined per-position tuning should be at least as good as global."""
+        tuner = ProjectionAlgorithmTuner(populated_db)
+        global_result = tuner.run(year=2024, max_variations=50)
+        per_pos_result = tuner.run_per_position(year=2024, max_variations=50)
+
+        # Per-position can optimise each position's samples independently,
+        # so the combined MAE should be <= global MAE (or very close)
+        assert per_pos_result.best.mae <= global_result.best.mae + 0.01
+
+    def test_run_per_position_with_position_filter(self, populated_db):
+        tuner = ProjectionAlgorithmTuner(populated_db)
+        result = tuner.run_per_position(
+            year=2024,
+            positions=["QB"],
+            max_variations=5,
+        )
+        assert "QB" in result.per_position_results
+        assert "RB" not in result.per_position_results
+
+    def test_run_per_position_sample_comparisons(self, populated_db):
+        tuner = ProjectionAlgorithmTuner(populated_db)
+        result = tuner.run_per_position(
+            year=2024,
+            max_variations=5,
+        )
+        assert len(result.sample_comparisons) == result.sample_count
+        for sample in result.sample_comparisons:
+            assert isinstance(sample, SampleComparisonRow)
+            assert sample.tuned_error >= 0
+            assert sample.default_error >= 0
+
+    def test_run_per_position_save_and_load(self, populated_db):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tuner = ProjectionAlgorithmTuner(populated_db, results_dir=tmpdir)
+            result = tuner.run_per_position(year=2024, max_variations=5)
+            path = tuner.save_result(result)
+
+            assert os.path.exists(path)
+            loaded = tuner.load_results()
+            assert len(loaded) == 1
+
+            rebuilt = loaded[0]
+            assert rebuilt.year == 2024
+            assert rebuilt.combined_coefficients == result.combined_coefficients
+            assert "QB" in rebuilt.per_position_results
+
+            # After load, per_position_results are PositionTuningResult objects
+            qb_rebuilt = rebuilt.per_position_results["QB"]
+            assert isinstance(qb_rebuilt, PositionTuningResult)
+
+            # The original result stores asdict() dicts
+            qb_original = result.per_position_results["QB"]
+            assert qb_rebuilt.best.mae == qb_original["best"]["mae"]
+
+    def test_run_per_position_analysis_report(self, populated_db):
+        tuner = ProjectionAlgorithmTuner(populated_db)
+        result = tuner.run_per_position(year=2024, max_variations=10)
+        report = tuner.generate_analysis_report(result)
+
+        assert report["summary"]["per_position"] is True
+        assert "per_position_tuning" in report
+        assert "combined_coefficients" in report
+
+        for pos in ["QB", "RB"]:
+            pos_detail = report["per_position_tuning"][pos]
+            assert "default_mae" in pos_detail
+            assert "tuned_mae" in pos_detail
+            assert "mae_reduction" in pos_detail
+            assert "best_coefficients" in pos_detail
+            assert "coefficient_changes" in pos_detail
+
+    def test_run_per_position_raises_on_no_data(self, db):
+        tuner = ProjectionAlgorithmTuner(db)
+        with pytest.raises(ValueError, match="No valid evaluation samples"):
+            tuner.run_per_position(year=2099)

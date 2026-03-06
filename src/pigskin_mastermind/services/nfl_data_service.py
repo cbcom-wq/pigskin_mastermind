@@ -7,9 +7,14 @@ from datetime import datetime
 import pandas as pd
 from sqlalchemy.orm import Session
 
+try:
+    import nfl_data_py as nfl
+except ImportError:
+    nfl = None  # type: ignore[assignment]
 
 from pigskin_mastermind.models.database import (
-    DBPlayer, DBPlayerGameLog, DBPlayerSeasonStats, DBNFLTeamStats
+    DBPlayer, DBPlayerGameLog, DBPlayerSeasonStats, DBNFLTeamStats,
+    DBWeeklyPlayerStats, DBWeeklyTeamStats, DBTeam, DBLeague,
 )
 
 # Columns to pull from the PBP dataset — keeps payload small
@@ -171,7 +176,14 @@ class NFLDataService:
                 season.fantasy_points_total / season.games_played
                 if season.games_played > 0 else 0.0
             )
-            total_touches = season.pass_att + season.rush_att + season.rec
+            # Prefer targets (opportunities) over rec (completions) for the
+            # receiving component so efficiency reflects true opportunity rate.
+            recv_touches = (
+                season.targets
+                if season.targets and season.targets > 0
+                else (season.rec or 0)
+            )
+            total_touches = (season.pass_att or 0) + (season.rush_att or 0) + recv_touches
             season.fantasy_points_per_touch = (
                 season.fantasy_points_total / total_touches
                 if total_touches > 0 else 0.0
@@ -228,6 +240,168 @@ class NFLDataService:
 
             season.snap_count = _safe_int(row.get('offense_snaps'))
             season.snap_pct = _safe_float(row.get('offense_pct'))
+            season.updated_at = datetime.utcnow()
+            count += 1
+
+        self.db.commit()
+        return count
+
+    def _promote_weekly_stats_to_game_logs(self, year: int) -> int:
+        """Convert DBWeeklyPlayerStats rows into DBPlayerGameLog rows.
+
+        ESPN's standard sync path writes to weekly_player_stats but not
+        player_game_logs.  This method fills that gap by iterating every
+        DBWeeklyPlayerStats row whose parent team belongs to a league for
+        the requested year, parsing the stored breakdown JSON, and upserting
+        a DBPlayerGameLog row.  Existing game log rows are updated in place.
+
+        Returns:
+            Number of game log rows created/updated.
+        """
+        from pigskin_mastermind.services.espn_stats_mapper import map_espn_breakdown_to_stats
+
+        # Join weekly_player_stats → weekly_team_stats → teams → leagues
+        # to find the right year without a year column on weekly_team_stats.
+        rows = (
+            self.db.query(DBWeeklyPlayerStats, DBWeeklyTeamStats)
+            .join(DBWeeklyTeamStats,
+                  DBWeeklyPlayerStats.weekly_team_stats_id == DBWeeklyTeamStats.id)
+            .join(DBTeam, DBWeeklyTeamStats.team_id == DBTeam.id)
+            .join(DBLeague, DBTeam.league_id == DBLeague.league_id)
+            .filter(DBLeague.year == year)
+            .all()
+        )
+
+        count = 0
+        for wps, wts in rows:
+            breakdown = {}
+            if wps.stats and isinstance(wps.stats, dict):
+                breakdown = wps.stats.get('breakdown', {})
+
+            parsed = map_espn_breakdown_to_stats(breakdown) if breakdown else {}
+
+            game_log = (
+                self.db.query(DBPlayerGameLog)
+                .filter_by(player_id=wps.player_id, year=year, week=wts.week)
+                .first()
+            )
+            if not game_log:
+                game_log = DBPlayerGameLog(
+                    player_id=wps.player_id,
+                    year=year,
+                    week=wts.week,
+                )
+                self.db.add(game_log)
+
+            game_log.pass_att  = parsed.get('pass_att',  0)
+            game_log.pass_cmp  = parsed.get('pass_cmp',  0)
+            game_log.pass_yd   = parsed.get('pass_yd',   0)
+            game_log.pass_td   = parsed.get('pass_td',   0)
+            game_log.pass_int  = parsed.get('pass_int',  0)
+            game_log.rush_att  = parsed.get('rush_att',  0)
+            game_log.rush_yd   = parsed.get('rush_yd',   0)
+            game_log.rush_td   = parsed.get('rush_td',   0)
+            game_log.targets   = parsed.get('targets',   0)
+            game_log.rec       = parsed.get('rec',       0)
+            game_log.rec_yd    = parsed.get('rec_yd',    0)
+            game_log.rec_td    = parsed.get('rec_td',    0)
+            game_log.fumbles_lost = parsed.get('fumbles_lost', 0)
+            game_log.fantasy_points = wps.actual_points or 0.0
+            game_log.source    = 'espn_weekly'
+            game_log.updated_at = datetime.utcnow()
+            count += 1
+
+        self.db.commit()
+        return count
+
+    def compute_season_stats_from_game_logs(self, year: int) -> int:
+        """Aggregate existing DBPlayerGameLog rows into DBPlayerSeasonStats.
+
+        First promotes any DBWeeklyPlayerStats for the year to game logs
+        (for players synced via ESPN's standard box-score path), then
+        aggregates all game logs into season totals.  No network access
+        required — works entirely from data already in the database.
+
+        Returns:
+            Number of season-stats rows created/updated.
+        """
+        # Step 1: ensure all ESPN weekly stats are represented as game logs
+        self._promote_weekly_stats_to_game_logs(year)
+
+        # Step 2: find every player that has at least one game log for this year
+        player_ids = (
+            self.db.query(DBPlayerGameLog.player_id)
+            .filter_by(year=year)
+            .distinct()
+            .all()
+        )
+        count = 0
+
+        for (player_id,) in player_ids:
+            logs = (
+                self.db.query(DBPlayerGameLog)
+                .filter_by(player_id=player_id, year=year)
+                .all()
+            )
+            if not logs:
+                continue
+
+            season = (
+                self.db.query(DBPlayerSeasonStats)
+                .filter_by(player_id=player_id, year=year)
+                .first()
+            )
+            if not season:
+                season = DBPlayerSeasonStats(player_id=player_id, year=year)
+                self.db.add(season)
+
+            season.games_played = len(logs)
+            season.pass_att   = sum((g.pass_att  or 0) for g in logs)
+            season.pass_cmp   = sum((g.pass_cmp  or 0) for g in logs)
+            season.pass_yd    = sum((g.pass_yd   or 0) for g in logs)
+            season.pass_td    = sum((g.pass_td   or 0) for g in logs)
+            season.pass_int   = sum((g.pass_int  or 0) for g in logs)
+            season.rush_att   = sum((g.rush_att  or 0) for g in logs)
+            season.rush_yd    = sum((g.rush_yd   or 0) for g in logs)
+            season.rush_td    = sum((g.rush_td   or 0) for g in logs)
+            season.rush_fumbles = sum((g.fumbles_lost or 0) for g in logs)
+            season.targets    = sum((g.targets   or 0) for g in logs)
+            season.rec        = sum((g.rec       or 0) for g in logs)
+            season.rec_yd     = sum((g.rec_yd    or 0) for g in logs)
+            season.rec_td     = sum((g.rec_td    or 0) for g in logs)
+            season.fantasy_points_total = sum((g.fantasy_points or 0.0) for g in logs)
+            season.fantasy_points_avg = (
+                season.fantasy_points_total / season.games_played
+                if season.games_played > 0 else 0.0
+            )
+
+            # Prefer targets over rec for per-touch efficiency denominator
+            recv_touches = (
+                season.targets
+                if season.targets and season.targets > 0
+                else (season.rec or 0)
+            )
+            total_touches = (season.pass_att or 0) + (season.rush_att or 0) + recv_touches
+            season.fantasy_points_per_touch = (
+                season.fantasy_points_total / total_touches
+                if total_touches > 0 else 0.0
+            )
+
+            # Passer rating (simplified NFL formula)
+            if season.pass_att > 0:
+                comp_pct = season.pass_cmp / season.pass_att
+                td_pct   = season.pass_td  / season.pass_att
+                int_pct  = season.pass_int / season.pass_att
+                ypa      = season.pass_yd  / season.pass_att
+                a = max(0, min(2.375, (comp_pct - 0.3) * 5))
+                b = max(0, min(2.375, (ypa - 3) * 0.25))
+                c = max(0, min(2.375, td_pct * 20))
+                d = max(0, min(2.375, 2.375 - (int_pct * 25)))
+                season.pass_rating = ((a + b + c + d) / 6) * 100
+            else:
+                season.pass_rating = 0.0
+
+            season.source = 'game_log_aggregation'
             season.updated_at = datetime.utcnow()
             count += 1
 

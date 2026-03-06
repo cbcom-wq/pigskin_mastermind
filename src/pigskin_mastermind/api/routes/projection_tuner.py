@@ -32,7 +32,8 @@ class SimulatePlayerRequest(BaseModel):
     year: int
     week: Optional[int] = None
     projection_type: str = "weekly"  # "weekly" or "yearly"
-    coefficients: Optional[Dict[str, float]] = None
+    # Flat {"skill_multiplier": 0.12} or position-keyed {"QB": {...}, "RB": {...}}
+    coefficients: Optional[Dict[str, Any]] = None
 
 
 class SimulateBulkRequest(BaseModel):
@@ -40,7 +41,8 @@ class SimulateBulkRequest(BaseModel):
     year: int
     week: Optional[int] = None
     projection_type: str = "weekly"
-    coefficients: Optional[Dict[str, float]] = None
+    # Flat {"skill_multiplier": 0.12} or position-keyed {"QB": {...}, "RB": {...}}
+    coefficients: Optional[Dict[str, Any]] = None
 
 
 class CriteriaGridRequest(BaseModel):
@@ -59,6 +61,7 @@ class AlgorithmRunRequest(BaseModel):
     positions: Optional[List[str]] = None
     max_variations: int = 250
     top_n: int = 10
+    per_position: bool = True  # tune coefficients independently per position
 
 
 _VALID_POSITIONS = {"QB", "RB", "WR", "TE", "K", "DEF"}
@@ -106,6 +109,7 @@ def _normalise_algorithm_request(req: AlgorithmRunRequest) -> Tuple[Optional[Dic
         "positions": positions,
         "max_variations": req.max_variations,
         "top_n": req.top_n,
+        "per_position": req.per_position,
     }, None
 
 
@@ -259,9 +263,15 @@ def _run_algorithm_job(job_id: str, req_data: Dict[str, Any], db_factory: Any) -
         _update_job(
             job_id,
             progress_pct=20,
-            message="Evaluating coefficient variations",
+            message="Evaluating coefficient variations"
+            + (" (per-position)" if req_data.get("per_position") else ""),
         )
-        result = tuner.run(
+        run_method = (
+            tuner.run_per_position
+            if req_data.get("per_position")
+            else tuner.run
+        )
+        result = run_method(
             year=req_data["year"],
             weeks=req_data["weeks"],
             player_ids=req_data["player_ids"],
@@ -328,14 +338,24 @@ async def projection_tuner_page(
         .all()
     )
 
-    # Get available years from game logs
-    years = (
+    # Get available years from game logs or season stats
+    years_from_logs = (
         db.query(DBPlayerGameLog.year)
         .distinct()
         .order_by(DBPlayerGameLog.year.desc())
         .all()
     )
-    available_years = [y[0] for y in years] if years else [2025]
+    years_from_seasons = (
+        db.query(DBPlayerSeasonStats.year)
+        .distinct()
+        .order_by(DBPlayerSeasonStats.year.desc())
+        .all()
+    )
+    year_set = sorted(
+        {y[0] for y in years_from_logs} | {y[0] for y in years_from_seasons},
+        reverse=True,
+    )
+    available_years = year_set if year_set else [2024, 2023]
 
     return templates.TemplateResponse(
         "projection_tuner.html",
@@ -399,10 +419,18 @@ async def projection_tuner_run_detail_page(
 @router.get("/api/projection-tuner/defaults")
 async def get_defaults():
     """Return default coefficients and algorithm documentation."""
+    from pigskin_mastermind.models.algorithm_coefficients import (
+        PositionCoefficients,
+        TUNABLE_POSITIONS,
+    )
+
+    pos_coeffs = PositionCoefficients.from_global()
     return {
         "coefficients": get_coefficient_metadata(),
         "criteria_docs": get_criteria_docs(),
         "defaults": get_default_coefficients(),
+        "positions": TUNABLE_POSITIONS,
+        "per_position_defaults": pos_coeffs.to_dict(),
     }
 
 
@@ -586,6 +614,17 @@ async def criteria_grid(
         query = query.filter(DBPlayer.id.in_(req.player_ids))
     players = query.order_by(DBPlayer.position, DBPlayer.name).limit(req.limit).all()
 
+    # Pre-populate structured stats for all players in the grid.
+    # This mirrors the on-demand import the player detail page does
+    # so every player gets game logs + season stats, not just those
+    # previously viewed in the team/player pages.
+    from pigskin_mastermind.services.projection_criteria_builder import (
+        ProjectionCriteriaBuilder,
+    )
+    ensure_year = (req.year - 1) if req.projection_type == "yearly" else req.year
+    builder = ProjectionCriteriaBuilder(db)
+    builder.ensure_players_stats([p.id for p in players], ensure_year)
+
     service = ProjectionTunerService(db)
     rows = []
     for player in players:
@@ -681,6 +720,89 @@ async def get_players_for_tuner(
         }
         for p in players
     ]
+
+
+@router.post("/api/projection-tuner/import-nfl-data")
+async def import_nfl_data_for_tuner(
+    year: int = Query(..., description="Season year to import, e.g. 2024"),
+    db: Session = Depends(get_db),
+):
+    """Import NFL-wide seasonal stats and defense rankings for a given year.
+
+    Uses nfl_data_py (no ESPN credentials required) to populate
+    DBPlayerSeasonStats and DBNFLTeamStats for all skill-position players,
+    ensuring the criteria grid has populated values rather than zeros.
+    """
+    try:
+        from pigskin_mastermind.services.nfl_data_service import NFLDataService
+        service = NFLDataService(db)
+        seasonal_rows = service.import_seasonal_stats([year])
+        defense_rows = service.import_team_defense_rankings([year])
+        return {
+            "status": "ok",
+            "year": year,
+            "seasonal_rows": seasonal_rows,
+            "defense_rows": defense_rows,
+            "message": (
+                f"Imported {seasonal_rows} player season records "
+                f"and {defense_rows} team/defense stats for {year}."
+            ),
+        }
+    except ImportError as exc:
+        return {
+            "status": "error",
+            "message": str(exc),
+            "seasonal_rows": 0,
+            "defense_rows": 0,
+        }
+    except Exception as exc:
+        # nfl_data_py raises urllib.error.HTTPError (404) when nflverse hasn't
+        # published data for the requested year yet.
+        exc_str = str(exc)
+        if "404" in exc_str or "Not Found" in exc_str:
+            return {
+                "status": "error",
+                "message": (
+                    f"No nflverse data available for {year} yet. "
+                    "Try 2024 or an earlier year."
+                ),
+                "seasonal_rows": 0,
+                "defense_rows": 0,
+            }
+        return {
+            "status": "error",
+            "message": f"Import failed: {exc}",
+            "seasonal_rows": 0,
+            "defense_rows": 0,
+        }
+
+
+@router.post("/api/projection-tuner/compute-season-stats")
+async def compute_season_stats_from_logs(
+    year: int = Query(..., description="Season year, e.g. 2025"),
+    db: Session = Depends(get_db),
+):
+    """Derive DBPlayerSeasonStats from existing DBPlayerGameLog rows.
+
+    No network calls required — aggregates whatever game logs are already in
+    the database (from ESPN syncs, nfl_data_py weekly imports, etc.).
+    Ideal when nflverse hasn't yet published a parquet for the current season.
+    """
+    try:
+        from pigskin_mastermind.services.nfl_data_service import NFLDataService
+        rows = NFLDataService(db).compute_season_stats_from_game_logs(year)
+        return {
+            "status": "ok",
+            "year": year,
+            "rows": rows,
+            "message": f"Computed season stats for {rows} players from {year} game logs.",
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "message": f"Compute failed: {exc}",
+            "rows": 0,
+        }
 
 
 @router.get("/api/projection-tuner/diagnose/{player_id}")

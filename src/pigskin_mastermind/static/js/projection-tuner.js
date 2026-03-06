@@ -9,6 +9,9 @@ const TunerApp = (() => {
     let mode = 'single'; // 'single' | 'bulk'
     let debounceTimer = null;
     let algorithmPollTimer = null;
+    let activeEditorPosition = 'default'; // 'default' | 'QB' | 'RB' | 'WR' | 'TE' | 'K' | 'DEF'
+    let perPositionDefaults = {};   // { default: {key: val}, QB: {key: val}, ... }
+    let positionCoeffState = {};    // tracks user-edited values per position
 
     // ── Slider / Input Sync ──────────────────────────────────────────
 
@@ -43,28 +46,108 @@ const TunerApp = (() => {
     // ── Reset ────────────────────────────────────────────────────────
 
     function resetAll() {
+        const posDefaults = perPositionDefaults[activeEditorPosition] || {};
         document.querySelectorAll('.coeff-input').forEach(input => {
-            input.value = input.dataset.default;
             const key = input.id.replace('num-', '');
+            const defVal = (key in posDefaults) ? posDefaults[key] : parseFloat(input.dataset.default);
+            input.value = defVal;
+            input.dataset.default = defVal;
+            const slider = document.getElementById(`slider-${key}`);
+            if (slider) slider.dataset.default = defVal;
             syncSlider(key);
         });
+        if (Object.keys(posDefaults).length > 0) {
+            positionCoeffState[activeEditorPosition] = { ...posDefaults };
+        }
     }
 
     function resetGroup(group) {
-        // Find coefficient containers that belong to this group
+        const posDefaults = perPositionDefaults[activeEditorPosition] || {};
         document.querySelectorAll(`[data-coeff-key]`).forEach(container => {
             const input = container.querySelector('.coeff-input');
             const slider = container.querySelector('.coeff-slider');
             if (!input || !slider) return;
-            // Check if this is in the right group by finding sibling group header
             const groupHeader = container.closest('.divide-y')?.querySelector('[onclick*="resetGroup"]');
             if (groupHeader && groupHeader.getAttribute('onclick').includes(group)) {
-                input.value = input.dataset.default;
-                slider.value = slider.dataset.default;
                 const key = input.id.replace('num-', '');
+                const defVal = (key in posDefaults) ? posDefaults[key] : parseFloat(input.dataset.default);
+                input.value = defVal;
+                input.dataset.default = defVal;
+                slider.value = defVal;
+                slider.dataset.default = defVal;
                 markModified(key);
+                if (positionCoeffState[activeEditorPosition]) {
+                    positionCoeffState[activeEditorPosition][key] = defVal;
+                }
             }
         });
+    }
+
+    // ── Position-specific Coefficient State ─────────────────────────
+
+    function saveCurrentPositionState() {
+        const state = {};
+        document.querySelectorAll('.coeff-input').forEach(input => {
+            const key = input.id.replace('num-', '');
+            state[key] = parseFloat(input.value);
+        });
+        positionCoeffState[activeEditorPosition] = state;
+    }
+
+    function setEditorPosition(pos) {
+        // Save slider values for the position we're leaving
+        saveCurrentPositionState();
+        activeEditorPosition = pos;
+
+        // Update tab button styles
+        const TAB_ACTIVE   = 'px-2.5 py-1 text-[11px] font-semibold rounded-md bg-pigskin-500 text-white transition-colors';
+        const TAB_INACTIVE = 'px-2.5 py-1 text-[11px] font-semibold rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors';
+        document.querySelectorAll('#coeff-pos-tabs button').forEach(btn => {
+            btn.className = btn.id === `coeff-tab-${pos}` ? TAB_ACTIVE : TAB_INACTIVE;
+        });
+
+        // Load saved state (user edits) or fall back to defaults for this position
+        const posState    = positionCoeffState[pos] || perPositionDefaults[pos] || perPositionDefaults['default'] || {};
+        const posDefaults = perPositionDefaults[pos] || perPositionDefaults['default'] || {};
+
+        document.querySelectorAll('.coeff-input').forEach(input => {
+            const key = input.id.replace('num-', '');
+            if (key in posState)    input.value          = posState[key];
+            if (key in posDefaults) input.dataset.default = posDefaults[key];
+            const slider = document.getElementById(`slider-${key}`);
+            if (slider) {
+                if (key in posState)    slider.value          = posState[key];
+                if (key in posDefaults) slider.dataset.default = posDefaults[key];
+            }
+            markModified(key);
+        });
+    }
+
+    async function initPositionCoefficients() {
+        try {
+            const resp = await fetch('/api/projection-tuner/defaults');
+            const data = await resp.json();
+            const ppd = data.per_position_defaults || {};
+            if (!Object.keys(ppd).length) return;
+
+            perPositionDefaults = ppd;
+
+            // Seed state from defaults for every position
+            positionCoeffState = {};
+            for (const [pos, coeffs] of Object.entries(ppd)) {
+                positionCoeffState[pos] = { ...coeffs };
+            }
+
+            // Override 'default' with current DOM values so any pre-load edits are preserved
+            const domCoeffs = {};
+            document.querySelectorAll('.coeff-input').forEach(input => {
+                const key = input.id.replace('num-', '');
+                domCoeffs[key] = parseFloat(input.value);
+            });
+            positionCoeffState['default'] = domCoeffs;
+        } catch (err) {
+            console.warn('Failed to load per-position defaults:', err);
+        }
     }
 
     // ── Mode Tabs ────────────────────────────────────────────────────
@@ -92,12 +175,25 @@ const TunerApp = (() => {
     // ── Collect Coefficients ─────────────────────────────────────────
 
     function getCoefficients() {
-        const coeffs = {};
+        // Capture current DOM values for the active position
+        const currentCoeffs = {};
         document.querySelectorAll('.coeff-input').forEach(input => {
             const key = input.id.replace('num-', '');
-            coeffs[key] = parseFloat(input.value);
+            currentCoeffs[key] = parseFloat(input.value);
         });
-        return coeffs;
+
+        // If position state is loaded, return a full nested position-keyed dict
+        if (Object.keys(positionCoeffState).length > 0) {
+            positionCoeffState[activeEditorPosition] = currentCoeffs;
+            const result = {};
+            for (const [pos, coeffs] of Object.entries(positionCoeffState)) {
+                result[pos] = { ...coeffs };
+            }
+            return result;
+        }
+
+        // Fallback: flat dict (position state not yet loaded from API)
+        return currentCoeffs;
     }
 
     // ── Filter Players ───────────────────────────────────────────────
@@ -1046,6 +1142,85 @@ const TunerApp = (() => {
 
     document.addEventListener('DOMContentLoaded', initGridTypeToggle);
     document.addEventListener('DOMContentLoaded', initAlgorithmTuning);
+    document.addEventListener('DOMContentLoaded', initPositionCoefficients);
+
+    // ── Import NFL Data ───────────────────────────────────────────────
+
+    async function importNFLData() {
+        const btn = document.getElementById('import-btn');
+        const spinner = document.getElementById('import-spinner');
+        const status = document.getElementById('import-status');
+        const yearSelect = document.getElementById('import-year');
+        const year = yearSelect ? parseInt(yearSelect.value) : new Date().getFullYear() - 1;
+
+        btn.disabled = true;
+        spinner.classList.remove('hidden');
+        status.textContent = `Importing ${year} data from nfl_data_py…`;
+        status.className = 'text-xs text-slate-500';
+
+        try {
+            const resp = await fetch(`/api/projection-tuner/import-nfl-data?year=${year}`, {
+                method: 'POST',
+            });
+            const data = await resp.json();
+            if (data.status === 'ok') {
+                status.textContent = `✓ ${data.message}`;
+                status.className = 'text-xs text-emerald-600 font-semibold';
+                // Reload the grid automatically if it was already loaded
+                const gridContainer = document.getElementById('grid-container');
+                if (gridContainer && !gridContainer.querySelector('p.italic')) {
+                    loadGrid();
+                }
+            } else {
+                status.textContent = `✗ ${data.message}`;
+                status.className = 'text-xs text-red-600 font-semibold';
+            }
+        } catch (err) {
+            status.textContent = `✗ Network error: ${err.message}`;
+            status.className = 'text-xs text-red-600 font-semibold';
+        } finally {
+            btn.disabled = false;
+            spinner.classList.add('hidden');
+        }
+    }
+
+    async function computeFromLogs() {
+        const btn = document.getElementById('compute-btn');
+        const spinner = document.getElementById('compute-spinner');
+        const status = document.getElementById('import-status');
+        const yearSelect = document.getElementById('import-year');
+        const year = yearSelect ? parseInt(yearSelect.value) : new Date().getFullYear() - 1;
+
+        btn.disabled = true;
+        spinner.classList.remove('hidden');
+        status.textContent = `Computing season stats from ${year} game logs…`;
+        status.className = 'text-xs text-slate-500';
+
+        try {
+            const resp = await fetch(`/api/projection-tuner/compute-season-stats?year=${year}`, {
+                method: 'POST',
+            });
+            const data = await resp.json();
+            if (data.status === 'ok') {
+                status.textContent = `✓ ${data.message}`;
+                status.className = 'text-xs text-emerald-600 font-semibold';
+                const gridContainer = document.getElementById('grid-container');
+                if (gridContainer && !gridContainer.querySelector('p.italic')) {
+                    loadGrid();
+                }
+            } else {
+                status.textContent = `✗ ${data.message}`;
+                status.className = 'text-xs text-red-600 font-semibold';
+            }
+        } catch (err) {
+            status.textContent = `✗ Network error: ${err.message}`;
+            status.className = 'text-xs text-red-600 font-semibold';
+        } finally {
+            btn.disabled = false;
+            spinner.classList.add('hidden');
+        }
+    }
+
 // ── Public API ──────────────────────────────────────────────────────── ───────────────────────────────────────────────────
 
     return {
@@ -1054,6 +1229,7 @@ const TunerApp = (() => {
         resetAll,
         resetGroup,
         setMode,
+        setEditorPosition,
         filterPlayers,
         runSimulation,
         runDiagnose,
@@ -1062,5 +1238,7 @@ const TunerApp = (() => {
         runAlgorithmTuning,
         loadAlgorithmHistory,
         loadAlgorithmRunFromHistory,
+        importNFLData,
+        computeFromLogs,
     };
 })();

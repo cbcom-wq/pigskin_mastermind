@@ -17,6 +17,10 @@ from pigskin_mastermind.models.database import (
     DBPlayerSeasonStats,
     DBWeeklyPlayerStats,
 )
+from pigskin_mastermind.models.algorithm_coefficients import (
+    PositionCoefficients,
+    TUNABLE_POSITIONS,
+)
 from pigskin_mastermind.models.projection_criteria import (
     PlayerProjectionCriteria,
     WeeklyProjectionCriteria,
@@ -469,15 +473,59 @@ def active_players_query(db: Session, position: Optional[str] = None):
 # ---------------------------------------------------------------------------
 
 class ProjectionTunerService:
-    """Run projection formulas with custom coefficients and return breakdowns."""
+    """Run projection formulas with custom coefficients and return breakdowns.
 
-    def __init__(self, db: Session, coefficients: Optional[Dict[str, float]] = None):
+    Coefficients can be supplied in two formats:
+
+    - **Flat dict** (legacy): ``{"skill_multiplier": 0.12, ...}``
+      Applied identically to every position.
+    - **Position-keyed dict**: ``{"QB": {"skill_multiplier": 0.15, ...}, ...}``
+      Each position gets its own coefficient set.  Keys not present fall
+      back to the global defaults.
+    """
+
+    def __init__(self, db: Session, coefficients: Optional[Dict[str, Any]] = None):
         self.db = db
         self.defaults = get_default_coefficients()
-        self.coefficients = {**self.defaults}
-        if coefficients:
-            self.coefficients.update(coefficients)
         self.criteria_builder = ProjectionCriteriaBuilder(db)
+
+        # Detect format and build per-position coefficient lookup
+        self._position_coefficients: Dict[str, Dict[str, float]] = {}
+        self._global_coefficients: Dict[str, float] = {**self.defaults}
+
+        if coefficients:
+            # Check if position-keyed (any top-level key is a known position)
+            is_position_keyed = any(
+                isinstance(v, dict) for v in coefficients.values()
+            )
+            if is_position_keyed:
+                # Merge global defaults with any "default" key, then
+                # build per-position overrides
+                if "default" in coefficients and isinstance(coefficients["default"], dict):
+                    self._global_coefficients.update(coefficients["default"])
+                for pos in TUNABLE_POSITIONS:
+                    if pos in coefficients and isinstance(coefficients[pos], dict):
+                        merged = {**self._global_coefficients, **coefficients[pos]}
+                        self._position_coefficients[pos] = merged
+            else:
+                # Legacy flat dict → apply to all positions
+                self._global_coefficients.update(coefficients)
+
+    def _resolve_coefficients(self, position: Optional[str] = None) -> Dict[str, float]:
+        """Return the coefficient dict for *position*, or global defaults."""
+        if position and position in self._position_coefficients:
+            return self._position_coefficients[position]
+        return self._global_coefficients
+
+    @property
+    def coefficients(self) -> Dict[str, float]:
+        """Global coefficients (backward-compatible property)."""
+        return self._global_coefficients
+
+    @property
+    def has_position_coefficients(self) -> bool:
+        """True if position-specific overrides are configured."""
+        return bool(self._position_coefficients)
 
     # ------------------------------------------------------------------
     # Core projection with breakdown
@@ -494,8 +542,12 @@ class ProjectionTunerService:
         criteria = self.criteria_builder.build_weekly_criteria(
             player_id, week, year, overrides=criteria_overrides,
         )
-        breakdown = self._apply_base_breakdown(criteria)
-        weekly_steps = self._apply_weekly_breakdown(criteria)
+        # Resolve position for coefficient lookup
+        player = self.db.query(DBPlayer).filter_by(id=player_id).first()
+        position = player.position if player else None
+
+        breakdown = self._apply_base_breakdown(criteria, position=position)
+        weekly_steps = self._apply_weekly_breakdown(criteria, position=position)
         breakdown["steps"].extend(weekly_steps)
 
         total = sum(s["value"] for s in breakdown["steps"])
@@ -523,8 +575,12 @@ class ProjectionTunerService:
         criteria = self.criteria_builder.build_yearly_criteria(
             player_id, year, overrides=criteria_overrides,
         )
-        breakdown = self._apply_base_breakdown(criteria)
-        yearly_steps = self._apply_yearly_breakdown(criteria)
+        # Resolve position for coefficient lookup
+        player = self.db.query(DBPlayer).filter_by(id=player_id).first()
+        position = player.position if player else None
+
+        breakdown = self._apply_base_breakdown(criteria, position=position)
+        yearly_steps = self._apply_yearly_breakdown(criteria, position=position)
         breakdown["steps"].extend(yearly_steps)
 
         total = sum(s["value"] for s in breakdown["steps"])
@@ -563,6 +619,11 @@ class ProjectionTunerService:
         """
         players = active_players_query(self.db, position).all()
 
+        # Pre-populate data for all players in bulk before projecting
+        self.criteria_builder.ensure_players_stats(
+            [p.id for p in players], year,
+        )
+
         results: List[Dict[str, Any]] = []
         for player in players:
             weeks_to_test = self._get_available_weeks(player.id, year, week)
@@ -597,6 +658,11 @@ class ProjectionTunerService:
         """Run yearly projections across players and compare to actuals."""
         players = active_players_query(self.db, position).all()
 
+        # Pre-populate data for all players in bulk before projecting
+        self.criteria_builder.ensure_players_stats(
+            [p.id for p in players], year - 1,
+        )
+
         results: List[Dict[str, Any]] = []
         for player in players:
             try:
@@ -622,10 +688,10 @@ class ProjectionTunerService:
     # ------------------------------------------------------------------
 
     def _apply_base_breakdown(
-        self, criteria: PlayerProjectionCriteria
+        self, criteria: PlayerProjectionCriteria, *, position: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Apply base criteria and return step-by-step breakdown."""
-        c = self.coefficients
+        c = self._resolve_coefficients(position)
         steps = []
 
         # Historical average (baseline)
@@ -734,10 +800,10 @@ class ProjectionTunerService:
         return {"steps": steps}
 
     def _apply_weekly_breakdown(
-        self, criteria: WeeklyProjectionCriteria
+        self, criteria: WeeklyProjectionCriteria, *, position: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Return weekly-specific breakdown steps."""
-        c = self.coefficients
+        c = self._resolve_coefficients(position)
         steps = []
 
         # Defense rank vs position
@@ -779,10 +845,10 @@ class ProjectionTunerService:
         return steps
 
     def _apply_yearly_breakdown(
-        self, criteria: YearlyProjectionCriteria
+        self, criteria: YearlyProjectionCriteria, *, position: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Return yearly-specific breakdown steps."""
-        c = self.coefficients
+        c = self._resolve_coefficients(position)
         steps = []
 
         # Age deviation
@@ -829,32 +895,74 @@ class ProjectionTunerService:
     def _get_actual_points(
         self, player_id: int, week: int, year: int
     ) -> Optional[float]:
-        """Get actual fantasy points from game log."""
+        """Get actual fantasy points for a player/week.
+
+        Data-source priority:
+          1. DBPlayerGameLog.fantasy_points (NFL data import)
+          2. DBWeeklyPlayerStats.actual_points (ESPN sync)
+        """
         log = (
             self.db.query(DBPlayerGameLog)
             .filter_by(player_id=player_id, year=year, week=week)
             .first()
         )
-        return round(log.fantasy_points, 2) if log else None
+        if log:
+            return round(log.fantasy_points, 2)
+
+        # Fallback: ESPN weekly stats
+        weekly = (
+            self.db.query(DBWeeklyPlayerStats)
+            .filter(
+                DBWeeklyPlayerStats.player_id == player_id,
+                DBWeeklyPlayerStats.week == week,
+            )
+            .first()
+        )
+        if weekly and weekly.actual_points is not None and weekly.actual_points > 0:
+            return round(weekly.actual_points, 2)
+
+        return None
 
     def _get_season_avg_actual(
         self, player_id: int, year: int
     ) -> Optional[float]:
-        """Get season average actual fantasy points."""
+        """Get season average actual fantasy points.
+
+        Data-source priority:
+          1. DBPlayerGameLog.fantasy_points average (NFL data import)
+          2. DBWeeklyPlayerStats.actual_points average (ESPN sync)
+        """
         logs = (
             self.db.query(DBPlayerGameLog)
             .filter_by(player_id=player_id, year=year)
             .all()
         )
-        if not logs:
-            return None
-        total = sum(g.fantasy_points for g in logs)
-        return round(total / len(logs), 2)
+        if logs:
+            total = sum(g.fantasy_points for g in logs)
+            return round(total / len(logs), 2)
+
+        # Fallback: ESPN weekly stats
+        weekly = (
+            self.db.query(DBWeeklyPlayerStats)
+            .filter(
+                DBWeeklyPlayerStats.player_id == player_id,
+                DBWeeklyPlayerStats.actual_points > 0,
+            )
+            .all()
+        )
+        if weekly:
+            total = sum(w.actual_points for w in weekly)
+            return round(total / len(weekly), 2)
+
+        return None
 
     def _get_available_weeks(
         self, player_id: int, year: int, week: Optional[int] = None
     ) -> List[int]:
-        """Get weeks with game log data for a player."""
+        """Get weeks with actual fantasy data for a player.
+
+        Checks game logs first, then ESPN weekly player stats.
+        """
         query = (
             self.db.query(DBPlayerGameLog.week)
             .filter_by(player_id=player_id, year=year)
@@ -862,7 +970,21 @@ class ProjectionTunerService:
         if week is not None:
             query = query.filter_by(week=week)
         rows = query.order_by(DBPlayerGameLog.week).all()
-        return [r[0] for r in rows]
+        if rows:
+            return [r[0] for r in rows]
+
+        # Fallback: ESPN weekly stats
+        espn_query = (
+            self.db.query(DBWeeklyPlayerStats.week)
+            .filter(
+                DBWeeklyPlayerStats.player_id == player_id,
+                DBWeeklyPlayerStats.actual_points > 0,
+            )
+        )
+        if week is not None:
+            espn_query = espn_query.filter(DBWeeklyPlayerStats.week == week)
+        espn_rows = espn_query.order_by(DBWeeklyPlayerStats.week).all()
+        return [r[0] for r in espn_rows]
 
     @staticmethod
     def _criteria_to_dict(criteria: PlayerProjectionCriteria) -> Dict[str, float]:

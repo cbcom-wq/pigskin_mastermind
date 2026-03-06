@@ -1,6 +1,10 @@
 """Tests for projection services."""
 
 from pigskin_mastermind.models.player import Player
+from pigskin_mastermind.models.algorithm_coefficients import (
+    AlgorithmCoefficients,
+    PositionCoefficients,
+)
 from pigskin_mastermind.models.projection_criteria import (
     YearlyProjectionCriteria,
     WeeklyProjectionCriteria,
@@ -351,3 +355,97 @@ def test_projection_non_negative():
 
     # Even with very negative criteria, projection should not be negative
     assert projection >= 0
+
+
+# ---------------------------------------------------------------------------
+# Per-position coefficient tests
+# ---------------------------------------------------------------------------
+
+
+def test_weekly_service_with_position_coefficients():
+    """Service with PositionCoefficients uses position-specific values."""
+    qb_coeffs = AlgorithmCoefficients(skill_multiplier=0.2)
+    rb_coeffs = AlgorithmCoefficients(skill_multiplier=0.05)
+    pos_coeffs = PositionCoefficients(
+        default=AlgorithmCoefficients(),
+        by_position={"QB": qb_coeffs, "RB": rb_coeffs},
+    )
+
+    service = WeeklyProjectionService(coefficients=pos_coeffs)
+
+    criteria = WeeklyProjectionCriteria(
+        player_skill_level=80.0,
+        historical_average_points=15.0,
+    )
+
+    qb = Player(player_id="qb1", name="QB", position="QB", team="KC")
+    rb = Player(player_id="rb1", name="RB", position="RB", team="KC")
+
+    qb_proj = service.calculate_projection(qb, criteria)
+    rb_proj = service.calculate_projection(rb, criteria)
+
+    # QB has higher skill_multiplier so should get a bigger boost
+    assert qb_proj > rb_proj
+
+
+def test_yearly_service_with_position_coefficients():
+    """Yearly service also resolves per-position coefficients."""
+    pos_coeffs = PositionCoefficients(
+        default=AlgorithmCoefficients(),
+        by_position={
+            "QB": AlgorithmCoefficients(age_post_peak_multiplier=-1.0),
+            "RB": AlgorithmCoefficients(age_post_peak_multiplier=-2.0),
+        },
+    )
+
+    service = YearlyProjectionService(coefficients=pos_coeffs)
+
+    criteria = YearlyProjectionCriteria(
+        historical_average_points=20.0,
+        age_deviation_from_optimum=3.0,  # 3 years past peak
+    )
+
+    qb = Player(player_id="qb1", name="QB", position="QB", team="KC")
+    rb = Player(player_id="rb1", name="RB", position="RB", team="KC")
+
+    qb_proj = service.calculate_projection(qb, criteria)
+    rb_proj = service.calculate_projection(rb, criteria)
+
+    # RB has steeper post-peak penalty
+    assert qb_proj > rb_proj
+
+
+def test_service_no_coefficients_uses_defaults():
+    """Service without coefficients matches hard-coded default behaviour."""
+    service_none = WeeklyProjectionService()
+    service_default = WeeklyProjectionService(
+        coefficients=AlgorithmCoefficients()
+    )
+
+    criteria = WeeklyProjectionCriteria(
+        player_skill_level=70.0,
+        team_offense_level=60.0,
+        historical_average_points=12.0,
+    )
+    player = Player(player_id="p1", name="P", position="WR", team="KC")
+
+    proj_none = service_none.calculate_projection(player, criteria)
+    proj_default = service_default.calculate_projection(player, criteria)
+
+    assert abs(proj_none - proj_default) < 0.001
+
+
+def test_service_with_single_algorithm_coefficients():
+    """Passing AlgorithmCoefficients wraps to PositionCoefficients."""
+    custom = AlgorithmCoefficients(skill_multiplier=0.3)
+    service = WeeklyProjectionService(coefficients=custom)
+
+    criteria = WeeklyProjectionCriteria(
+        player_skill_level=80.0,
+        historical_average_points=10.0,
+    )
+    player = Player(player_id="p1", name="P", position="WR", team="KC")
+
+    proj = service.calculate_projection(player, criteria)
+    # Skill adjustment: (80-50) × 0.3 = 9.0 + 10.0 baseline = ~19
+    assert proj > 15.0
