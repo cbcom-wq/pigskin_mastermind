@@ -777,6 +777,73 @@ async def import_nfl_data_for_tuner(
         }
 
 
+@router.post("/api/projection-tuner/import-relevant-players")
+async def import_relevant_players_for_tuner(
+    year: int = Query(..., description="Season year to import, e.g. 2025"),
+    db: Session = Depends(get_db),
+):
+    """Import a broad, curated player pool for the projection tuner via ESPN.
+
+    Fetches the top players per skill position from ESPN ordered by
+    ownership/projected points (a reliable relevance proxy):
+
+    - **QB**: 36  (~1 starter + 1 backup per NFL team)
+    - **RB**: 72  (starters, handcuffs, flex options)
+    - **WR**: 80  (2–3 per team + flex pool)
+    - **TE**: 40  (1–2 per team + streamers)
+
+    After importing, ESPN JSON blobs are converted to ``DBPlayerSeasonStats``
+    rows so the players surface in tuner simulations and the criteria grid.
+
+    Requires at least one ESPN league to be configured (credentials are used
+    only for the API call — imported players are not tied to any fantasy team).
+    """
+    from pigskin_mastermind.services.espn_sync import ESPNSyncService, TUNER_PLAYER_LIMITS
+    from pigskin_mastermind.models.database import DBLeague
+
+    league = db.query(DBLeague).first()
+    if not league:
+        return {
+            "status": "error",
+            "message": "No ESPN league configured. Add a league first so credentials are available.",
+            "total": 0,
+        }
+    if not league.espn_s2 or not league.swid:
+        return {
+            "status": "error",
+            "message": "ESPN credentials (espn_s2 / swid) are missing for your league.",
+            "total": 0,
+        }
+
+    try:
+        service = ESPNSyncService(db)
+        result = service.import_relevant_players_for_tuner(
+            league_id=league.league_id,
+            espn_s2=league.espn_s2,
+            swid=league.swid,
+            year=year,
+        )
+        pos_summary = ", ".join(
+            f"{pos}: {result.get(pos, 0)}"
+            for pos in TUNER_PLAYER_LIMITS
+        )
+        return {
+            "status": "ok",
+            "year": year,
+            **result,
+            "message": (
+                f"Imported {result['total']} players ({pos_summary}) "
+                f"and computed season stats for {result['season_stats']} players."
+            ),
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "message": f"Import failed: {exc}",
+            "total": 0,
+        }
+
+
 @router.post("/api/projection-tuner/compute-season-stats")
 async def compute_season_stats_from_logs(
     year: int = Query(..., description="Season year, e.g. 2025"),

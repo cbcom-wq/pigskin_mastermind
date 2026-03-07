@@ -1184,6 +1184,43 @@ const TunerApp = (() => {
         }
     }
 
+    async function importESPNPlayers() {
+        const btn = document.getElementById('import-espn-btn');
+        const spinner = document.getElementById('import-espn-spinner');
+        const status = document.getElementById('import-status');
+        const yearSelect = document.getElementById('import-year');
+        const year = yearSelect ? parseInt(yearSelect.value) : new Date().getFullYear() - 1;
+
+        btn.disabled = true;
+        spinner.classList.remove('hidden');
+        status.textContent = `Importing top ESPN players for ${year}…`;
+        status.className = 'text-xs text-slate-500';
+
+        try {
+            const resp = await fetch(`/api/projection-tuner/import-relevant-players?year=${year}`, {
+                method: 'POST',
+            });
+            const data = await resp.json();
+            if (data.status === 'ok') {
+                status.textContent = `✓ ${data.message}`;
+                status.className = 'text-xs text-emerald-600 font-semibold';
+                const gridContainer = document.getElementById('grid-container');
+                if (gridContainer && !gridContainer.querySelector('p.italic')) {
+                    loadGrid();
+                }
+            } else {
+                status.textContent = `✗ ${data.message}`;
+                status.className = 'text-xs text-red-600 font-semibold';
+            }
+        } catch (err) {
+            status.textContent = `✗ Network error: ${err.message}`;
+            status.className = 'text-xs text-red-600 font-semibold';
+        } finally {
+            btn.disabled = false;
+            spinner.classList.add('hidden');
+        }
+    }
+
     async function computeFromLogs() {
         const btn = document.getElementById('compute-btn');
         const spinner = document.getElementById('compute-spinner');
@@ -1239,6 +1276,7 @@ const TunerApp = (() => {
         loadAlgorithmHistory,
         loadAlgorithmRunFromHistory,
         importNFLData,
+        importESPNPlayers,
         computeFromLogs,
     };
 })();

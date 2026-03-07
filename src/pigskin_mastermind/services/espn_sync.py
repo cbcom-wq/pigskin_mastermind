@@ -34,6 +34,16 @@ ESPN_STAT_ID_TO_SCORING_KEY = {
     62: "two_pt",
 }
 
+# Per-position player limits used by the projection-tuner import.
+# ESPN returns free_agents ordered by ownership/projected points (de-facto ADP
+# proxy), so slicing to these counts gives a relevant, manageable pool.
+TUNER_PLAYER_LIMITS: Dict[str, int] = {
+    "QB": 36,   # ~1 starter + 1 backup per NFL team
+    "RB": 72,   # 2+ starters + handcuffs + flex options
+    "WR": 80,   # 2–3 per team across 32 teams + flex
+    "TE": 40,   # 1–2 per team + streaming options
+}
+
 
 class ESPNSyncService:
     """Service for syncing data with ESPN Fantasy API"""
@@ -700,6 +710,88 @@ class ESPNSyncService:
         result = self.populate_stats_from_player_json(year=year)
         result['players'] = len(seen_player_ids)
         return result
+
+    def import_relevant_players_for_tuner(
+        self,
+        league_id: str,
+        espn_s2: str,
+        swid: str,
+        year: int = 2025,
+        week: int = None,
+        limits: Optional[Dict[str, int]] = None,
+    ) -> Dict[str, Any]:
+        """Import a curated set of relevant skill-position players for the projection tuner.
+
+        Uses ESPN's free_agents endpoint, which returns players ordered by
+        ownership/projected points (a de-facto ADP/relevance proxy), and
+        fetches the top-N players per position.  Unlike a full league sync that
+        only captures rostered players, this populates a broader pool that spans
+        all NFL teams so the tuner can operate beyond your own league's roster.
+
+        After fetching, the raw ESPN JSON blob is converted to structured
+        ``DBPlayerSeasonStats`` rows (via :meth:`populate_stats_from_player_json`)
+        so the players appear in :func:`active_players_query`.
+
+        Args:
+            league_id: ESPN league ID (used for API authentication only).
+            espn_s2: ESPN S2 authentication cookie.
+            swid: ESPN SWID authentication cookie.
+            year: Season year to import.
+            week: Scoring week for the ESPN API call (defaults to current week).
+                  The season-aggregate key ``'0'`` is always included regardless
+                  of which week is requested.
+            limits: Per-position player counts, e.g. ``{"QB": 36, "RB": 72}``.
+                    Defaults to :data:`TUNER_PLAYER_LIMITS`.
+
+        Returns:
+            Dict with per-position import counts plus totals::
+
+                {"QB": 36, "RB": 72, "WR": 80, "TE": 40,
+                 "total": 228, "season_stats": 215}
+        """
+        if limits is None:
+            limits = TUNER_PLAYER_LIMITS
+
+        league = League(
+            league_id=int(league_id),
+            year=year,
+            espn_s2=espn_s2,
+            swid=swid,
+        )
+
+        if week is None:
+            week = league.current_week
+
+        per_position_counts: Dict[str, int] = {}
+        total_players = 0
+
+        for position, limit in limits.items():
+            count = 0
+            try:
+                espn_players = league.free_agents(
+                    week=week,
+                    size=limit,
+                    position=position,
+                )
+                for espn_player in espn_players:
+                    self._import_player_from_box(espn_player, team_db_id=None)
+                    count += 1
+            except Exception as exc:
+                print(f"[import_relevant_players_for_tuner] {position}: {exc}")
+            per_position_counts[position] = count
+            total_players += count
+
+        self.db.commit()
+
+        # Convert the raw ESPN JSON blobs → structured DBPlayerSeasonStats rows
+        # so active_players_query can surface them in the tuner.
+        stats_result = self.populate_stats_from_player_json(year=year)
+
+        return {
+            **per_position_counts,
+            "total": total_players,
+            "season_stats": stats_result.get("season_stats", 0),
+        }
 
     def fetch_player_full_stats(
         self,

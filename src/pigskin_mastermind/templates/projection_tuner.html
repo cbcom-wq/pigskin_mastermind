@@ -34,6 +34,15 @@
                         </span>
                         ⬇ Import NFL Data
                     </button>
+                    <button id="import-espn-btn" onclick="TunerApp.importESPNPlayers()" title="Import top ~36 QBs, 72 RBs, 80 WRs, 40 TEs from ESPN ordered by ownership — broadens the tuner beyond your league's roster" class="px-4 py-2 text-sm font-medium text-white bg-violet-600 hover:bg-violet-700 border border-violet-600 rounded-lg transition-colors flex items-center gap-2">
+                        <span id="import-espn-spinner" class="hidden">
+                            <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                            </svg>
+                        </span>
+                        ⬇ Import ESPN Players
+                    </button>
                     <button id="compute-btn" onclick="TunerApp.computeFromLogs()" title="Aggregate existing ESPN game logs into season stats (no internet needed)" class="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 border border-sky-600 rounded-lg transition-colors flex items-center gap-2">
                         <span id="compute-spinner" class="hidden">
                             <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
