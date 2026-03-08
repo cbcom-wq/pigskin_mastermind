@@ -38,6 +38,7 @@ class ProjectionCriteriaBuilder:
         self.db = db
         # Track players already checked this session to avoid repeated work
         self._ensured_players: set = set()
+        self._ensured_team_years: set = set()
 
     # ------------------------------------------------------------------
     # On-demand per-player data population
@@ -1198,12 +1199,16 @@ class ProjectionCriteriaBuilder:
 
     def _ensure_team_stats(self, year: int) -> None:
         """Lazily populate DBNFLTeamStats from game logs if no data exists for the year."""
+        if year in self._ensured_team_years:
+            return
+
         existing = (
             self.db.query(DBNFLTeamStats)
             .filter_by(year=year)
             .first()
         )
         if existing:
+            self._ensured_team_years.add(year)
             return
 
         # Check we actually have game logs to compute from
@@ -1221,6 +1226,7 @@ class ProjectionCriteriaBuilder:
         self.db.flush()
         self._populate_defense_rankings(year)
         self.db.flush()
+        self._ensured_team_years.add(year)
 
     def _populate_team_offense_stats(self, year: int) -> None:
         """Aggregate game logs into team offense stats (weekly + season)."""

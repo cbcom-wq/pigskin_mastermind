@@ -44,6 +44,10 @@ TUNER_PLAYER_LIMITS: Dict[str, int] = {
     "TE": 40,   # 1–2 per team + streaming options
 }
 
+# Fetch this many times more candidates than the final cap so we can rank
+# locally by actual production and drop zero-point / inactive players.
+TUNER_CANDIDATE_MULTIPLIER: int = 2
+
 
 class ESPNSyncService:
     """Service for syncing data with ESPN Fantasy API"""
@@ -711,6 +715,38 @@ class ESPNSyncService:
         result['players'] = len(seen_player_ids)
         return result
 
+    @staticmethod
+    def _rank_espn_candidates(
+        candidates: list,
+        keep: int,
+    ) -> list:
+        """Rank a pool of ESPN player objects by actual production and return
+        the top *keep* players.
+
+        Sorting priority (descending):
+        1. ``total_points`` – season actual fantasy points (primary signal)
+        2. ``projected_total_points`` – ESPN projected season total
+        3. ``percent_owned`` – ownership % as a popularity tiebreaker
+        4. ``posRank`` ascending – ESPN positional rank (lower = better)
+
+        Players with an ``injuryStatus`` of ``'OUT'`` or ``'IR'`` **and** zero
+        actual points are pushed to the bottom so they only fill remaining
+        slots if not enough healthy producers exist.
+        """
+        def _sort_key(p):
+            total = getattr(p, 'total_points', 0) or 0
+            proj = getattr(p, 'projected_total_points', 0) or 0
+            own = getattr(p, 'percent_owned', 0) or 0
+            pos_rank = getattr(p, 'posRank', 9999) or 9999
+            injury = getattr(p, 'injuryStatus', '') or ''
+            # Demote OUT/IR players that have zero actual production
+            is_demoted = 1 if (injury.upper() in ('OUT', 'IR', 'INJURY_RESERVE') and total <= 0) else 0
+            # Sort: demoted last, then by total desc, proj desc, own desc, posRank asc
+            return (is_demoted, -total, -proj, -own, pos_rank)
+
+        ranked = sorted(candidates, key=_sort_key)
+        return ranked[:keep]
+
     def import_relevant_players_for_tuner(
         self,
         league_id: str,
@@ -719,6 +755,9 @@ class ESPNSyncService:
         year: int = 2025,
         week: int = None,
         limits: Optional[Dict[str, int]] = None,
+        preload_full_history: bool = True,
+        progress_callback=None,
+        log_callback=None,
     ) -> Dict[str, Any]:
         """Import a curated set of relevant skill-position players for the projection tuner.
 
@@ -749,6 +788,14 @@ class ESPNSyncService:
                 {"QB": 36, "RB": 72, "WR": 80, "TE": 40,
                  "total": 228, "season_stats": 215}
         """
+        def emit_progress(progress_pct: int, message: str) -> None:
+            if progress_callback:
+                progress_callback(max(0, min(100, int(progress_pct))), message)
+
+        def emit_log(message: str) -> None:
+            if log_callback:
+                log_callback(message)
+
         if limits is None:
             limits = TUNER_PLAYER_LIMITS
 
@@ -764,32 +811,102 @@ class ESPNSyncService:
 
         per_position_counts: Dict[str, int] = {}
         total_players = 0
+        imported_player_ids: List[int] = []
+        history_players = 0
+        history_game_logs = 0
+        history_season_stats = 0
 
-        for position, limit in limits.items():
+        emit_progress(2, f"Connecting to ESPN for {year} player pool…")
+        emit_log(
+            f"Starting ESPN preload for {year}: "
+            + ", ".join(f"{pos}={limit}" for pos, limit in limits.items())
+        )
+
+        positions = list(limits.items())
+        for idx, (position, limit) in enumerate(positions, start=1):
             count = 0
+            fetch_size = limit * TUNER_CANDIDATE_MULTIPLIER
+            emit_progress(
+                5 + int(((idx - 1) / max(len(positions), 1)) * 15),
+                f"Importing {position} player pool ({idx}/{len(positions)})…",
+            )
             try:
-                espn_players = league.free_agents(
+                candidates = league.free_agents(
                     week=week,
-                    size=limit,
+                    size=fetch_size,
                     position=position,
                 )
-                for espn_player in espn_players:
-                    self._import_player_from_box(espn_player, team_db_id=None)
+                # Rank locally by actual production and keep only top N
+                ranked = self._rank_espn_candidates(candidates, keep=limit)
+                skipped = len(candidates) - len(ranked)
+                for espn_player in ranked:
+                    db_player = self._import_player_from_box(espn_player, team_db_id=None)
+                    self.db.flush()
+                    if db_player.id is not None:
+                        imported_player_ids.append(db_player.id)
                     count += 1
+                emit_log(
+                    f"Imported {count} {position} players "
+                    f"(fetched {len(candidates)}, ranked & kept top {limit}, "
+                    f"dropped {skipped} low-production/inactive)."
+                )
             except Exception as exc:
+                emit_log(f"{position} import failed: {exc}")
                 print(f"[import_relevant_players_for_tuner] {position}: {exc}")
             per_position_counts[position] = count
             total_players += count
 
         self.db.commit()
 
+        unique_player_ids = list(dict.fromkeys(imported_player_ids))
+
+        if preload_full_history and unique_player_ids:
+            emit_log(f"Preloading full player history for {len(unique_player_ids)} players…")
+            for idx, player_id in enumerate(unique_player_ids, start=1):
+                player = self.db.query(DBPlayer).filter_by(id=player_id).first()
+                player_name = player.name if player else f"player {player_id}"
+                emit_progress(
+                    20 + int((idx / max(len(unique_player_ids), 1)) * 70),
+                    f"Fetching full history for {player_name} ({idx}/{len(unique_player_ids)})…",
+                )
+                try:
+                    result = self.fetch_player_full_stats(
+                        db_player_id=player_id,
+                        league_id=league_id,
+                        espn_s2=espn_s2,
+                        swid=swid,
+                        year=year,
+                        league=league,
+                    )
+                    history_players += 1
+                    history_game_logs += result.get("game_logs", 0)
+                    history_season_stats += result.get("season_stats", 0)
+                    emit_log(
+                        f"[{idx}/{len(unique_player_ids)}] {player_name}: "
+                        f"{result.get('game_logs', 0)} game logs, "
+                        f"{result.get('season_stats', 0)} season rows."
+                    )
+                except Exception as exc:
+                    emit_log(
+                        f"[{idx}/{len(unique_player_ids)}] {player_name}: history fetch failed ({exc})"
+                    )
+
         # Convert the raw ESPN JSON blobs → structured DBPlayerSeasonStats rows
         # so active_players_query can surface them in the tuner.
+        emit_progress(95, "Finalizing structured stats…")
         stats_result = self.populate_stats_from_player_json(year=year)
+        emit_progress(100, f"Imported and preloaded {total_players} ESPN players.")
+        emit_log(
+            f"Completed import: {total_players} players, {history_game_logs} game logs, "
+            f"{stats_result.get('season_stats', 0)} season stats rows."
+        )
 
         return {
             **per_position_counts,
             "total": total_players,
+            "preloaded_players": history_players,
+            "history_game_logs": history_game_logs,
+            "history_season_stats": history_season_stats,
             "season_stats": stats_result.get("season_stats", 0),
         }
 
@@ -800,6 +917,7 @@ class ESPNSyncService:
         espn_s2: str,
         swid: str,
         year: int = 2025,
+        league: Any = None,
     ) -> Dict[str, int]:
         """Fetch full per-week stats for a single player from ESPN.
 
@@ -827,12 +945,13 @@ class ESPNSyncService:
             return {"game_logs": 0, "season_stats": 0}
         espn_id = int(db_player.player_id.replace("espn_", ""))
 
-        league = League(
-            league_id=int(league_id),
-            year=year,
-            espn_s2=espn_s2,
-            swid=swid,
-        )
+        if league is None:
+            league = League(
+                league_id=int(league_id),
+                year=year,
+                espn_s2=espn_s2,
+                swid=swid,
+            )
 
         espn_player = league.player_info(playerId=espn_id)
         if not espn_player:

@@ -484,10 +484,15 @@ class ProjectionTunerService:
       back to the global defaults.
     """
 
-    def __init__(self, db: Session, coefficients: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        db: Session,
+        coefficients: Optional[Dict[str, Any]] = None,
+        criteria_builder: Optional[ProjectionCriteriaBuilder] = None,
+    ):
         self.db = db
         self.defaults = get_default_coefficients()
-        self.criteria_builder = ProjectionCriteriaBuilder(db)
+        self.criteria_builder = criteria_builder or ProjectionCriteriaBuilder(db)
 
         # Detect format and build per-position coefficient lookup
         self._position_coefficients: Dict[str, Dict[str, float]] = {}

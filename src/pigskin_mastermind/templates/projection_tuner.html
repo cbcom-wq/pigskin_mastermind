@@ -61,6 +61,40 @@
         </div>
     </div>
 
+    <div id="import-job-modal" class="hidden fixed inset-0 z-50">
+        <div class="absolute inset-0 bg-slate-900/55" onclick="TunerApp.dismissImportModal()"></div>
+        <div class="relative z-10 flex min-h-full items-center justify-center p-4">
+            <div class="w-full max-w-3xl rounded-2xl bg-white shadow-2xl border border-slate-200 overflow-hidden">
+                <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-3 bg-slate-50">
+                    <div>
+                        <h3 class="text-base font-bold text-slate-800">ESPN Player Import</h3>
+                        <p id="import-job-message" class="text-sm text-slate-500 mt-1">Preparing import…</p>
+                    </div>
+                    <button type="button" onclick="TunerApp.dismissImportModal()" class="px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 transition-colors">
+                        Close
+                    </button>
+                </div>
+                <div class="p-5 space-y-4">
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                        <span id="import-job-status-badge" class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-700">Queued</span>
+                        <span id="import-job-progress-text" class="text-xs font-semibold text-slate-500">0%</span>
+                    </div>
+                    <div class="w-full h-3 rounded-full bg-slate-100 overflow-hidden">
+                        <div id="import-job-progress-bar" class="h-full bg-violet-600 transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <p id="import-job-summary" class="text-sm text-slate-600"></p>
+                    <div class="rounded-xl border border-slate-200 overflow-hidden">
+                        <div class="px-4 py-2 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+                            <span class="text-xs font-semibold uppercase tracking-wider text-slate-500">Import Log</span>
+                            <span class="text-[11px] text-slate-400">Live updates</span>
+                        </div>
+                        <pre id="import-job-logs" class="bg-slate-950 text-emerald-300 text-xs leading-5 p-4 max-h-[420px] overflow-y-auto whitespace-pre-wrap">Waiting to start…</pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="grid grid-cols-1 xl:grid-cols-12 gap-5">
         <!-- LEFT PANEL: Algorithm Documentation -->
         <div class="xl:col-span-3 space-y-3">
@@ -317,6 +351,16 @@
                     <select id="grid-type" class="px-2 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
                         <option value="weekly">Weekly</option>
                         <option value="yearly">Yearly</option>
+                    </select>
+                </div>
+                <div class="flex items-center gap-2">
+                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Top N</label>
+                    <select id="grid-limit" class="px-2 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+                        <option value="10">10</option>
+                        <option value="25">25</option>
+                        <option value="50" selected>50</option>
+                        <option value="100">100</option>
+                        <option value="200">200</option>
                     </select>
                 </div>
                 <div id="grid-week-wrap" class="flex items-center gap-2">

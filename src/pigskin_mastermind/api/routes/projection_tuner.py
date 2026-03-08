@@ -4,14 +4,14 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Request, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, sessionmaker
 from typing import Optional, Dict, List, Any, Tuple
 
 from pigskin_mastermind.api.database import get_db
 from pigskin_mastermind.models.database import (
     DBPlayer, DBPlayerGameLog, DBPlayerSeasonStats,
-    DBNFLTeamStats, DBWeeklyPlayerStats,
+    DBNFLTeamStats, DBWeeklyPlayerStats, DBLeague,
 )
 from pigskin_mastermind.services.projection_algorithm_tuner import ProjectionAlgorithmTuner
 from pigskin_mastermind.services.projection_tuner import (
@@ -51,7 +51,7 @@ class CriteriaGridRequest(BaseModel):
     week: Optional[int] = None
     projection_type: str = "weekly"
     player_ids: Optional[List[int]] = None  # None = all matching players
-    limit: int = 50
+    limit: int = Field(50, ge=1, le=200)
 
 
 class AlgorithmRunRequest(BaseModel):
@@ -69,6 +69,9 @@ _MAX_TUNING_VARIATIONS = 2000
 _MAX_TOP_N = 50
 _tuning_jobs: Dict[str, Dict[str, Any]] = {}
 _tuning_jobs_lock = threading.Lock()
+_import_jobs: Dict[str, Dict[str, Any]] = {}
+_import_jobs_lock = threading.Lock()
+_MAX_IMPORT_LOGS = 500
 
 
 def _utc_now_iso() -> str:
@@ -126,6 +129,100 @@ def _update_job(job_id: str, **updates: Any) -> None:
         if job_id not in _tuning_jobs:
             return
         _tuning_jobs[job_id].update(updates)
+
+
+def _snapshot_import_job(job_id: str) -> Optional[Dict[str, Any]]:
+    with _import_jobs_lock:
+        job = _import_jobs.get(job_id)
+        if not job:
+            return None
+        copied = dict(job)
+        copied["logs"] = list(job.get("logs", []))
+        return copied
+
+
+def _update_import_job(job_id: str, **updates: Any) -> None:
+    with _import_jobs_lock:
+        if job_id not in _import_jobs:
+            return
+        _import_jobs[job_id].update(updates)
+
+
+def _append_import_log(job_id: str, message: str) -> None:
+    timestamped = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
+    with _import_jobs_lock:
+        if job_id not in _import_jobs:
+            return
+        logs = _import_jobs[job_id].setdefault("logs", [])
+        logs.append(timestamped)
+        if len(logs) > _MAX_IMPORT_LOGS:
+            del logs[:-_MAX_IMPORT_LOGS]
+
+
+def _run_espn_import_job(job_id: str, year: int, db_factory: Any) -> None:
+    _update_import_job(
+        job_id,
+        status="running",
+        started_at=_utc_now_iso(),
+        progress_pct=1,
+        message="Starting ESPN preload…",
+    )
+    db = db_factory()
+    try:
+        league = db.query(DBLeague).first()
+        if not league:
+            raise ValueError("No ESPN league configured. Add a league first.")
+        if not league.espn_s2 or not league.swid:
+            raise ValueError("ESPN credentials (espn_s2 / swid) are missing for your league.")
+
+        from pigskin_mastermind.services.espn_sync import ESPNSyncService, TUNER_PLAYER_LIMITS
+
+        _append_import_log(job_id, f"Using league {league.league_id} with limits {TUNER_PLAYER_LIMITS}.")
+        service = ESPNSyncService(db)
+
+        def progress_callback(progress_pct: int, message: str) -> None:
+            _update_import_job(job_id, progress_pct=progress_pct, message=message)
+
+        def log_callback(message: str) -> None:
+            _append_import_log(job_id, message)
+
+        result = service.import_relevant_players_for_tuner(
+            league_id=league.league_id,
+            espn_s2=league.espn_s2,
+            swid=league.swid,
+            year=year,
+            preload_full_history=True,
+            progress_callback=progress_callback,
+            log_callback=log_callback,
+        )
+        pos_summary = ", ".join(
+            f"{pos}: {result.get(pos, 0)}"
+            for pos in TUNER_PLAYER_LIMITS
+        )
+        _update_import_job(
+            job_id,
+            status="completed",
+            progress_pct=100,
+            finished_at=_utc_now_iso(),
+            message=f"Completed ESPN preload for {result['total']} players.",
+            result=result,
+            summary=(
+                f"Imported {result['total']} players ({pos_summary}), preloaded "
+                f"{result.get('preloaded_players', 0)} full histories, and stored "
+                f"{result.get('history_game_logs', 0)} game logs."
+            ),
+        )
+    except Exception as exc:
+        _append_import_log(job_id, f"Import failed: {exc}")
+        _update_import_job(
+            job_id,
+            status="failed",
+            finished_at=_utc_now_iso(),
+            message=str(exc),
+            error=str(exc),
+        )
+    finally:
+        db.close()
 
 
 def _build_algorithm_visuals(result: Any, report: Dict[str, Any]) -> Dict[str, Any]:
@@ -612,7 +709,16 @@ async def criteria_grid(
     query = active_players_query(db, req.position)
     if req.player_ids:
         query = query.filter(DBPlayer.id.in_(req.player_ids))
-    players = query.order_by(DBPlayer.position, DBPlayer.name).limit(req.limit).all()
+    players = (
+        query
+        .order_by(
+            DBPlayer.projected_points.desc(),
+            DBPlayer.actual_points.desc(),
+            DBPlayer.name,
+        )
+        .limit(req.limit)
+        .all()
+    )
 
     # Pre-populate structured stats for all players in the grid.
     # This mirrors the on-demand import the player detail page does
@@ -625,7 +731,7 @@ async def criteria_grid(
     builder = ProjectionCriteriaBuilder(db)
     builder.ensure_players_stats([p.id for p in players], ensure_year)
 
-    service = ProjectionTunerService(db)
+    service = ProjectionTunerService(db, criteria_builder=builder)
     rows = []
     for player in players:
         try:
@@ -633,12 +739,9 @@ async def criteria_grid(
                 result = service.project_yearly(player.id, req.year)
             else:
                 if req.week is None:
-                    # No week specified — build criteria directly without projection
-                    from pigskin_mastermind.services.projection_criteria_builder import (
-                        ProjectionCriteriaBuilder,
-                    )
-                    builder = ProjectionCriteriaBuilder(db)
-                    # Use week=1 as a placeholder for criteria derivation
+                    # No week specified — build criteria directly without projection.
+                    # Reuse the request-scoped builder so we keep the ensured-player
+                    # cache instead of re-querying completeness for every row.
                     criteria = builder.build_weekly_criteria(player.id, 1, req.year)
                     result = {
                         "criteria": service._criteria_to_dict(criteria),
@@ -782,66 +885,66 @@ async def import_relevant_players_for_tuner(
     year: int = Query(..., description="Season year to import, e.g. 2025"),
     db: Session = Depends(get_db),
 ):
-    """Import a broad, curated player pool for the projection tuner via ESPN.
+    """Start a background ESPN import that preloads full player history.
 
-    Fetches the top players per skill position from ESPN ordered by
-    ownership/projected points (a reliable relevance proxy):
-
-    - **QB**: 36  (~1 starter + 1 backup per NFL team)
-    - **RB**: 72  (starters, handcuffs, flex options)
-    - **WR**: 80  (2–3 per team + flex pool)
-    - **TE**: 40  (1–2 per team + streamers)
-
-    After importing, ESPN JSON blobs are converted to ``DBPlayerSeasonStats``
-    rows so the players surface in tuner simulations and the criteria grid.
-
-    Requires at least one ESPN league to be configured (credentials are used
-    only for the API call — imported players are not tied to any fantasy team).
+    The worker first imports the curated player pool, then fetches each
+    player's full ESPN history so the tuner can read locally-stored game logs
+    rather than doing slow on-demand lookups from grid requests.
     """
-    from pigskin_mastermind.services.espn_sync import ESPNSyncService, TUNER_PLAYER_LIMITS
-    from pigskin_mastermind.models.database import DBLeague
-
     league = db.query(DBLeague).first()
     if not league:
         return {
             "status": "error",
             "message": "No ESPN league configured. Add a league first so credentials are available.",
-            "total": 0,
         }
     if not league.espn_s2 or not league.swid:
         return {
             "status": "error",
             "message": "ESPN credentials (espn_s2 / swid) are missing for your league.",
-            "total": 0,
         }
 
-    try:
-        service = ESPNSyncService(db)
-        result = service.import_relevant_players_for_tuner(
-            league_id=league.league_id,
-            espn_s2=league.espn_s2,
-            swid=league.swid,
-            year=year,
-        )
-        pos_summary = ", ".join(
-            f"{pos}: {result.get(pos, 0)}"
-            for pos in TUNER_PLAYER_LIMITS
-        )
-        return {
-            "status": "ok",
+    job_id = uuid.uuid4().hex
+    created_at = _utc_now_iso()
+    with _import_jobs_lock:
+        _import_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "progress_pct": 0,
+            "created_at": created_at,
+            "started_at": None,
+            "finished_at": None,
+            "message": f"Queued ESPN preload for {year}.",
+            "error": None,
             "year": year,
-            **result,
-            "message": (
-                f"Imported {result['total']} players ({pos_summary}) "
-                f"and computed season stats for {result['season_stats']} players."
-            ),
+            "logs": [f"[{datetime.now().strftime('%H:%M:%S')}] Job queued for {year}."],
+            "result": None,
+            "summary": None,
         }
-    except Exception as exc:
-        return {
-            "status": "error",
-            "message": f"Import failed: {exc}",
-            "total": 0,
-        }
+
+    db_factory = sessionmaker(autocommit=False, autoflush=False, bind=db.get_bind())
+    worker = threading.Thread(
+        target=_run_espn_import_job,
+        args=(job_id, year, db_factory),
+        daemon=True,
+    )
+    worker.start()
+
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "progress_pct": 0,
+        "created_at": created_at,
+        "message": f"Queued ESPN preload for {year}.",
+    }
+
+
+@router.get("/api/projection-tuner/import-jobs/{job_id}")
+async def get_espn_import_job(job_id: str):
+    """Return background ESPN preload job status, summary, and log output."""
+    job = _snapshot_import_job(job_id)
+    if not job:
+        return {"error": f"Job {job_id} not found"}
+    return job
 
 
 @router.post("/api/projection-tuner/compute-season-stats")

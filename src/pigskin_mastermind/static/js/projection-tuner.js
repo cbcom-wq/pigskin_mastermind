@@ -9,6 +9,7 @@ const TunerApp = (() => {
     let mode = 'single'; // 'single' | 'bulk'
     let debounceTimer = null;
     let algorithmPollTimer = null;
+    let importPollTimer = null;
     let activeEditorPosition = 'default'; // 'default' | 'QB' | 'RB' | 'WR' | 'TE' | 'K' | 'DEF'
     let perPositionDefaults = {};   // { default: {key: val}, QB: {key: val}, ... }
     let positionCoeffState = {};    // tracks user-edited values per position
@@ -671,7 +672,9 @@ const TunerApp = (() => {
         const year = parseInt(document.getElementById('grid-year').value, 10);
         const type = document.getElementById('grid-type').value;
         const weekEl = document.getElementById('grid-week');
+        const limitEl = document.getElementById('grid-limit');
         const week = type === 'weekly' && weekEl ? parseInt(weekEl.value, 10) : null;
+        const limit = limitEl ? parseInt(limitEl.value, 10) : 50;
 
         const btn = document.getElementById('grid-load-btn');
         const spinner = document.getElementById('grid-spinner');
@@ -681,7 +684,7 @@ const TunerApp = (() => {
         spinner.classList.remove('hidden');
         container.innerHTML = '<p class="text-xs text-slate-400 italic p-4">Loading…</p>';
 
-        const body = { year, projection_type: type };
+        const body = { year, projection_type: type, limit };
         if (position) body.position = position;
         if (week !== null) body.week = week;
 
@@ -924,6 +927,133 @@ const TunerApp = (() => {
         algorithmPollTimer = setInterval(() => {
             pollOnce();
         }, 2000);
+    }
+
+    function openImportModal() {
+        const modal = document.getElementById('import-job-modal');
+        if (modal) modal.classList.remove('hidden');
+    }
+
+    function dismissImportModal() {
+        const modal = document.getElementById('import-job-modal');
+        if (modal) modal.classList.add('hidden');
+    }
+
+    function renderImportJob(job) {
+        openImportModal();
+        const messageEl = document.getElementById('import-job-message');
+        const summaryEl = document.getElementById('import-job-summary');
+        const badgeEl = document.getElementById('import-job-status-badge');
+        const progressTextEl = document.getElementById('import-job-progress-text');
+        const progressBarEl = document.getElementById('import-job-progress-bar');
+        const logsEl = document.getElementById('import-job-logs');
+
+        const status = job?.status || 'queued';
+        const progressPct = Number.isFinite(job?.progress_pct) ? job.progress_pct : 0;
+        const badgeClass = status === 'completed'
+            ? 'inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700'
+            : status === 'failed'
+                ? 'inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700'
+                : 'inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-violet-100 text-violet-700';
+
+        if (messageEl) messageEl.textContent = job?.message || 'Working…';
+        if (summaryEl) summaryEl.textContent = job?.summary || '';
+        if (badgeEl) {
+            badgeEl.className = badgeClass;
+            badgeEl.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+        }
+        if (progressTextEl) progressTextEl.textContent = `${progressPct}%`;
+        if (progressBarEl) progressBarEl.style.width = `${Math.max(0, Math.min(100, progressPct))}%`;
+        if (logsEl) {
+            const nextText = Array.isArray(job?.logs) && job.logs.length
+                ? job.logs.join('\n')
+                : 'Waiting to start…';
+            const shouldStick = Math.abs(logsEl.scrollHeight - logsEl.scrollTop - logsEl.clientHeight) < 24;
+            logsEl.textContent = nextText;
+            if (shouldStick || status === 'completed' || status === 'failed') {
+                logsEl.scrollTop = logsEl.scrollHeight;
+            }
+        }
+    }
+
+    async function pollImportJob(jobId) {
+        if (!jobId) return;
+        if (importPollTimer) {
+            clearInterval(importPollTimer);
+            importPollTimer = null;
+        }
+
+        const btn = document.getElementById('import-espn-btn');
+        const spinner = document.getElementById('import-espn-spinner');
+        const status = document.getElementById('import-status');
+
+        const pollOnce = async () => {
+            try {
+                const resp = await fetch(`/api/projection-tuner/import-jobs/${encodeURIComponent(jobId)}`);
+                const data = await resp.json();
+                if (data.error) {
+                    renderImportJob({ status: 'failed', progress_pct: 0, message: data.error, logs: [data.error] });
+                    if (status) {
+                        status.textContent = `✗ ${data.error}`;
+                        status.className = 'text-xs text-red-600 font-semibold';
+                    }
+                    if (btn) btn.disabled = false;
+                    if (spinner) spinner.classList.add('hidden');
+                    if (importPollTimer) {
+                        clearInterval(importPollTimer);
+                        importPollTimer = null;
+                    }
+                    return;
+                }
+
+                renderImportJob(data);
+                if (status) {
+                    status.textContent = data.status === 'completed'
+                        ? `✓ ${data.summary || data.message}`
+                        : data.status === 'failed'
+                            ? `✗ ${data.message}`
+                            : `${data.progress_pct || 0}% — ${data.message}`;
+                    status.className = data.status === 'completed'
+                        ? 'text-xs text-emerald-600 font-semibold'
+                        : data.status === 'failed'
+                            ? 'text-xs text-red-600 font-semibold'
+                            : 'text-xs text-slate-500';
+                }
+
+                if (data.status === 'completed' || data.status === 'failed') {
+                    if (importPollTimer) {
+                        clearInterval(importPollTimer);
+                        importPollTimer = null;
+                    }
+                    if (btn) btn.disabled = false;
+                    if (spinner) spinner.classList.add('hidden');
+
+                    if (data.status === 'completed') {
+                        const gridContainer = document.getElementById('grid-container');
+                        if (gridContainer && !gridContainer.querySelector('p.italic')) {
+                            loadGrid();
+                        }
+                    }
+                }
+            } catch (err) {
+                renderImportJob({ status: 'failed', progress_pct: 0, message: err.message, logs: [err.message] });
+                if (status) {
+                    status.textContent = `✗ Network error: ${err.message}`;
+                    status.className = 'text-xs text-red-600 font-semibold';
+                }
+                if (btn) btn.disabled = false;
+                if (spinner) spinner.classList.add('hidden');
+                if (importPollTimer) {
+                    clearInterval(importPollTimer);
+                    importPollTimer = null;
+                }
+            }
+        };
+
+        await pollOnce();
+        importPollTimer = setInterval(() => {
+            pollOnce();
+        }, 1500);
     }
 
     function renderAlgorithmResult(data) {
@@ -1193,29 +1323,37 @@ const TunerApp = (() => {
 
         btn.disabled = true;
         spinner.classList.remove('hidden');
-        status.textContent = `Importing top ESPN players for ${year}…`;
+        status.textContent = `Queueing ESPN full-history import for ${year}…`;
         status.className = 'text-xs text-slate-500';
+        renderImportJob({
+            status: 'queued',
+            progress_pct: 0,
+            message: `Queueing ESPN full-history import for ${year}…`,
+            logs: [`Preparing import request for ${year}…`],
+        });
 
         try {
             const resp = await fetch(`/api/projection-tuner/import-relevant-players?year=${year}`, {
                 method: 'POST',
             });
             const data = await resp.json();
-            if (data.status === 'ok') {
-                status.textContent = `✓ ${data.message}`;
-                status.className = 'text-xs text-emerald-600 font-semibold';
-                const gridContainer = document.getElementById('grid-container');
-                if (gridContainer && !gridContainer.querySelector('p.italic')) {
-                    loadGrid();
-                }
-            } else {
-                status.textContent = `✗ ${data.message}`;
+            if (data.error || data.status === 'error') {
+                const message = data.error || data.message || 'Import failed';
+                status.textContent = `✗ ${message}`;
                 status.className = 'text-xs text-red-600 font-semibold';
+                renderImportJob({ status: 'failed', progress_pct: 0, message, logs: [message] });
+                btn.disabled = false;
+                spinner.classList.add('hidden');
+            } else {
+                status.textContent = `${data.progress_pct || 0}% — ${data.message || 'Queued'}`;
+                status.className = 'text-xs text-slate-500';
+                renderImportJob(data);
+                await pollImportJob(data.job_id);
             }
         } catch (err) {
             status.textContent = `✗ Network error: ${err.message}`;
             status.className = 'text-xs text-red-600 font-semibold';
-        } finally {
+            renderImportJob({ status: 'failed', progress_pct: 0, message: err.message, logs: [err.message] });
             btn.disabled = false;
             spinner.classList.add('hidden');
         }
@@ -1277,6 +1415,7 @@ const TunerApp = (() => {
         loadAlgorithmRunFromHistory,
         importNFLData,
         importESPNPlayers,
+        dismissImportModal,
         computeFromLogs,
     };
 })();
