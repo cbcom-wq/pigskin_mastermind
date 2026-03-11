@@ -61,6 +61,28 @@
         </div>
     </div>
 
+    <!-- MC Parameters Status Banner -->
+    <div id="mc-params-banner" class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div class="flex items-center gap-3">
+                <span class="text-lg">🎲</span>
+                <div>
+                    <p class="text-sm font-semibold text-slate-700">
+                        MC Hyper-parameters: <span id="mc-params-label" class="text-slate-500">All defaults</span>
+                    </p>
+                    <p id="mc-params-detail" class="text-xs text-slate-400 mt-0.5">Params apply to the next simulation run. Click "Run Simulation" to see the effect.</p>
+                </div>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                <button onclick="TunerApp.resetAll()"
+                        class="px-3 py-1.5 text-xs font-semibold text-slate-600 border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors">
+                    ↺ Reset MC Params to Defaults
+                </button>
+                <span id="mc-params-status" class="text-xs text-slate-400"></span>
+            </div>
+        </div>
+    </div>
+
     <div id="import-job-modal" class="hidden fixed inset-0 z-50">
         <div class="absolute inset-0 bg-slate-900/55" onclick="TunerApp.dismissImportModal()"></div>
         <div class="relative z-10 flex min-h-full items-center justify-center p-4">
@@ -131,88 +153,270 @@
             </div>
         </div>
 
-        <!-- CENTER PANEL: Coefficient Editor -->
+        <!-- CENTER PANEL: MC Hyper-parameter Editor -->
         <div class="xl:col-span-4 space-y-3">
             <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                 <div class="p-4 border-b border-slate-100 bg-slate-50">
-                    <div class="flex items-center justify-between mb-2">
-                        <h3 class="text-sm font-bold text-slate-700 uppercase tracking-wider">🎛️ Coefficient Editor</h3>
-                        <p class="text-xs text-slate-500">Adjust multipliers to tune the algorithm</p>
-                    </div>
-                    <div id="coeff-pos-tabs" class="flex flex-wrap gap-1">
-                        <button onclick="TunerApp.setEditorPosition('default')" id="coeff-tab-default"
-                                class="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-pigskin-500 text-white transition-colors">
-                            Global
-                        </button>
-                        <button onclick="TunerApp.setEditorPosition('QB')" id="coeff-tab-QB"
-                                class="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors">
-                            QB
-                        </button>
-                        <button onclick="TunerApp.setEditorPosition('RB')" id="coeff-tab-RB"
-                                class="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors">
-                            RB
-                        </button>
-                        <button onclick="TunerApp.setEditorPosition('WR')" id="coeff-tab-WR"
-                                class="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors">
-                            WR
-                        </button>
-                        <button onclick="TunerApp.setEditorPosition('TE')" id="coeff-tab-TE"
-                                class="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors">
-                            TE
-                        </button>
-                        <button onclick="TunerApp.setEditorPosition('K')" id="coeff-tab-K"
-                                class="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors">
-                            K
-                        </button>
-                        <button onclick="TunerApp.setEditorPosition('DEF')" id="coeff-tab-DEF"
-                                class="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors">
-                            DEF
-                        </button>
+                    <div class="flex items-center justify-between">
+                        <h3 class="text-sm font-bold text-slate-700 uppercase tracking-wider">🎲 MC Parameters</h3>
+                        <p class="text-xs text-slate-500">Tune the simulation engine constants</p>
                     </div>
                 </div>
-                <div class="divide-y divide-slate-100 max-h-[800px] overflow-y-auto" id="coefficient-editor">
-                    {% for group_label, group_key in [("Base Criteria", "base"), ("Weekly-Specific", "weekly"), ("Yearly-Specific", "yearly")] %}
+                <div class="divide-y divide-slate-100 max-h-[800px] overflow-y-auto" id="mc-param-editor">
+
+                    <!-- ── Touch Volume ── -->
                     <div>
                         <div class="px-4 py-3 bg-slate-50 flex items-center justify-between">
-                            <span class="text-xs font-bold uppercase tracking-wider text-slate-500">{{ group_label }}</span>
-                            <button onclick="TunerApp.resetGroup('{{ group_key }}')" class="text-[10px] font-semibold text-pigskin-500 hover:text-pigskin-700">Reset Group</button>
+                            <span class="text-xs font-bold uppercase tracking-wider text-slate-500">Touch Volume</span>
+                            <button onclick="TunerApp.resetGroup('touch')" class="text-[10px] font-semibold text-pigskin-500 hover:text-pigskin-700">Reset Group</button>
                         </div>
-                        {% for coeff in coefficients %}
-                        {% if coeff.group == group_key %}
-                        <div class="px-4 py-3" data-coeff-key="{{ coeff.key }}">
+
+                        <div class="px-4 py-3" data-mc-key="touch_std_fraction" data-mc-group="touch">
                             <div class="flex items-center justify-between mb-1">
-                                <label class="text-xs font-semibold text-slate-700">{{ coeff.name }}</label>
-                                <div class="flex items-center gap-2">
-                                    <input type="number"
-                                           id="num-{{ coeff.key }}"
-                                           value="{{ coeff.default }}"
-                                           step="{{ coeff.step }}"
-                                           min="{{ coeff.min }}"
-                                           max="{{ coeff.max }}"
-                                           data-default="{{ coeff.default }}"
-                                           class="w-20 px-2 py-1 text-xs text-right border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-pigskin-400 coeff-input"
-                                           oninput="TunerApp.syncSlider('{{ coeff.key }}')">
-                                </div>
+                                <label class="text-xs font-semibold text-slate-700">Touch Variability σ</label>
+                                <input type="number" id="mc-num-touch_std_fraction" value="0.25" step="0.05" min="0.05" max="0.75" data-default="0.25"
+                                       class="w-20 px-2 py-1 text-xs text-right border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-pigskin-400 mc-input"
+                                       oninput="TunerApp.syncSlider('touch_std_fraction')">
                             </div>
-                            <input type="range"
-                                   id="slider-{{ coeff.key }}"
-                                   value="{{ coeff.default }}"
-                                   step="{{ coeff.step }}"
-                                   min="{{ coeff.min }}"
-                                   max="{{ coeff.max }}"
-                                   data-default="{{ coeff.default }}"
-                                   class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-pigskin-500 coeff-slider"
-                                   oninput="TunerApp.syncInput('{{ coeff.key }}')">
+                            <input type="range" id="mc-slider-touch_std_fraction" value="0.25" step="0.05" min="0.05" max="0.75" data-default="0.25"
+                                   class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-pigskin-500 mc-slider"
+                                   oninput="TunerApp.syncInput('touch_std_fraction')">
                             <div class="flex justify-between mt-1">
-                                <span class="text-[10px] text-slate-400">{{ coeff.min }}</span>
-                                <span class="text-[10px] text-slate-400 italic">{{ coeff.formula }}</span>
-                                <span class="text-[10px] text-slate-400">{{ coeff.max }}</span>
+                                <span class="text-[10px] text-slate-400">0.05</span>
+                                <span class="text-[10px] text-slate-400 italic">σ = μ_touches × this</span>
+                                <span class="text-[10px] text-slate-400">0.75</span>
                             </div>
                         </div>
-                        {% endif %}
-                        {% endfor %}
+
+                        <div class="px-4 py-3" data-mc-key="trend_touch_weight" data-mc-group="touch">
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-xs font-semibold text-slate-700">Trend Touch Weight</label>
+                                <input type="number" id="mc-num-trend_touch_weight" value="0.2" step="0.05" min="0.0" max="1.0" data-default="0.2"
+                                       class="w-20 px-2 py-1 text-xs text-right border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-pigskin-400 mc-input"
+                                       oninput="TunerApp.syncSlider('trend_touch_weight')">
+                            </div>
+                            <input type="range" id="mc-slider-trend_touch_weight" value="0.2" step="0.05" min="0.0" max="1.0" data-default="0.2"
+                                   class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-pigskin-500 mc-slider"
+                                   oninput="TunerApp.syncInput('trend_touch_weight')">
+                            <div class="flex justify-between mt-1">
+                                <span class="text-[10px] text-slate-400">0</span>
+                                <span class="text-[10px] text-slate-400 italic">(1 + trend_delta × 2 × this)</span>
+                                <span class="text-[10px] text-slate-400">1</span>
+                            </div>
+                        </div>
+
+                        <div class="px-4 py-3" data-mc-key="momentum_touch_weight" data-mc-group="touch">
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-xs font-semibold text-slate-700">Momentum Touch Weight</label>
+                                <input type="number" id="mc-num-momentum_touch_weight" value="0.1" step="0.05" min="0.0" max="0.5" data-default="0.1"
+                                       class="w-20 px-2 py-1 text-xs text-right border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-pigskin-400 mc-input"
+                                       oninput="TunerApp.syncSlider('momentum_touch_weight')">
+                            </div>
+                            <input type="range" id="mc-slider-momentum_touch_weight" value="0.1" step="0.05" min="0.0" max="0.5" data-default="0.1"
+                                   class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-pigskin-500 mc-slider"
+                                   oninput="TunerApp.syncInput('momentum_touch_weight')">
+                            <div class="flex justify-between mt-1">
+                                <span class="text-[10px] text-slate-400">0</span>
+                                <span class="text-[10px] text-slate-400 italic">(1 + momentum_delta × 2 × this)</span>
+                                <span class="text-[10px] text-slate-400">0.5</span>
+                            </div>
+                        </div>
                     </div>
-                    {% endfor %}
+
+                    <!-- ── Efficiency ── -->
+                    <div>
+                        <div class="px-4 py-3 bg-slate-50 flex items-center justify-between">
+                            <span class="text-xs font-bold uppercase tracking-wider text-slate-500">Efficiency</span>
+                            <button onclick="TunerApp.resetGroup('efficiency')" class="text-[10px] font-semibold text-pigskin-500 hover:text-pigskin-700">Reset Group</button>
+                        </div>
+
+                        <div class="px-4 py-3" data-mc-key="matchup_weight" data-mc-group="efficiency">
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-xs font-semibold text-slate-700">Matchup Weight</label>
+                                <input type="number" id="mc-num-matchup_weight" value="0.1" step="0.05" min="0.0" max="0.5" data-default="0.1"
+                                       class="w-20 px-2 py-1 text-xs text-right border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-pigskin-400 mc-input"
+                                       oninput="TunerApp.syncSlider('matchup_weight')">
+                            </div>
+                            <input type="range" id="mc-slider-matchup_weight" value="0.1" step="0.05" min="0.0" max="0.5" data-default="0.1"
+                                   class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-pigskin-500 mc-slider"
+                                   oninput="TunerApp.syncInput('matchup_weight')">
+                            <div class="flex justify-between mt-1">
+                                <span class="text-[10px] text-slate-400">0</span>
+                                <span class="text-[10px] text-slate-400 italic">eff × (1 + (off−def) × this)</span>
+                                <span class="text-[10px] text-slate-400">0.5</span>
+                            </div>
+                        </div>
+
+                        <div class="px-4 py-3" data-mc-key="position_rank_divisor" data-mc-group="efficiency">
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-xs font-semibold text-slate-700">Position Rank Divisor</label>
+                                <input type="number" id="mc-num-position_rank_divisor" value="50" step="5" min="10" max="100" data-default="50"
+                                       class="w-20 px-2 py-1 text-xs text-right border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-pigskin-400 mc-input"
+                                       oninput="TunerApp.syncSlider('position_rank_divisor')">
+                            </div>
+                            <input type="range" id="mc-slider-position_rank_divisor" value="50" step="5" min="10" max="100" data-default="50"
+                                   class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-pigskin-500 mc-slider"
+                                   oninput="TunerApp.syncInput('position_rank_divisor')">
+                            <div class="flex justify-between mt-1">
+                                <span class="text-[10px] text-slate-400">10</span>
+                                <span class="text-[10px] text-slate-400 italic">bonus = (rank − 17) / this</span>
+                                <span class="text-[10px] text-slate-400">100</span>
+                            </div>
+                        </div>
+
+                        <div class="px-4 py-3" data-mc-key="efficiency_std_fraction" data-mc-group="efficiency">
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-xs font-semibold text-slate-700">Efficiency Variability σ</label>
+                                <input type="number" id="mc-num-efficiency_std_fraction" value="0.2" step="0.05" min="0.05" max="0.75" data-default="0.2"
+                                       class="w-20 px-2 py-1 text-xs text-right border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-pigskin-400 mc-input"
+                                       oninput="TunerApp.syncSlider('efficiency_std_fraction')">
+                            </div>
+                            <input type="range" id="mc-slider-efficiency_std_fraction" value="0.2" step="0.05" min="0.05" max="0.75" data-default="0.2"
+                                   class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-pigskin-500 mc-slider"
+                                   oninput="TunerApp.syncInput('efficiency_std_fraction')">
+                            <div class="flex justify-between mt-1">
+                                <span class="text-[10px] text-slate-400">0.05</span>
+                                <span class="text-[10px] text-slate-400 italic">σ = μ_efficiency × this</span>
+                                <span class="text-[10px] text-slate-400">0.75</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ── Touchdowns ── -->
+                    <div>
+                        <div class="px-4 py-3 bg-slate-50 flex items-center justify-between">
+                            <span class="text-xs font-bold uppercase tracking-wider text-slate-500">Touchdowns</span>
+                            <button onclick="TunerApp.resetGroup('touchdowns')" class="text-[10px] font-semibold text-pigskin-500 hover:text-pigskin-700">Reset Group</button>
+                        </div>
+
+                        <div class="px-4 py-3" data-mc-key="base_td_lambda" data-mc-group="touchdowns">
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-xs font-semibold text-slate-700">Base TD Lambda (λ)</label>
+                                <input type="number" id="mc-num-base_td_lambda" value="0.6" step="0.1" min="0.1" max="2.0" data-default="0.6"
+                                       class="w-20 px-2 py-1 text-xs text-right border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-pigskin-400 mc-input"
+                                       oninput="TunerApp.syncSlider('base_td_lambda')">
+                            </div>
+                            <input type="range" id="mc-slider-base_td_lambda" value="0.6" step="0.1" min="0.1" max="2.0" data-default="0.6"
+                                   class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-pigskin-500 mc-slider"
+                                   oninput="TunerApp.syncInput('base_td_lambda')">
+                            <div class="flex justify-between mt-1">
+                                <span class="text-[10px] text-slate-400">0.1</span>
+                                <span class="text-[10px] text-slate-400 italic">Poisson λ baseline</span>
+                                <span class="text-[10px] text-slate-400">2.0</span>
+                            </div>
+                        </div>
+
+                        <div class="px-4 py-3" data-mc-key="skill_td_weight" data-mc-group="touchdowns">
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-xs font-semibold text-slate-700">Skill TD Weight</label>
+                                <input type="number" id="mc-num-skill_td_weight" value="0.3" step="0.05" min="0.0" max="1.0" data-default="0.3"
+                                       class="w-20 px-2 py-1 text-xs text-right border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-pigskin-400 mc-input"
+                                       oninput="TunerApp.syncSlider('skill_td_weight')">
+                            </div>
+                            <input type="range" id="mc-slider-skill_td_weight" value="0.3" step="0.05" min="0.0" max="1.0" data-default="0.3"
+                                   class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-pigskin-500 mc-slider"
+                                   oninput="TunerApp.syncInput('skill_td_weight')">
+                            <div class="flex justify-between mt-1">
+                                <span class="text-[10px] text-slate-400">0</span>
+                                <span class="text-[10px] text-slate-400 italic">λ × (1 + skill × this)</span>
+                                <span class="text-[10px] text-slate-400">1</span>
+                            </div>
+                        </div>
+
+                        <div class="px-4 py-3" data-mc-key="offense_td_weight" data-mc-group="touchdowns">
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-xs font-semibold text-slate-700">Offense TD Weight</label>
+                                <input type="number" id="mc-num-offense_td_weight" value="0.2" step="0.05" min="0.0" max="1.0" data-default="0.2"
+                                       class="w-20 px-2 py-1 text-xs text-right border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-pigskin-400 mc-input"
+                                       oninput="TunerApp.syncSlider('offense_td_weight')">
+                            </div>
+                            <input type="range" id="mc-slider-offense_td_weight" value="0.2" step="0.05" min="0.0" max="1.0" data-default="0.2"
+                                   class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-pigskin-500 mc-slider"
+                                   oninput="TunerApp.syncInput('offense_td_weight')">
+                            <div class="flex justify-between mt-1">
+                                <span class="text-[10px] text-slate-400">0</span>
+                                <span class="text-[10px] text-slate-400 italic">λ × (1 + offense × this)</span>
+                                <span class="text-[10px] text-slate-400">1</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ── Simulation ── -->
+                    <div>
+                        <div class="px-4 py-3 bg-slate-50 flex items-center justify-between">
+                            <span class="text-xs font-bold uppercase tracking-wider text-slate-500">Simulation</span>
+                            <button onclick="TunerApp.resetGroup('simulation')" class="text-[10px] font-semibold text-pigskin-500 hover:text-pigskin-700">Reset Group</button>
+                        </div>
+
+                        <div class="px-4 py-3" data-mc-key="injury_usage_factor" data-mc-group="simulation">
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-xs font-semibold text-slate-700">Injury Usage Factor</label>
+                                <input type="number" id="mc-num-injury_usage_factor" value="0.5" step="0.05" min="0.0" max="1.0" data-default="0.5"
+                                       class="w-20 px-2 py-1 text-xs text-right border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-pigskin-400 mc-input"
+                                       oninput="TunerApp.syncSlider('injury_usage_factor')">
+                            </div>
+                            <input type="range" id="mc-slider-injury_usage_factor" value="0.5" step="0.05" min="0.0" max="1.0" data-default="0.5"
+                                   class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-pigskin-500 mc-slider"
+                                   oninput="TunerApp.syncInput('injury_usage_factor')">
+                            <div class="flex justify-between mt-1">
+                                <span class="text-[10px] text-slate-400">0</span>
+                                <span class="text-[10px] text-slate-400 italic">touches × this on injury event</span>
+                                <span class="text-[10px] text-slate-400">1</span>
+                            </div>
+                        </div>
+
+                        <div class="px-4 py-3" data-mc-key="boom_threshold" data-mc-group="simulation">
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-xs font-semibold text-slate-700">Boom Threshold (pts)</label>
+                                <input type="number" id="mc-num-boom_threshold" value="25" step="1" min="15" max="40" data-default="25"
+                                       class="w-20 px-2 py-1 text-xs text-right border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-pigskin-400 mc-input"
+                                       oninput="TunerApp.syncSlider('boom_threshold')">
+                            </div>
+                            <input type="range" id="mc-slider-boom_threshold" value="25" step="1" min="15" max="40" data-default="25"
+                                   class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-pigskin-500 mc-slider"
+                                   oninput="TunerApp.syncInput('boom_threshold')">
+                            <div class="flex justify-between mt-1">
+                                <span class="text-[10px] text-slate-400">15</span>
+                                <span class="text-[10px] text-slate-400 italic">P(score ≥ this)</span>
+                                <span class="text-[10px] text-slate-400">40</span>
+                            </div>
+                        </div>
+
+                        <div class="px-4 py-3" data-mc-key="bust_threshold" data-mc-group="simulation">
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-xs font-semibold text-slate-700">Bust Threshold (pts)</label>
+                                <input type="number" id="mc-num-bust_threshold" value="8" step="1" min="1" max="20" data-default="8"
+                                       class="w-20 px-2 py-1 text-xs text-right border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-pigskin-400 mc-input"
+                                       oninput="TunerApp.syncSlider('bust_threshold')">
+                            </div>
+                            <input type="range" id="mc-slider-bust_threshold" value="8" step="1" min="1" max="20" data-default="8"
+                                   class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-pigskin-500 mc-slider"
+                                   oninput="TunerApp.syncInput('bust_threshold')">
+                            <div class="flex justify-between mt-1">
+                                <span class="text-[10px] text-slate-400">1</span>
+                                <span class="text-[10px] text-slate-400 italic">P(score ≤ this)</span>
+                                <span class="text-[10px] text-slate-400">20</span>
+                            </div>
+                        </div>
+
+                        <div class="px-4 py-3" data-mc-key="simulations" data-mc-group="simulation">
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-xs font-semibold text-slate-700">Simulation Count</label>
+                                <input type="number" id="mc-num-simulations" value="10000" step="1000" min="1000" max="50000" data-default="10000"
+                                       class="w-24 px-2 py-1 text-xs text-right border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-pigskin-400 mc-input"
+                                       oninput="TunerApp.syncSlider('simulations')">
+                            </div>
+                            <input type="range" id="mc-slider-simulations" value="10000" step="1000" min="1000" max="50000" data-default="10000"
+                                   class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-pigskin-500 mc-slider"
+                                   oninput="TunerApp.syncInput('simulations')">
+                            <div class="flex justify-between mt-1">
+                                <span class="text-[10px] text-slate-400">1k</span>
+                                <span class="text-[10px] text-slate-400 italic">N Monte Carlo runs</span>
+                                <span class="text-[10px] text-slate-400">50k</span>
+                            </div>
+                        </div>
+                    </div>
+
                 </div>
             </div>
         </div>
@@ -391,81 +595,41 @@
         </div>
     </div>
 
-    <!-- ALGORITHM TUNING: Background large-scale optimization -->
+    <!-- MC ENGINE REFERENCE: Hyper-parameter descriptions -->
     <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
         <div class="p-4 border-b border-slate-100 bg-slate-50">
-            <h3 class="text-sm font-bold text-slate-700 uppercase tracking-wider">🧪 Algorithm Tuning Runs</h3>
-            <p class="text-xs text-slate-500 mt-1">Run large-scale coefficient sweeps against historical data in the background with run history and rich output.</p>
+            <h3 class="text-sm font-bold text-slate-700 uppercase tracking-wider">📐 MC Engine Reference</h3>
+            <p class="text-xs text-slate-500 mt-1">How each hyper-parameter affects the Monte Carlo simulation pipeline.</p>
         </div>
-
-        <div class="p-4 space-y-4">
-            <div class="grid grid-cols-1 md:grid-cols-5 gap-3">
-                <div>
-                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Year</label>
-                    <select id="alg-year" class="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
-                        {% for y in available_years %}
-                        <option value="{{ y }}">{{ y }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div>
-                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Weeks (optional)</label>
-                    <input id="alg-weeks" type="text" placeholder="e.g. 1,2,3,4" class="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
-                </div>
-                <div>
-                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Positions (optional)</label>
-                    <select id="alg-positions" multiple class="mt-1 w-full px-2 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400 h-[84px]">
-                        <option value="QB">QB</option>
-                        <option value="RB">RB</option>
-                        <option value="WR">WR</option>
-                        <option value="TE">TE</option>
-                    </select>
-                </div>
-                <div>
-                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Max Variations</label>
-                    <input id="alg-max-variations" type="number" min="2" max="2000" value="250" class="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
-                </div>
-                <div>
-                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Top N</label>
-                    <input id="alg-top-n" type="number" min="1" max="50" value="10" class="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
-                </div>
+        <div class="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-xs text-slate-600">
+            <div class="space-y-2">
+                <p class="font-bold text-slate-700 uppercase tracking-wider text-[10px]">🏃 Touch Volume</p>
+                <p><span class="font-semibold">touch_std_fraction</span> — Width of the Normal distribution for touch counts. Higher = more game-to-game variance.</p>
+                <p><span class="font-semibold">trend_touch_weight</span> — How strongly a player's recent trend score shifts expected touches up or down.</p>
+                <p><span class="font-semibold">momentum_touch_weight</span> — How strongly team offensive momentum adjusts expected touches.</p>
             </div>
-
-            <div class="flex flex-wrap items-center gap-2">
-                <button id="alg-run-btn" onclick="TunerApp.runAlgorithmTuning()" class="px-4 py-2.5 bg-pigskin-500 hover:bg-pigskin-600 text-white text-sm font-semibold rounded-lg transition-colors">
-                    Start Background Tuning
-                </button>
-                <button onclick="TunerApp.loadAlgorithmHistory()" class="px-4 py-2.5 border border-slate-300 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors text-sm font-semibold">
-                    Refresh Run History
-                </button>
-                <div id="alg-job-status" class="text-xs text-slate-500"></div>
+            <div class="space-y-2">
+                <p class="font-bold text-slate-700 uppercase tracking-wider text-[10px]">⚡ Efficiency</p>
+                <p><span class="font-semibold">matchup_weight</span> — Scales the offense-vs-defense gap's effect on per-touch fantasy points.</p>
+                <p><span class="font-semibold">position_rank_divisor</span> — Larger value = smaller positional matchup bonus. Controls how much a weak D helps.</p>
+                <p><span class="font-semibold">efficiency_std_fraction</span> — Width of the Normal distribution for per-touch efficiency. Higher = more boom/bust.</p>
             </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-3">
-                <div>
-                    <label class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Saved Runs</label>
-                    <select id="alg-history-select" onchange="TunerApp.loadAlgorithmRunFromHistory()" class="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-pigskin-400">
-                        {% if algorithm_runs %}
-                        {% for run in algorithm_runs %}
-                        <option value="{{ run.run_id }}">{{ run.year }} · {{ run.timestamp }} · MAE {{ "%.3f"|format(run.best_mae) }}</option>
-                        {% endfor %}
-                        {% else %}
-                        <option value="">No runs loaded</option>
-                        {% endif %}
-                    </select>
-                    <a id="alg-run-detail-link"
-                       href="{% if selected_algorithm_run_id %}/projection-tuner/runs/{{ selected_algorithm_run_id }}{% else %}#{% endif %}"
-                       class="mt-2 inline-flex items-center text-xs font-semibold {% if selected_algorithm_run_id %}text-pigskin-600 hover:text-pigskin-700{% else %}text-slate-400 pointer-events-none{% endif %}">
-                        Open Run Detail Page
-                    </a>
-                </div>
-                <div id="alg-results" class="border border-slate-200 rounded-lg p-3 bg-slate-50 min-h-[120px]">
-                    <p class="text-xs text-slate-400 italic">Run the algorithm tuner or select a saved run to see detailed results.</p>
-                </div>
+            <div class="space-y-2">
+                <p class="font-bold text-slate-700 uppercase tracking-wider text-[10px]">🏈 Touchdowns</p>
+                <p><span class="font-semibold">base_td_lambda</span> — Poisson baseline λ before skill/offense scaling. Higher = more TDs on average.</p>
+                <p><span class="font-semibold">skill_td_weight</span> — How much player skill level multiplies the TD rate above baseline.</p>
+                <p><span class="font-semibold">offense_td_weight</span> — How much team offense level multiplies the TD rate above baseline.</p>
+            </div>
+            <div class="space-y-2">
+                <p class="font-bold text-slate-700 uppercase tracking-wider text-[10px]">🎲 Simulation</p>
+                <p><span class="font-semibold">injury_usage_factor</span> — When an injury event fires in a simulation, touches are multiplied by this (0 = out, 1 = no effect).</p>
+                <p><span class="font-semibold">boom_threshold</span> — Points above which a simulation counts toward boom probability.</p>
+                <p><span class="font-semibold">bust_threshold</span> — Points below which a simulation counts toward bust probability.</p>
+                <p><span class="font-semibold">simulations</span> — Number of independent MC iterations. More = smoother distribution, slower run.</p>
             </div>
         </div>
     </div>
 </div>
 
-<script src="/static/js/projection-tuner.js?v=4"></script>
+<script src="/static/js/projection-tuner.js?v=6"></script>
 {% endblock %}

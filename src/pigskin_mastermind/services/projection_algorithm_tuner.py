@@ -152,7 +152,7 @@ def _calculate_weekly_projection(
     ``WeeklyProjectionService.calculate_projection`` but substitutes
     hard-coded constants with the values from *coeffs*.
     """
-    base_score = criteria.historical_average_points
+    base_score = criteria.historical_average_points * coeffs.baseline_weight
 
     base_score += (criteria.player_skill_level - 50) * coeffs.skill_multiplier
     base_score += (criteria.team_offense_level - 50) * coeffs.offense_multiplier
@@ -185,6 +185,7 @@ _DEFAULT_SCALE_FACTORS: List[float] = [0.5, 0.75, 1.0, 1.25, 1.5]
 
 # Coefficients that are explored during tuning (weekly-focused).
 _TUNABLE_WEEKLY_FIELDS: List[str] = [
+    "baseline_weight",
     "skill_multiplier",
     "offense_multiplier",
     "defense_multiplier",

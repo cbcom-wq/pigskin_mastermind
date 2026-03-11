@@ -23,6 +23,9 @@ class AlgorithmCoefficients:
     """Complete set of tunable projection-algorithm parameters.
 
     Base criteria (shared by weekly and yearly):
+        baseline_weight: Multiplier for historical average points baseline.
+            Default 1.0 preserves the original behaviour where the
+            baseline enters the formula unscaled.
         skill_multiplier: Weight for player skill level adjustment.
         offense_multiplier: Weight for team offense level adjustment.
         defense_multiplier: Weight for opponent defense level adjustment.
@@ -45,6 +48,7 @@ class AlgorithmCoefficients:
     """
 
     # ── Base criteria ─────────────────────────────────────────────────
+    baseline_weight: float = 1.0
     skill_multiplier: float = 0.1
     offense_multiplier: float = 0.06
     defense_multiplier: float = 0.04

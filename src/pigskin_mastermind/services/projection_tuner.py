@@ -5,6 +5,7 @@ algorithm, plus a service that can run the projection with custom coefficients
 and return a per-criteria contribution breakdown.
 """
 
+import logging
 import math
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -29,6 +30,10 @@ from pigskin_mastermind.models.projection_criteria import (
 from pigskin_mastermind.services.projection_criteria_builder import (
     ProjectionCriteriaBuilder,
 )
+from pigskin_mastermind.services.monte_carlo_service import FantasySimulationEngine
+from pigskin_mastermind.services.monte_carlo_input_builder import MonteCarloInputBuilder
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Coefficient metadata — single source of truth for defaults & documentation
@@ -39,6 +44,22 @@ from pigskin_mastermind.services.projection_criteria_builder import (
 
 COEFFICIENT_DEFS: List[Dict[str, Any]] = [
     # ── Base criteria (all projection types) ──────────────────────────────
+    {
+        "key": "baseline_weight",
+        "name": "Historical Avg Baseline Weight",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.05,
+        "group": "base",
+        "description": (
+            "Scales the historical average points baseline before all "
+            "other adjustments are applied. 1.0 = full weight (default), "
+            "0.5 = half, 1.5 = 50% more. This is the most impactful "
+            "coefficient because it controls the projection anchor."
+        ),
+        "formula": "historical_average_points × baseline_weight",
+    },
     {
         "key": "skill_multiplier",
         "name": "Player Skill Multiplier",
@@ -257,7 +278,7 @@ CRITERIA_DOCS: List[Dict[str, Any]] = [
             "DBPlayerSeasonStats.fantasy_points_avg, falling back to "
             "mean(DBPlayerGameLog.fantasy_points) if season stat is 0."
         ),
-        "role": "Baseline — the starting point before all adjustments.",
+        "role": "Baseline — the starting point before all adjustments, scaled by the baseline_weight coefficient.",
     },
     {
         "field": "player_skill_level",
@@ -542,25 +563,57 @@ class ProjectionTunerService:
         week: int,
         year: int,
         criteria_overrides: Optional[Dict[str, Any]] = None,
+        mc_params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Run weekly projection with custom coefficients, return breakdown."""
+        """Run weekly projection with Monte Carlo simulation, return breakdown.
+
+        The Monte Carlo expected value is the primary ``total``.  The legacy
+        deterministic breakdown is kept in ``steps`` and ``deterministic_total``
+        for comparison and transparency.
+        """
         criteria = self.criteria_builder.build_weekly_criteria(
             player_id, week, year, overrides=criteria_overrides,
         )
         # Resolve position for coefficient lookup
         player = self.db.query(DBPlayer).filter_by(id=player_id).first()
         position = player.position if player else None
+        player_name = player.name if player else ""
 
+        # Legacy deterministic breakdown (kept for waterfall chart / reference)
         breakdown = self._apply_base_breakdown(criteria, position=position)
         weekly_steps = self._apply_weekly_breakdown(criteria, position=position)
         breakdown["steps"].extend(weekly_steps)
 
-        total = sum(s["value"] for s in breakdown["steps"])
-        total = max(0, total)
-        breakdown["total"] = round(total, 2)
+        det_total = sum(s["value"] for s in breakdown["steps"])
+        det_total = max(0, det_total)
+        breakdown["deterministic_total"] = round(det_total, 2)
+
+        # ── Monte Carlo simulation (primary projection) ──────────
+        mc_input = MonteCarloInputBuilder.from_weekly_criteria(
+            criteria, player_name=player_name, position=position or "",
+        )
+        engine_kwargs: Dict[str, Any] = dict(mc_params) if mc_params else {}
+        engine_kwargs.setdefault("simulations", 10_000)
+        engine = FantasySimulationEngine(**engine_kwargs)
+        mc_result = engine.simulate(mc_input)
+
+        total = round(mc_result.expected_points, 2)
+        breakdown["total"] = total
         breakdown["projection_type"] = "weekly"
         breakdown["week"] = week
         breakdown["year"] = year
+
+        # Monte Carlo distribution details
+        breakdown["monte_carlo"] = {
+            "expected": round(mc_result.expected_points, 2),
+            "median": round(mc_result.median_points, 2),
+            "floor": round(mc_result.floor, 2),
+            "ceiling": round(mc_result.ceiling, 2),
+            "std_dev": round(mc_result.std_dev, 2),
+            "boom_probability": round(mc_result.boom_probability, 4),
+            "bust_probability": round(mc_result.bust_probability, 4),
+            "histogram": mc_result._build_histogram(bins=20),
+        }
 
         # Actual points from game log
         actual = self._get_actual_points(player_id, week, year)
@@ -611,6 +664,7 @@ class ProjectionTunerService:
         position: Optional[str],
         year: int,
         week: Optional[int] = None,
+        mc_params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Run projections across players and compare to actuals.
 
@@ -637,7 +691,7 @@ class ProjectionTunerService:
 
             for w in weeks_to_test:
                 try:
-                    proj = self.project_weekly(player.id, w, year)
+                    proj = self.project_weekly(player.id, w, year, mc_params=mc_params)
                 except (ValueError, Exception):
                     continue
                 if proj["actual_points"] is None:
@@ -699,15 +753,17 @@ class ProjectionTunerService:
         c = self._resolve_coefficients(position)
         steps = []
 
-        # Historical average (baseline)
+        # Historical average (baseline), scaled by tunable weight
+        baseline_w = c.get("baseline_weight", 1.0)
+        baseline_val = criteria.historical_average_points * baseline_w
         steps.append({
             "label": "Historical Avg Points",
             "criteria_field": "historical_average_points",
             "criteria_value": criteria.historical_average_points,
-            "coefficient_key": None,
-            "coefficient_value": None,
-            "formula": "baseline (no multiplier)",
-            "value": round(criteria.historical_average_points, 2),
+            "coefficient_key": "baseline_weight",
+            "coefficient_value": baseline_w,
+            "formula": f"{criteria.historical_average_points:.2f} × {baseline_w}",
+            "value": round(baseline_val, 2),
         })
 
         # Skill level

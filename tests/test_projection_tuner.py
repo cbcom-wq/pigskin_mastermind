@@ -157,16 +157,25 @@ def test_yearly_breakdown_has_steps(db, sample_data):
 
 
 def test_breakdown_sums_match_total(db, sample_data):
-    """Sum of step values should match the total (before floor clamping)."""
+    """Sum of step values should match the deterministic total (before floor clamping).
+
+    Now that ``total`` is the Monte Carlo expected value, the deterministic
+    breakdown sum is stored in ``deterministic_total``.
+    """
     service = ProjectionTunerService(db)
     result = service.project_weekly(sample_data.id, week=1, year=2024)
 
     step_sum = sum(s["value"] for s in result["steps"])
-    # The total is max(0, step_sum), so for positive totals they should match
+    det_total = result.get("deterministic_total")
+    # The deterministic_total is max(0, step_sum)
     if step_sum >= 0:
-        assert abs(result["total"] - step_sum) < 0.01
+        assert abs(det_total - step_sum) < 0.01
     else:
-        assert result["total"] == 0
+        assert det_total == 0
+
+    # total should come from Monte Carlo and be a positive number
+    assert result["total"] > 0
+    assert "monte_carlo" in result
 
 
 def test_step_has_required_fields(db, sample_data):
@@ -197,18 +206,25 @@ def test_custom_coefficients_change_projection(db, sample_data):
 
 
 def test_zero_coefficients_only_baseline(db, sample_data):
-    """Setting all multipliers to 0 should produce just the baseline."""
+    """Setting all multipliers to 0 should zero out every deterministic step.
+
+    The Monte Carlo ``total`` will still be positive because MC is criteria-
+    driven (independent of coefficients), but the deterministic breakdown
+    should show all-zero steps.
+    """
     zero_coeffs = {c["key"]: 0.0 for c in COEFFICIENT_DEFS}
     service = ProjectionTunerService(db, coefficients=zero_coeffs)
     result = service.project_weekly(sample_data.id, week=1, year=2024)
 
-    # Only the baseline (historical_average_points) step should be non-zero
+    # With baseline_weight=0, the baseline step is also zeroed out,
+    # so *all* steps (including the baseline) should be zero.
     non_zero_steps = [s for s in result["steps"] if s["value"] != 0.0]
-    # The baseline step has no coefficient_key (it's always added)
-    baseline_steps = [s for s in non_zero_steps if s["coefficient_key"] is None]
-    adjustment_steps = [s for s in non_zero_steps if s["coefficient_key"] is not None]
+    assert len(non_zero_steps) == 0, "All steps should be zero when every coefficient is 0"
+    assert result["deterministic_total"] == 0
 
-    assert len(adjustment_steps) == 0, "All adjustment steps should be zero"
+    # Monte Carlo total is still positive (criteria-driven, not coefficient-driven)
+    assert result["total"] > 0
+    assert "monte_carlo" in result
 
 
 # ── Actual points retrieval ───────────────────────────────────────────────

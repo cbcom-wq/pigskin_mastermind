@@ -261,12 +261,14 @@ async def get_auto_projection(
     from pigskin_mastermind.services.projection_service import (
         WeeklyProjectionService, YearlyProjectionService
     )
+    from pigskin_mastermind.services.master_coefficients import get_effective_coefficients
 
     db_player = db.query(DBPlayer).filter_by(id=player_id).first()
     if not db_player:
         raise HTTPException(status_code=404, detail="Player not found")
 
     builder = ProjectionCriteriaBuilder(db)
+    effective_coeffs = get_effective_coefficients()
 
     # Create a Player model for the projection service
     player_model = PlayerModel(
@@ -279,11 +281,11 @@ async def get_auto_projection(
 
     if week:
         criteria = builder.build_weekly_criteria(player_id, week, year)
-        service = WeeklyProjectionService()
+        service = WeeklyProjectionService(coefficients=effective_coeffs)
         report = service.generate_projection_report(player_model, criteria)
     else:
         criteria = builder.build_yearly_criteria(player_id, year)
-        service = YearlyProjectionService()
+        service = YearlyProjectionService(coefficients=effective_coeffs)
         report = service.generate_projection_report(player_model, criteria)
 
     return report
@@ -300,6 +302,7 @@ async def get_team_weekly_projections(
     from pigskin_mastermind.models.player import Player as PlayerModel
     from pigskin_mastermind.models.database import DBWeeklyTeamStats, DBWeeklyPlayerStats
     from pigskin_mastermind.services.projection_service import WeeklyProjectionService
+    from pigskin_mastermind.services.master_coefficients import get_effective_coefficients
 
     team = db.query(DBTeam).filter_by(id=team_db_id).first()
     if not team:
@@ -319,7 +322,7 @@ async def get_team_weekly_projections(
     )
 
     builder = ProjectionCriteriaBuilder(db)
-    service = WeeklyProjectionService()
+    service = WeeklyProjectionService(coefficients=get_effective_coefficients())
     projections = {}
 
     for wp, player in rows:

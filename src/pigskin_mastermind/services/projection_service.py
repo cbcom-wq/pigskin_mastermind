@@ -84,8 +84,8 @@ class ProjectionService(ABC):
         """
         coeffs = self._get_coeffs(position)
 
-        # Start with historical average
-        base_score = criteria.historical_average_points
+        # Start with historical average, scaled by the tunable baseline weight
+        base_score = criteria.historical_average_points * coeffs.baseline_weight
 
         # Adjust for player skill level
         skill_adjustment = (criteria.player_skill_level - 50) * coeffs.skill_multiplier

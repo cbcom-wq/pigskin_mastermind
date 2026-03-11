@@ -10,144 +10,86 @@ const TunerApp = (() => {
     let debounceTimer = null;
     let algorithmPollTimer = null;
     let importPollTimer = null;
-    let activeEditorPosition = 'default'; // 'default' | 'QB' | 'RB' | 'WR' | 'TE' | 'K' | 'DEF'
-    let perPositionDefaults = {};   // { default: {key: val}, QB: {key: val}, ... }
-    let positionCoeffState = {};    // tracks user-edited values per position
 
     // ── Slider / Input Sync ──────────────────────────────────────────
 
     function syncInput(key) {
-        const slider = document.getElementById(`slider-${key}`);
-        const num = document.getElementById(`num-${key}`);
+        const slider = document.getElementById(`mc-slider-${key}`);
+        const num = document.getElementById(`mc-num-${key}`);
         num.value = slider.value;
         markModified(key);
     }
 
     function syncSlider(key) {
-        const slider = document.getElementById(`slider-${key}`);
-        const num = document.getElementById(`num-${key}`);
+        const slider = document.getElementById(`mc-slider-${key}`);
+        const num = document.getElementById(`mc-num-${key}`);
         slider.value = num.value;
         markModified(key);
     }
 
     function markModified(key) {
-        const num = document.getElementById(`num-${key}`);
+        const num = document.getElementById(`mc-num-${key}`);
+        if (!num) return;
         const def = parseFloat(num.dataset.default);
         const cur = parseFloat(num.value);
-        const container = num.closest('[data-coeff-key]');
-        if (Math.abs(cur - def) > 0.0001) {
-            container.classList.add('bg-pigskin-50');
-            num.classList.add('ring-1', 'ring-pigskin-300');
-        } else {
-            container.classList.remove('bg-pigskin-50');
-            num.classList.remove('ring-1', 'ring-pigskin-300');
+        const container = num.closest('[data-mc-key]');
+        if (container) {
+            if (Math.abs(cur - def) > 0.0001) {
+                container.classList.add('bg-pigskin-50');
+                num.classList.add('ring-1', 'ring-pigskin-300');
+            } else {
+                container.classList.remove('bg-pigskin-50');
+                num.classList.remove('ring-1', 'ring-pigskin-300');
+            }
         }
+        updateMCParamsBanner();
     }
 
     // ── Reset ────────────────────────────────────────────────────────
 
     function resetAll() {
-        const posDefaults = perPositionDefaults[activeEditorPosition] || {};
-        document.querySelectorAll('.coeff-input').forEach(input => {
-            const key = input.id.replace('num-', '');
-            const defVal = (key in posDefaults) ? posDefaults[key] : parseFloat(input.dataset.default);
+        document.querySelectorAll('.mc-input').forEach(input => {
+            const key = input.id.replace('mc-num-', '');
+            const defVal = parseFloat(input.dataset.default);
             input.value = defVal;
-            input.dataset.default = defVal;
-            const slider = document.getElementById(`slider-${key}`);
-            if (slider) slider.dataset.default = defVal;
-            syncSlider(key);
-        });
-        if (Object.keys(posDefaults).length > 0) {
-            positionCoeffState[activeEditorPosition] = { ...posDefaults };
-        }
-    }
-
-    function resetGroup(group) {
-        const posDefaults = perPositionDefaults[activeEditorPosition] || {};
-        document.querySelectorAll(`[data-coeff-key]`).forEach(container => {
-            const input = container.querySelector('.coeff-input');
-            const slider = container.querySelector('.coeff-slider');
-            if (!input || !slider) return;
-            const groupHeader = container.closest('.divide-y')?.querySelector('[onclick*="resetGroup"]');
-            if (groupHeader && groupHeader.getAttribute('onclick').includes(group)) {
-                const key = input.id.replace('num-', '');
-                const defVal = (key in posDefaults) ? posDefaults[key] : parseFloat(input.dataset.default);
-                input.value = defVal;
-                input.dataset.default = defVal;
-                slider.value = defVal;
-                slider.dataset.default = defVal;
-                markModified(key);
-                if (positionCoeffState[activeEditorPosition]) {
-                    positionCoeffState[activeEditorPosition][key] = defVal;
-                }
-            }
-        });
-    }
-
-    // ── Position-specific Coefficient State ─────────────────────────
-
-    function saveCurrentPositionState() {
-        const state = {};
-        document.querySelectorAll('.coeff-input').forEach(input => {
-            const key = input.id.replace('num-', '');
-            state[key] = parseFloat(input.value);
-        });
-        positionCoeffState[activeEditorPosition] = state;
-    }
-
-    function setEditorPosition(pos) {
-        // Save slider values for the position we're leaving
-        saveCurrentPositionState();
-        activeEditorPosition = pos;
-
-        // Update tab button styles
-        const TAB_ACTIVE   = 'px-2.5 py-1 text-[11px] font-semibold rounded-md bg-pigskin-500 text-white transition-colors';
-        const TAB_INACTIVE = 'px-2.5 py-1 text-[11px] font-semibold rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors';
-        document.querySelectorAll('#coeff-pos-tabs button').forEach(btn => {
-            btn.className = btn.id === `coeff-tab-${pos}` ? TAB_ACTIVE : TAB_INACTIVE;
-        });
-
-        // Load saved state (user edits) or fall back to defaults for this position
-        const posState    = positionCoeffState[pos] || perPositionDefaults[pos] || perPositionDefaults['default'] || {};
-        const posDefaults = perPositionDefaults[pos] || perPositionDefaults['default'] || {};
-
-        document.querySelectorAll('.coeff-input').forEach(input => {
-            const key = input.id.replace('num-', '');
-            if (key in posState)    input.value          = posState[key];
-            if (key in posDefaults) input.dataset.default = posDefaults[key];
-            const slider = document.getElementById(`slider-${key}`);
-            if (slider) {
-                if (key in posState)    slider.value          = posState[key];
-                if (key in posDefaults) slider.dataset.default = posDefaults[key];
-            }
+            const slider = document.getElementById(`mc-slider-${key}`);
+            if (slider) slider.value = defVal;
             markModified(key);
         });
     }
 
-    async function initPositionCoefficients() {
-        try {
-            const resp = await fetch('/api/projection-tuner/defaults');
-            const data = await resp.json();
-            const ppd = data.per_position_defaults || {};
-            if (!Object.keys(ppd).length) return;
+    function resetGroup(group) {
+        document.querySelectorAll(`[data-mc-group="${group}"]`).forEach(container => {
+            const input = container.querySelector('.mc-input');
+            const slider = container.querySelector('.mc-slider');
+            if (!input || !slider) return;
+            const key = input.id.replace('mc-num-', '');
+            const defVal = parseFloat(input.dataset.default);
+            input.value = defVal;
+            slider.value = defVal;
+            markModified(key);
+        });
+    }
 
-            perPositionDefaults = ppd;
+    // ── MC Parameters Banner ─────────────────────────────────────────
 
-            // Seed state from defaults for every position
-            positionCoeffState = {};
-            for (const [pos, coeffs] of Object.entries(ppd)) {
-                positionCoeffState[pos] = { ...coeffs };
-            }
-
-            // Override 'default' with current DOM values so any pre-load edits are preserved
-            const domCoeffs = {};
-            document.querySelectorAll('.coeff-input').forEach(input => {
-                const key = input.id.replace('num-', '');
-                domCoeffs[key] = parseFloat(input.value);
-            });
-            positionCoeffState['default'] = domCoeffs;
-        } catch (err) {
-            console.warn('Failed to load per-position defaults:', err);
+    function updateMCParamsBanner() {
+        const label = document.getElementById('mc-params-label');
+        if (!label) return;
+        const inputs = document.querySelectorAll('.mc-input');
+        let modifiedCount = 0;
+        inputs.forEach(input => {
+            const def = parseFloat(input.dataset.default);
+            const cur = parseFloat(input.value);
+            if (Math.abs(cur - def) > 0.0001) modifiedCount++;
+        });
+        const total = inputs.length;
+        if (modifiedCount === 0) {
+            label.textContent = 'All defaults';
+            label.className = 'text-slate-500';
+        } else {
+            label.textContent = `${modifiedCount}/${total} modified`;
+            label.className = 'text-pigskin-600 font-semibold';
         }
     }
 
@@ -173,28 +115,23 @@ const TunerApp = (() => {
         }
     }
 
-    // ── Collect Coefficients ─────────────────────────────────────────
+    // ── Collect MC Parameters ────────────────────────────────────────
 
-    function getCoefficients() {
-        // Capture current DOM values for the active position
-        const currentCoeffs = {};
-        document.querySelectorAll('.coeff-input').forEach(input => {
-            const key = input.id.replace('num-', '');
-            currentCoeffs[key] = parseFloat(input.value);
-        });
-
-        // If position state is loaded, return a full nested position-keyed dict
-        if (Object.keys(positionCoeffState).length > 0) {
-            positionCoeffState[activeEditorPosition] = currentCoeffs;
-            const result = {};
-            for (const [pos, coeffs] of Object.entries(positionCoeffState)) {
-                result[pos] = { ...coeffs };
+    function getMCParams() {
+        const params = {};
+        document.querySelectorAll('.mc-input').forEach(input => {
+            const key = input.id.replace('mc-num-', '');
+            const val = parseFloat(input.value);
+            const def = parseFloat(input.dataset.default);
+            // Only include params that differ from defaults to keep payload minimal
+            if (Math.abs(val - def) > 0.0001) {
+                params[key] = val;
             }
-            return result;
-        }
-
-        // Fallback: flat dict (position state not yet loaded from API)
-        return currentCoeffs;
+        });
+        // Always include simulations so the count is explicit
+        const simInput = document.getElementById('mc-num-simulations');
+        if (simInput) params['simulations'] = parseInt(simInput.value);
+        return Object.keys(params).length > 0 ? params : null;
     }
 
     // ── Filter Players ───────────────────────────────────────────────
@@ -214,7 +151,7 @@ const TunerApp = (() => {
         if (firstVisible) select.value = firstVisible.value;
     }
 
-    // ── Run Simulation ───────────────────────────────────────────────
+    // ── Run Simulation ─────────────────────────────────────────────────
 
     async function runSimulation() {
         const btn = document.getElementById('sim-run-btn');
@@ -222,7 +159,7 @@ const TunerApp = (() => {
         btn.disabled = true;
         spinner.classList.remove('hidden');
 
-        const coefficients = getCoefficients();
+        const mcParams = getMCParams();
         const projType = document.getElementById('sim-type').value;
         const year = parseInt(document.getElementById('sim-year').value);
         const week = parseInt(document.getElementById('sim-week').value) || null;
@@ -238,7 +175,7 @@ const TunerApp = (() => {
                         year: year,
                         week: projType === 'weekly' ? week : null,
                         projection_type: projType,
-                        coefficients: coefficients,
+                        mc_params: mcParams,
                     }),
                 });
                 const data = await resp.json();
@@ -253,7 +190,7 @@ const TunerApp = (() => {
                         year: year,
                         week: projType === 'weekly' ? week : null,
                         projection_type: projType,
-                        coefficients: coefficients,
+                        mc_params: mcParams,
                     }),
                 });
                 const data = await resp.json();
@@ -284,8 +221,9 @@ const TunerApp = (() => {
 
         const { player, tuned, default: def } = data;
         const steps = tuned.steps || [];
+        const mc = tuned.monte_carlo || null;
 
-        // Summary cards
+        // Summary cards — now MC-primary
         let html = `
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
             <div class="flex items-center justify-between mb-3">
@@ -293,21 +231,93 @@ const TunerApp = (() => {
                     <h4 class="text-sm font-bold text-slate-700">${player.name}</h4>
                     <p class="text-xs text-slate-500">${player.position} · ${player.nfl_team} · ${tuned.projection_type} ${tuned.week ? 'Week ' + tuned.week : ''} ${tuned.year}</p>
                 </div>
+                <span class="text-[10px] font-semibold text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full">Monte Carlo · 10k sims</span>
             </div>
             <div class="grid grid-cols-3 gap-3 mb-4">
                 <div class="bg-slate-50 rounded-lg p-3 text-center">
                     <p class="text-lg font-bold text-slate-700">${def ? def.total : '—'}</p>
-                    <p class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Default</p>
+                    <p class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Default MC</p>
                 </div>
-                <div class="bg-pigskin-50 rounded-lg p-3 text-center border border-pigskin-200">
-                    <p class="text-lg font-bold text-pigskin-700">${tuned.total}</p>
-                    <p class="text-[10px] uppercase tracking-wider text-pigskin-500 font-semibold">Tuned</p>
+                <div class="bg-indigo-50 rounded-lg p-3 text-center border border-indigo-200">
+                    <p class="text-lg font-bold text-indigo-700">${tuned.total}</p>
+                    <p class="text-[10px] uppercase tracking-wider text-indigo-500 font-semibold">MC Expected</p>
                 </div>
                 <div class="bg-field-50 rounded-lg p-3 text-center">
                     <p class="text-lg font-bold text-field-700">${tuned.actual_points !== null ? tuned.actual_points : '—'}</p>
                     <p class="text-[10px] uppercase tracking-wider text-field-500 font-semibold">Actual</p>
                 </div>
             </div>`;
+
+        // Monte Carlo distribution cards
+        if (mc) {
+            html += `
+            <div class="grid grid-cols-5 gap-2 mb-4">
+                <div class="bg-slate-50 rounded-lg p-2 text-center">
+                    <p class="text-sm font-bold text-slate-600">${mc.floor}</p>
+                    <p class="text-[9px] uppercase tracking-wider text-slate-400 font-semibold">Floor (P10)</p>
+                </div>
+                <div class="bg-slate-50 rounded-lg p-2 text-center">
+                    <p class="text-sm font-bold text-slate-600">${mc.median}</p>
+                    <p class="text-[9px] uppercase tracking-wider text-slate-400 font-semibold">Median</p>
+                </div>
+                <div class="bg-slate-50 rounded-lg p-2 text-center">
+                    <p class="text-sm font-bold text-slate-600">${mc.ceiling}</p>
+                    <p class="text-[9px] uppercase tracking-wider text-slate-400 font-semibold">Ceiling (P90)</p>
+                </div>
+                <div class="bg-emerald-50 rounded-lg p-2 text-center border border-emerald-200">
+                    <p class="text-sm font-bold text-emerald-700">${(mc.boom_probability * 100).toFixed(1)}%</p>
+                    <p class="text-[9px] uppercase tracking-wider text-emerald-500 font-semibold">Boom (≥25)</p>
+                </div>
+                <div class="bg-red-50 rounded-lg p-2 text-center border border-red-200">
+                    <p class="text-sm font-bold text-red-600">${(mc.bust_probability * 100).toFixed(1)}%</p>
+                    <p class="text-[9px] uppercase tracking-wider text-red-500 font-semibold">Bust (≤8)</p>
+                </div>
+            </div>`;
+
+            // Range bar visualization
+            const rangeMin = mc.floor;
+            const rangeMax = mc.ceiling;
+            const range = rangeMax - rangeMin || 1;
+            const expectedPct = ((mc.expected - rangeMin) / range * 100).toFixed(1);
+            const actualPct = tuned.actual_points !== null ? ((tuned.actual_points - rangeMin) / range * 100).toFixed(1) : null;
+            html += `
+            <div class="mb-4">
+                <h5 class="text-xs font-bold text-slate-600 uppercase tracking-wider mb-2">Projection Range</h5>
+                <div class="relative h-6 bg-gradient-to-r from-red-100 via-slate-100 to-emerald-100 rounded-full overflow-visible">
+                    <div class="absolute top-0 left-0 h-full flex items-center" style="left: ${expectedPct}%">
+                        <div class="w-3 h-3 bg-indigo-600 rounded-full border-2 border-white shadow" title="MC Expected: ${mc.expected}"></div>
+                    </div>
+                    ${actualPct !== null ? `<div class="absolute top-0 left-0 h-full flex items-center" style="left: ${Math.max(0, Math.min(100, actualPct))}%">
+                        <div class="w-3 h-3 bg-field-600 rounded-full border-2 border-white shadow" title="Actual: ${tuned.actual_points}"></div>
+                    </div>` : ''}
+                </div>
+                <div class="flex justify-between text-[10px] text-slate-400 mt-1">
+                    <span>Floor: ${mc.floor}</span>
+                    <span class="text-indigo-500 font-semibold">● Expected</span>
+                    ${actualPct !== null ? '<span class="text-field-500 font-semibold">● Actual</span>' : ''}
+                    <span>Ceiling: ${mc.ceiling}</span>
+                </div>
+            </div>`;
+
+            // Full MC histogram
+            if (mc.histogram) {
+                const mcWithActual = { ...mc, actual: tuned.actual_points };
+                html += `
+            <div class="mb-4">
+                <h5 class="text-xs font-bold text-slate-600 uppercase tracking-wider mb-2">Score Distribution</h5>
+                <div class="overflow-x-auto rounded border border-slate-100 bg-slate-50/50 p-2">${renderHistogramSVG(mc.histogram, mcWithActual)}</div>
+                <div class="flex gap-4 mt-1.5 text-[10px] text-slate-400">
+                    <span><span style="color:#fca5a5">■</span> Bust zone (≤8)</span>
+                    <span><span style="color:#818cf8">■</span> Mid range</span>
+                    <span><span style="color:#86efac">■</span> Boom zone (≥25)</span>
+                    <span style="color:#ef4444">— Floor</span>
+                    <span style="color:#4f46e5">— Expected</span>
+                    <span style="color:#16a34a">— Ceiling</span>
+                    ${tuned.actual_points != null ? '<span style="color:#d97706">— Actual</span>' : ''}
+                </div>
+            </div>`;
+            }
+        }
 
         // Delta badge
         if (def) {
@@ -323,9 +333,9 @@ const TunerApp = (() => {
             html += `</p>`;
         }
 
-        // Waterfall chart
+        // Waterfall chart (deterministic breakdown for transparency)
         html += `<div class="mt-2">
-            <h5 class="text-xs font-bold text-slate-600 uppercase tracking-wider mb-2">Formula Breakdown (Waterfall)</h5>
+            <h5 class="text-xs font-bold text-slate-600 uppercase tracking-wider mb-2">Deterministic Formula Breakdown (Reference)</h5>
             ${renderWaterfall(steps)}
         </div>`;
 
@@ -430,7 +440,10 @@ const TunerApp = (() => {
 
         let html = `
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-            <h4 class="text-sm font-bold text-slate-700 mb-3">Backtest Results — ${data.position || 'All Positions'} ${data.year}${data.week ? ' Week ' + data.week : ''}</h4>
+            <div class="flex items-center justify-between mb-3">
+                <h4 class="text-sm font-bold text-slate-700">Backtest Results — ${data.position || 'All Positions'} ${data.year}${data.week ? ' Week ' + data.week : ''}</h4>
+                <span class="text-[10px] font-semibold text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full">Monte Carlo · 10k sims</span>
+            </div>
 
             <!-- Summary Stats -->
             <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
@@ -476,7 +489,7 @@ const TunerApp = (() => {
                             <th class="text-left py-1.5 px-2">Player</th>
                             <th class="text-center py-1.5 px-2">Pos</th>
                             ${tuned.top_movers[0].week !== undefined ? '<th class="text-center py-1.5 px-2">Wk</th>' : ''}
-                            <th class="text-right py-1.5 px-2">Projected</th>
+                            <th class="text-right py-1.5 px-2">MC Proj</th>
                             <th class="text-right py-1.5 px-2">Actual</th>
                             <th class="text-right py-1.5 px-2">Error</th>
                         </tr>
@@ -646,8 +659,144 @@ const TunerApp = (() => {
     let gridData = null;
     let gridSortCol = null;
     let gridSortAsc = true;
+    let gridRowData = {}; // player_id → row (holds histogram data for modal)
 
     const INVERTED_COLS = new Set(['injury_risk_score', 'opposing_defense_vs_position_rank']);
+
+    // ── Monte Carlo Histogram Rendering ─────────────────────────────
+
+    function renderHistogramSVG(histogram, mc, opts = {}) {
+        if (!histogram || !histogram.length) return '<p class="text-xs text-slate-400">No histogram data</p>';
+        const W = opts.width || 460;
+        const H = opts.height || 140;
+        const pad = { top: 20, right: 16, bottom: 28, left: 28 };
+        const cW = W - pad.left - pad.right;
+        const cH = H - pad.top - pad.bottom;
+        const maxFreq = Math.max(...histogram.map(b => b.frequency));
+        const minBin = histogram[0].bin_start;
+        const maxBin = histogram[histogram.length - 1].bin_end;
+        const bw = cW / histogram.length;
+        const xScale = v => pad.left + (v - minBin) / (maxBin - minBin) * cW;
+        const yScale = v => pad.top + cH - (v / maxFreq) * cH;
+
+        let svg = `<svg width="100%" viewBox="0 0 ${W} ${H}" font-family="ui-sans-serif,system-ui,sans-serif">`;
+
+        // Colored bars
+        histogram.forEach((bin, i) => {
+            const x = pad.left + i * bw;
+            const bh = Math.max(1, (bin.frequency / maxFreq) * cH);
+            const y = pad.top + cH - bh;
+            let fill = '#818cf8'; // indigo-400 default
+            if (bin.bin_end <= 8) fill = '#fca5a5';        // red-300 bust zone
+            else if (bin.bin_start >= 25) fill = '#86efac'; // green-300 boom zone
+            svg += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(1, bw - 1).toFixed(1)}" height="${bh.toFixed(1)}" fill="${fill}" opacity="0.85" rx="1"/>`;
+        });
+
+        // Vertical marker lines
+        const markers = [];
+        if (mc) {
+            markers.push({ val: mc.floor,    color: '#ef4444', label: `F:${mc.floor}` });
+            markers.push({ val: mc.expected, color: '#4f46e5', label: `E:${mc.expected}`, bold: true });
+            markers.push({ val: mc.ceiling,  color: '#16a34a', label: `C:${mc.ceiling}` });
+            if (mc.actual != null) markers.push({ val: mc.actual, color: '#d97706', label: `A:${mc.actual}` });
+        }
+        markers.forEach(({ val, color, label, bold }) => {
+            if (val < minBin - 1 || val > maxBin + 1) return;
+            const x = xScale(val).toFixed(1);
+            svg += `<line x1="${x}" y1="${pad.top}" x2="${x}" y2="${pad.top + cH}" stroke="${color}" stroke-width="${bold ? 2 : 1.5}" stroke-dasharray="4,2"/>`;
+            svg += `<text x="${x}" y="${pad.top - 4}" text-anchor="middle" font-size="9" fill="${color}" font-weight="${bold ? 'bold' : 'normal'}">${label}</text>`;
+        });
+
+        // X-axis tick labels
+        const ticks = [minBin, ...(mc ? [mc.floor, mc.expected, mc.ceiling] : []), maxBin];
+        const seen = new Set();
+        ticks.forEach(val => {
+            const rounded = Math.round(val);
+            if (seen.has(rounded) || val < minBin || val > maxBin) return;
+            seen.add(rounded);
+            const x = xScale(val).toFixed(1);
+            svg += `<text x="${x}" y="${pad.top + cH + 16}" text-anchor="middle" font-size="9" fill="#94a3b8">${rounded}</text>`;
+        });
+        // Axis line
+        svg += `<line x1="${pad.left}" y1="${pad.top + cH}" x2="${pad.left + cW}" y2="${pad.top + cH}" stroke="#e2e8f0" stroke-width="1"/>`;
+        svg += '</svg>';
+        return svg;
+    }
+
+    function renderSparklineSVG(histogram) {
+        if (!histogram || !histogram.length) return '';
+        const W = 56, H = 14;
+        const maxFreq = Math.max(...histogram.map(b => b.frequency));
+        const bw = W / histogram.length;
+        let svg = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" class="inline-block align-middle ml-1.5" style="cursor:pointer">`;
+        histogram.forEach((bin, i) => {
+            const bh = Math.max(1, (bin.frequency / maxFreq) * H);
+            let fill = '#818cf8';
+            if (bin.bin_end <= 8) fill = '#fca5a5';
+            else if (bin.bin_start >= 25) fill = '#86efac';
+            svg += `<rect x="${(i * bw).toFixed(1)}" y="${(H - bh).toFixed(1)}" width="${Math.max(1, bw - 0.5).toFixed(1)}" height="${bh.toFixed(1)}" fill="${fill}" opacity="0.8"/>`;
+        });
+        svg += '</svg>';
+        return svg;
+    }
+
+    function showHistogram(playerId) {
+        const row = gridRowData[playerId];
+        if (!row) return;
+        const mc = {
+            floor: row.mc_floor, expected: row.projected, ceiling: row.mc_ceiling,
+            std_dev: row.mc_std_dev, boom_probability: row.mc_boom_pct,
+            bust_probability: row.mc_bust_pct, actual: row.actual,
+        };
+        const existing = document.getElementById('mc-histogram-modal');
+        if (existing) existing.remove();
+        const modal = document.createElement('div');
+        modal.id = 'mc-histogram-modal';
+        modal.className = 'fixed inset-0 z-50 flex items-center justify-center';
+        modal.style.background = 'rgba(0,0,0,0.45)';
+        modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+        modal.innerHTML = `
+        <div class="bg-white rounded-xl shadow-2xl p-5 w-full max-w-lg mx-4">
+            <div class="flex items-center justify-between mb-3">
+                <div>
+                    <h3 class="text-sm font-bold text-slate-700">${row.player_name}</h3>
+                    <p class="text-[11px] text-slate-400">${row.position} · ${row.nfl_team || ''} · Monte Carlo Distribution (10k sims)</p>
+                </div>
+                <button onclick="document.getElementById('mc-histogram-modal').remove()" class="text-slate-400 hover:text-slate-600 text-xl leading-none ml-4">×</button>
+            </div>
+            <div class="overflow-x-auto">${renderHistogramSVG(row.mc_histogram, mc)}</div>
+            <div class="grid grid-cols-3 gap-2 mt-3 text-center">
+                <div class="bg-red-50 rounded p-2">
+                    <p class="text-xs font-bold text-red-600">${mc.floor ?? '—'}</p>
+                    <p class="text-[10px] text-red-400">Floor (P10)</p>
+                </div>
+                <div class="bg-indigo-50 rounded p-2 border border-indigo-200">
+                    <p class="text-xs font-bold text-indigo-700">${mc.expected ?? '—'}</p>
+                    <p class="text-[10px] text-indigo-400">Expected</p>
+                </div>
+                <div class="bg-emerald-50 rounded p-2">
+                    <p class="text-xs font-bold text-emerald-700">${mc.ceiling ?? '—'}</p>
+                    <p class="text-[10px] text-emerald-400">Ceiling (P90)</p>
+                </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 mt-2 text-center">
+                <div class="bg-slate-50 rounded p-2">
+                    <p class="text-xs font-bold text-slate-600">${mc.std_dev ?? '—'}</p>
+                    <p class="text-[10px] text-slate-400">Std Dev</p>
+                </div>
+                <div class="bg-emerald-50 rounded p-2">
+                    <p class="text-xs font-bold text-emerald-700">${mc.boom_probability != null ? (mc.boom_probability * 100).toFixed(1) + '%' : '—'}</p>
+                    <p class="text-[10px] text-emerald-400">Boom (≥25)</p>
+                </div>
+                <div class="bg-red-50 rounded p-2">
+                    <p class="text-xs font-bold text-red-600">${mc.bust_probability != null ? (mc.bust_probability * 100).toFixed(1) + '%' : '—'}</p>
+                    <p class="text-[10px] text-red-400">Bust (≤8)</p>
+                </div>
+            </div>
+            ${mc.actual != null ? `<p class="text-[11px] text-amber-600 text-center mt-2">● Actual score: <strong>${mc.actual}</strong></p>` : ''}
+        </div>`;
+        document.body.appendChild(modal);
+    }
 
     function normalizeVal(val, s) {
         if (s.max === s.min) return 0.5;
@@ -716,6 +865,7 @@ const TunerApp = (() => {
         }
 
         const rows = [...data.rows];
+        const MC_NUM_COLS = ['projected', 'mc_floor', 'mc_ceiling', 'mc_boom_pct', 'mc_bust_pct', 'actual'];
         if (gridSortCol) {
             rows.sort((a, b) => {
                 let va, vb;
@@ -723,9 +873,11 @@ const TunerApp = (() => {
                     va = a[gridSortCol] || ''; vb = b[gridSortCol] || '';
                     return gridSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
                 }
-                if (gridSortCol === 'projected') { va = a.projected ?? -Infinity; vb = b.projected ?? -Infinity; }
-                else if (gridSortCol === 'actual') { va = a.actual ?? -Infinity; vb = b.actual ?? -Infinity; }
-                else { va = a.criteria[gridSortCol] ?? -Infinity; vb = b.criteria[gridSortCol] ?? -Infinity; }
+                if (MC_NUM_COLS.includes(gridSortCol)) {
+                    va = a[gridSortCol] ?? -Infinity; vb = b[gridSortCol] ?? -Infinity;
+                } else {
+                    va = a.criteria[gridSortCol] ?? -Infinity; vb = b.criteria[gridSortCol] ?? -Infinity;
+                }
                 return gridSortAsc ? va - vb : vb - va;
             });
         }
@@ -740,23 +892,43 @@ const TunerApp = (() => {
 
         const thCls = 'sticky top-0 bg-white px-3 py-2 text-left text-[10px] font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap border-b border-r border-slate-200 cursor-pointer hover:bg-slate-50 select-none';
         const th1Cls = 'sticky top-0 left-0 z-20 bg-white px-3 py-2 text-left text-[10px] font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap border-b border-r border-slate-200 cursor-pointer hover:bg-slate-50 select-none';
+        const thMcCls = 'sticky top-0 bg-indigo-50 px-3 py-2 text-left text-[10px] font-semibold text-indigo-600 uppercase tracking-wider whitespace-nowrap border-b border-r border-indigo-200 cursor-pointer hover:bg-indigo-100 select-none';
         const tdCls = 'px-3 py-1.5 border-b border-r border-slate-100 whitespace-nowrap text-right';
         const td1Cls = 'sticky left-0 bg-white px-3 py-1.5 border-b border-r border-slate-200 whitespace-nowrap font-medium text-slate-700';
+        const tdMcCls = 'px-3 py-1.5 border-b border-r border-indigo-50 whitespace-nowrap text-right';
+
+        const fmtPct = v => {
+            if (v === null || v === undefined) return '<span class="text-slate-300">—</span>';
+            return `<span>${(v * 100).toFixed(1)}%</span>`;
+        };
 
         let html = `<table class="min-w-full text-xs border-collapse"><thead><tr>
             <th class="${th1Cls}" onclick="TunerApp.sortGrid('player_name')">Player ${sortIcon('player_name')}</th>
             <th class="${thCls}" onclick="TunerApp.sortGrid('position')">Pos ${sortIcon('position')}</th>
             <th class="${thCls}" onclick="TunerApp.sortGrid('nfl_team')">Team ${sortIcon('nfl_team')}</th>
-            ${cols.map(c => `<th class="${thCls}" onclick="TunerApp.sortGrid('${c}')" title="${c}">${colLabel(c)} ${sortIcon(c)}</th>`).join('')}
-            <th class="${thCls}" onclick="TunerApp.sortGrid('projected')">Projected ${sortIcon('projected')}</th>
+            <th class="${thMcCls}" onclick="TunerApp.sortGrid('projected')" title="Monte Carlo Expected Value">MC Proj ${sortIcon('projected')}</th>
+            <th class="${thMcCls}" onclick="TunerApp.sortGrid('mc_floor')" title="Monte Carlo 10th Percentile">Floor ${sortIcon('mc_floor')}</th>
+            <th class="${thMcCls}" onclick="TunerApp.sortGrid('mc_ceiling')" title="Monte Carlo 90th Percentile">Ceiling ${sortIcon('mc_ceiling')}</th>
+            <th class="${thMcCls}" onclick="TunerApp.sortGrid('mc_boom_pct')" title="Probability of scoring ≥25 pts">Boom% ${sortIcon('mc_boom_pct')}</th>
+            <th class="${thMcCls}" onclick="TunerApp.sortGrid('mc_bust_pct')" title="Probability of scoring ≤8 pts">Bust% ${sortIcon('mc_bust_pct')}</th>
             <th class="${thCls}" onclick="TunerApp.sortGrid('actual')">Actual ${sortIcon('actual')}</th>
+            ${cols.map(c => `<th class="${thCls}" onclick="TunerApp.sortGrid('${c}')" title="${c}">${colLabel(c)} ${sortIcon(c)}</th>`).join('')}
         </tr></thead><tbody>`;
 
+        gridRowData = {};
         for (const row of rows) {
+            gridRowData[row.player_id] = row;
+            const sparkline = row.mc_histogram ? renderSparklineSVG(row.mc_histogram) : '';
             html += `<tr class="hover:bg-slate-50/50 transition-colors">
                 <td class="${td1Cls}">${row.player_name}</td>
                 <td class="${tdCls} text-center">${row.position}</td>
-                <td class="${tdCls} text-center text-slate-500">${row.nfl_team || '—'}</td>`;
+                <td class="${tdCls} text-center text-slate-500">${row.nfl_team || '—'}</td>
+                <td class="${tdMcCls} font-semibold text-indigo-700 cursor-pointer" onclick="TunerApp.showHistogram(${row.player_id})" title="Click to view MC distribution">${fmtVal(row.projected)}${sparkline}</td>
+                <td class="${tdMcCls} text-slate-600">${fmtVal(row.mc_floor)}</td>
+                <td class="${tdMcCls} text-slate-600">${fmtVal(row.mc_ceiling)}</td>
+                <td class="${tdMcCls}">${fmtPct(row.mc_boom_pct)}</td>
+                <td class="${tdMcCls}">${fmtPct(row.mc_bust_pct)}</td>
+                <td class="${tdCls} text-slate-500">${fmtVal(row.actual)}</td>`;
             for (const col of cols) {
                 const val = row.criteria[col];
                 const s = stats[col];
@@ -766,14 +938,13 @@ const TunerApp = (() => {
                 }
                 html += `<td class="${tdCls}"${bg}>${fmtVal(val)}</td>`;
             }
-            html += `<td class="${tdCls} font-semibold text-slate-700">${fmtVal(row.projected)}</td>
-                <td class="${tdCls} text-slate-500">${fmtVal(row.actual)}</td></tr>`;
+            html += `</tr>`;
         }
 
         html += '</tbody></table>';
         const note = data.truncated
             ? `<p class="text-[10px] text-amber-600 px-3 py-1 border-t border-slate-100">Showing first ${data.player_count} players — narrow by position.</p>`
-            : `<p class="text-[10px] text-slate-400 px-3 py-1 border-t border-slate-100">${data.player_count} players loaded.</p>`;
+            : `<p class="text-[10px] text-slate-400 px-3 py-1 border-t border-slate-100">${data.player_count} players loaded · Monte Carlo (10k sims)</p>`;
         container.innerHTML = html + note;
     }
 
@@ -1073,6 +1244,9 @@ const TunerApp = (() => {
         const runDetailLink = summary.run_id
             ? `<a href="/projection-tuner/runs/${encodeURIComponent(summary.run_id)}" class="text-xs font-semibold text-pigskin-600 hover:text-pigskin-700">View detail page</a>`
             : '';
+        const acceptBtn = summary.run_id
+            ? `<button onclick="TunerApp.acceptFromSelectedRun()" class="px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors">✓ Accept as Master</button>`
+            : '';
 
         let html = `<div class="space-y-3">
             <div class="flex flex-wrap items-center justify-between gap-2">
@@ -1081,6 +1255,7 @@ const TunerApp = (() => {
                     <p class="text-xs text-slate-400">Year ${summary.year || '—'} · ${summary.sample_count || 0} samples · ${summary.player_count || 0} players</p>
                 </div>
                 <div class="flex items-center gap-3">
+                    ${acceptBtn}
                     ${runDetailLink}
                     <p class="text-xs text-slate-400">${summary.timestamp || ''}</p>
                 </div>
@@ -1272,7 +1447,6 @@ const TunerApp = (() => {
 
     document.addEventListener('DOMContentLoaded', initGridTypeToggle);
     document.addEventListener('DOMContentLoaded', initAlgorithmTuning);
-    document.addEventListener('DOMContentLoaded', initPositionCoefficients);
 
     // ── Import NFL Data ───────────────────────────────────────────────
 
@@ -1396,6 +1570,15 @@ const TunerApp = (() => {
         }
     }
 
+// ── MC Parameters Banner Init ────────────────────────────────────────
+
+    function loadMasterCoefficientsBanner() {
+        // Legacy stub — MC params banner is always visible and updated by markModified()
+        updateMCParamsBanner();
+    }
+
+    document.addEventListener('DOMContentLoaded', updateMCParamsBanner);
+
 // ── Public API ──────────────────────────────────────────────────────── ───────────────────────────────────────────────────
 
     return {
@@ -1404,12 +1587,13 @@ const TunerApp = (() => {
         resetAll,
         resetGroup,
         setMode,
-        setEditorPosition,
         filterPlayers,
+        getMCParams,
         runSimulation,
         runDiagnose,
         loadGrid,
         sortGrid,
+        showHistogram,
         runAlgorithmTuning,
         loadAlgorithmHistory,
         loadAlgorithmRunFromHistory,

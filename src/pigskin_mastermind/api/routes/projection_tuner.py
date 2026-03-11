@@ -21,6 +21,13 @@ from pigskin_mastermind.services.projection_tuner import (
     get_criteria_docs,
     active_players_query,
 )
+from pigskin_mastermind.services.master_coefficients import (
+    load_master_coefficients,
+    load_master_coefficients_raw,
+    save_master_coefficients,
+    reset_master_coefficients,
+    get_effective_coefficients,
+)
 
 router = APIRouter(tags=["projection-tuner"])
 
@@ -34,6 +41,8 @@ class SimulatePlayerRequest(BaseModel):
     projection_type: str = "weekly"  # "weekly" or "yearly"
     # Flat {"skill_multiplier": 0.12} or position-keyed {"QB": {...}, "RB": {...}}
     coefficients: Optional[Dict[str, Any]] = None
+    # MC hyper-parameters, e.g. {"touch_std_fraction": 0.3, "base_td_lambda": 0.8}
+    mc_params: Optional[Dict[str, Any]] = None
 
 
 class SimulateBulkRequest(BaseModel):
@@ -43,6 +52,8 @@ class SimulateBulkRequest(BaseModel):
     projection_type: str = "weekly"
     # Flat {"skill_multiplier": 0.12} or position-keyed {"QB": {...}, "RB": {...}}
     coefficients: Optional[Dict[str, Any]] = None
+    # MC hyper-parameters, e.g. {"touch_std_fraction": 0.3, "base_td_lambda": 0.8}
+    mc_params: Optional[Dict[str, Any]] = None
 
 
 class CriteriaGridRequest(BaseModel):
@@ -62,6 +73,14 @@ class AlgorithmRunRequest(BaseModel):
     max_variations: int = 250
     top_n: int = 10
     per_position: bool = True  # tune coefficients independently per position
+
+
+class AcceptCoefficientsRequest(BaseModel):
+    """Accept tuned coefficients as the new master values."""
+    # Flat {"skill_multiplier": 0.12} or position-keyed {"default": {...}, "QB": {...}}
+    coefficients: Dict[str, Any]
+    source_run_id: Optional[str] = None
+    source_description: Optional[str] = None
 
 
 _VALID_POSITIONS = {"QB", "RB", "WR", "TE", "K", "DEF"}
@@ -522,12 +541,141 @@ async def get_defaults():
     )
 
     pos_coeffs = PositionCoefficients.from_global()
+    master_raw = load_master_coefficients_raw()
+    master_meta = None
+    has_master = False
+    if master_raw is not None:
+        master_meta = master_raw.pop("_meta", None)
+        has_master = True
+
     return {
         "coefficients": get_coefficient_metadata(),
         "criteria_docs": get_criteria_docs(),
         "defaults": get_default_coefficients(),
         "positions": TUNABLE_POSITIONS,
         "per_position_defaults": pos_coeffs.to_dict(),
+        "has_master_coefficients": has_master,
+        "master_coefficients": master_raw if has_master else None,
+        "master_meta": master_meta,
+    }
+
+
+# ── Master coefficients management ───────────────────────────────────────
+
+
+@router.get("/api/projection-tuner/master-coefficients")
+async def get_master_coefficients():
+    """Return the currently active master coefficients.
+
+    If no master coefficients have been accepted yet, the built-in defaults
+    are returned with ``is_custom: false``.
+    """
+    raw = load_master_coefficients_raw()
+    if raw is not None:
+        meta = raw.pop("_meta", {})
+        return {
+            "is_custom": True,
+            "coefficients": raw,
+            "meta": meta,
+        }
+
+    # No master file — return built-in defaults
+    effective = get_effective_coefficients()
+    return {
+        "is_custom": False,
+        "coefficients": effective.to_dict(),
+        "meta": None,
+    }
+
+
+@router.post("/api/projection-tuner/master-coefficients/accept")
+async def accept_master_coefficients(req: AcceptCoefficientsRequest):
+    """Accept tuned coefficients as the new master values.
+
+    The supplied coefficients become the active values used by production
+    projection services.  Both flat (single-set) and position-keyed
+    formats are accepted.
+    """
+    try:
+        path = save_master_coefficients(
+            req.coefficients,
+            source_run_id=req.source_run_id,
+            source_description=req.source_description,
+        )
+        return {
+            "status": "accepted",
+            "message": "Coefficients accepted as new master values.",
+            "path": path,
+            "source_run_id": req.source_run_id,
+        }
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
+
+@router.post("/api/projection-tuner/master-coefficients/accept-from-run/{run_id}")
+async def accept_coefficients_from_run(
+    run_id: str,
+    db: Session = Depends(get_db),
+):
+    """Accept the best coefficients from a saved tuning run as master values.
+
+    Loads the specified run, extracts its best (or combined per-position)
+    coefficients, and persists them as the new master coefficients.
+    """
+    tuner = ProjectionAlgorithmTuner(db)
+    run = next((r for r in tuner.load_results() if r.run_id == run_id), None)
+    if not run:
+        return {"status": "error", "message": f"Run {run_id} not found"}
+
+    # Use combined per-position coefficients if available, else the best flat set
+    if run.combined_coefficients:
+        coefficients = run.combined_coefficients
+        description = (
+            f"Per-position coefficients from tuning run {run_id} "
+            f"(year={run.year}, {run.sample_count} samples, "
+            f"MAE {run.best.mae:.4f})"
+        )
+    else:
+        coefficients = run.best.coefficients
+        description = (
+            f"Best coefficients from tuning run {run_id} "
+            f"(year={run.year}, {run.sample_count} samples, "
+            f"MAE {run.best.mae:.4f})"
+        )
+
+    try:
+        path = save_master_coefficients(
+            coefficients,
+            source_run_id=run_id,
+            source_description=description,
+        )
+        return {
+            "status": "accepted",
+            "message": f"Coefficients from run {run_id} accepted as new master values.",
+            "path": path,
+            "source_run_id": run_id,
+            "mae": run.best.mae,
+        }
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
+
+@router.post("/api/projection-tuner/master-coefficients/reset")
+async def reset_to_default_coefficients():
+    """Reset master coefficients back to the built-in defaults.
+
+    Removes the persisted master file so all projection services revert
+    to the hard-coded values in ``AlgorithmCoefficients``.
+    """
+    removed = reset_master_coefficients()
+    if removed:
+        return {
+            "status": "reset",
+            "message": "Master coefficients reset to built-in defaults.",
+        }
+    return {
+        "status": "no_change",
+        "message": "No custom master coefficients were saved — already using defaults.",
     }
 
 
@@ -636,7 +784,9 @@ async def simulate_player(
         else:
             if req.week is None:
                 return {"error": "week is required for weekly projections"}
-            result = service.project_weekly(req.player_id, req.week, req.year)
+            result = service.project_weekly(
+                req.player_id, req.week, req.year, mc_params=req.mc_params
+            )
     except ValueError as e:
         return {"error": str(e)}
 
@@ -678,7 +828,9 @@ async def simulate_bulk(
             tuned = tuned_service.backtest_yearly(req.position, req.year)
             default = default_service.backtest_yearly(req.position, req.year)
         else:
-            tuned = tuned_service.backtest_weekly(req.position, req.year, req.week)
+            tuned = tuned_service.backtest_weekly(
+                req.position, req.year, req.week, mc_params=req.mc_params
+            )
             default = default_service.backtest_weekly(req.position, req.year, req.week)
     except (ValueError, Exception) as e:
         return {"error": str(e)}
@@ -761,6 +913,14 @@ async def criteria_grid(
             "projected": result.get("total"),
             "actual": result.get("actual_points"),
             "criteria": result.get("criteria", {}),
+            "mc_floor": result.get("monte_carlo", {}).get("floor") if result.get("monte_carlo") else None,
+            "mc_ceiling": result.get("monte_carlo", {}).get("ceiling") if result.get("monte_carlo") else None,
+            "mc_median": result.get("monte_carlo", {}).get("median") if result.get("monte_carlo") else None,
+            "mc_std_dev": result.get("monte_carlo", {}).get("std_dev") if result.get("monte_carlo") else None,
+            "mc_boom_pct": result.get("monte_carlo", {}).get("boom_probability") if result.get("monte_carlo") else None,
+            "mc_bust_pct": result.get("monte_carlo", {}).get("bust_probability") if result.get("monte_carlo") else None,
+            "mc_histogram": result.get("monte_carlo", {}).get("histogram") if result.get("monte_carlo") else None,
+            "deterministic_total": result.get("deterministic_total"),
         })
 
     # Determine column order: base fields first, then type-specific

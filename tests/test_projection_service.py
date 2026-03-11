@@ -1,5 +1,6 @@
 """Tests for projection services."""
 
+import pytest
 from pigskin_mastermind.models.player import Player
 from pigskin_mastermind.models.algorithm_coefficients import (
     AlgorithmCoefficients,
@@ -449,3 +450,55 @@ def test_service_with_single_algorithm_coefficients():
     proj = service.calculate_projection(player, criteria)
     # Skill adjustment: (80-50) × 0.3 = 9.0 + 10.0 baseline = ~19
     assert proj > 15.0
+
+
+def test_baseline_weight_scales_historical_average():
+    """baseline_weight should scale the historical_average_points anchor."""
+    player = Player(player_id="p1", name="P", position="QB", team="KC")
+
+    criteria = WeeklyProjectionCriteria(
+        historical_average_points=20.0,
+    )
+
+    # Default baseline_weight=1.0
+    default_service = WeeklyProjectionService(
+        coefficients=AlgorithmCoefficients(baseline_weight=1.0)
+    )
+    # Reduced baseline_weight=0.5
+    half_service = WeeklyProjectionService(
+        coefficients=AlgorithmCoefficients(baseline_weight=0.5)
+    )
+    # Boosted baseline_weight=1.5
+    boosted_service = WeeklyProjectionService(
+        coefficients=AlgorithmCoefficients(baseline_weight=1.5)
+    )
+
+    proj_default = default_service.calculate_projection(player, criteria)
+    proj_half = half_service.calculate_projection(player, criteria)
+    proj_boosted = boosted_service.calculate_projection(player, criteria)
+
+    # Lower weight → lower projection; higher weight → higher projection
+    assert proj_half < proj_default
+    assert proj_boosted > proj_default
+
+
+def test_baseline_weight_zero_removes_baseline():
+    """baseline_weight=0 should remove historical average from projection."""
+    player = Player(player_id="p1", name="P", position="RB", team="KC")
+
+    criteria = WeeklyProjectionCriteria(
+        historical_average_points=20.0,
+    )
+
+    zero_service = WeeklyProjectionService(
+        coefficients=AlgorithmCoefficients(baseline_weight=0.0)
+    )
+    default_service = WeeklyProjectionService(
+        coefficients=AlgorithmCoefficients(baseline_weight=1.0)
+    )
+
+    proj_zero = zero_service.calculate_projection(player, criteria)
+    proj_default = default_service.calculate_projection(player, criteria)
+
+    # The 20-point baseline is removed, so the projection should be ~20 less
+    assert proj_default - proj_zero == pytest.approx(20.0, abs=0.01)
