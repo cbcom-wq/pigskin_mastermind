@@ -191,11 +191,7 @@ async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # Auto-advance AI picks before user's first turn
-    internal = draft_engine._drafts[state["draft_id"]]
-    draft_engine._advance_ai_picks(internal)
-    state = draft_engine._public_state(internal)
-
+    # Frontend uses /draft/advance for staggered AI picks
     return state
 
 
@@ -252,12 +248,67 @@ async def get_draft_state(draft_id: str):
 
 @router.post("/pick")
 async def make_pick(req: UserPickRequest):
-    """Register the user's pick and auto-advance AI picks."""
+    """Register the user's pick. AI picks are NOT auto-advanced; use /draft/advance."""
     try:
-        state = draft_engine.make_user_pick(req.draft_id, req.player_id)
+        state = draft_engine.make_user_pick(
+            req.draft_id, req.player_id, advance_ai=False
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    # Attach commentary for the user's pick
+    if state.get("picks_log"):
+        latest_pick = state["picks_log"][-1]
+        items = draft_engine.generate_commentary(
+            state["picks_log"], state["available_players"], latest_pick
+        )
+        state["commentary"] = items
+
     return state
+
+
+class AdvancePickRequest(BaseModel):
+    draft_id: str
+
+
+@router.post("/advance")
+async def advance_one_pick(req: AdvancePickRequest):
+    """Advance exactly one AI pick and return the updated state.
+
+    The frontend calls this in a staggered loop to create a live-draft feel.
+    Returns 400 if it is the user's turn or the draft is complete.
+    """
+    state = draft_engine.advance_one_ai_pick(req.draft_id)
+    if state is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot advance: user's turn or draft complete",
+        )
+
+    # Generate commentary for the new pick
+    if state.get("picks_log"):
+        latest_pick = state["picks_log"][-1]
+        items = draft_engine.generate_commentary(
+            state["picks_log"], state["available_players"], latest_pick
+        )
+        state["commentary"] = items
+
+    return state
+
+
+@router.get("/grade/{draft_id}")
+async def get_draft_grade(draft_id: str):
+    """Return detailed draft grades and pick-by-pick analysis.
+
+    Only available after the draft is complete.
+    """
+    result = draft_engine.grade_draft(draft_id)
+    if result is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Draft not found or not yet complete",
+        )
+    return result
 
 
 @router.post("/run-simulation")

@@ -856,3 +856,210 @@ def test_start_draft_falls_back_to_previous_year(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] in ("in_progress", "complete")
+
+
+# ---------------------------------------------------------------------------
+# advance_one_ai_pick / grade_draft / generate_commentary service tests
+# ---------------------------------------------------------------------------
+
+
+def test_advance_one_ai_pick():
+    engine = _make_engine()
+    # User picks at position 2 so AI (slot 1) goes first
+    state = engine.create_draft(
+        num_teams=2, num_rounds=2, user_pick_position=2, player_pool=_small_pool()
+    )
+    draft_id = state["draft_id"]
+    assert str(state["current_slot"]) == "1"  # AI's turn
+
+    new_state = engine.advance_one_ai_pick(draft_id)
+    assert new_state is not None
+    assert len(new_state["picks_log"]) == 1
+    assert str(new_state["current_slot"]) == "2"  # now user's turn
+
+
+def test_advance_one_ai_pick_returns_none_on_user_turn():
+    engine = _make_engine()
+    state = engine.create_draft(
+        num_teams=2, num_rounds=2, user_pick_position=1, player_pool=_small_pool()
+    )
+    # User picks first — advance should return None
+    assert engine.advance_one_ai_pick(state["draft_id"]) is None
+
+
+def test_advance_one_ai_pick_returns_none_when_complete():
+    engine = _make_engine()
+    state = engine.create_draft(
+        num_teams=2, num_rounds=1, user_pick_position=1, player_pool=_small_pool()
+    )
+    draft_id = state["draft_id"]
+    # User pick
+    engine.make_user_pick(draft_id, state["available_players"][0]["id"])
+    # AI pick — completes the draft
+    engine.advance_one_ai_pick(draft_id)
+    # Now draft is complete
+    assert engine.advance_one_ai_pick(draft_id) is None
+
+
+def test_grade_draft_returns_none_when_incomplete():
+    engine = _make_engine()
+    state = engine.create_draft(
+        num_teams=2, num_rounds=2, user_pick_position=1, player_pool=_small_pool()
+    )
+    assert engine.grade_draft(state["draft_id"]) is None
+
+
+def test_grade_draft_returns_grade():
+    engine = _make_engine()
+    pool = _small_pool()
+    for i, p in enumerate(pool):
+        p["adp_rank"] = float(i + 1)
+    state = engine.create_draft(
+        num_teams=2, num_rounds=2, user_pick_position=1, player_pool=pool
+    )
+    draft_id = state["draft_id"]
+    # Complete draft
+    internal = engine._drafts[draft_id]
+    while internal["status"] == "in_progress":
+        slot = engine._current_slot(internal)
+        if slot is None:
+            break
+        if str(slot) == str(internal["user_pick_position"]):
+            pid = internal["available_players"][0]["id"]
+            engine.make_user_pick(draft_id, pid)
+        else:
+            engine.advance_one_ai_pick(draft_id)
+
+    grade = engine.grade_draft(draft_id)
+    assert grade is not None
+    assert "grade" in grade
+    assert grade["grade"][0] in "ABCDF"
+    assert "pick_analysis" in grade
+    assert len(grade["pick_analysis"]) > 0
+    assert "strengths" in grade
+    assert "weaknesses" in grade
+    assert "best_ai" in grade
+    assert "composite_score" in grade
+
+
+def test_generate_commentary_steal():
+    pick = {
+        "round": 5, "slot": 1, "pick_number": 50,
+        "player": {"id": "p1", "name": "TestPlayer", "position": "RB",
+                    "nfl_team": "KC", "projected_points": 15.0, "adp_rank": 80},
+    }
+    items = MockDraftEngine.generate_commentary([], [], pick)
+    assert any(i["type"] == "steal" for i in items)
+
+
+def test_generate_commentary_reach():
+    pick = {
+        "round": 1, "slot": 1, "pick_number": 50,
+        "player": {"id": "p1", "name": "Reacher", "position": "QB",
+                    "nfl_team": "KC", "projected_points": 10.0, "adp_rank": 20},
+    }
+    items = MockDraftEngine.generate_commentary([], [], pick)
+    assert any(i["type"] == "reach" for i in items)
+
+
+def test_generate_commentary_position_run():
+    prior_picks = [
+        {"round": 1, "slot": i, "pick_number": i,
+         "player": {"id": f"p{i}", "name": f"RB{i}", "position": "RB",
+                     "nfl_team": "KC", "projected_points": 15.0, "adp_rank": float(i)}}
+        for i in range(1, 5)
+    ]
+    new_pick = {
+        "round": 1, "slot": 5, "pick_number": 5,
+        "player": {"id": "p5", "name": "RB5", "position": "RB",
+                    "nfl_team": "KC", "projected_points": 14.0, "adp_rank": 5.0},
+    }
+    items = MockDraftEngine.generate_commentary(prior_picks + [new_pick], [], new_pick)
+    assert any("run" in i["text"].lower() for i in items)
+
+
+# ---------------------------------------------------------------------------
+# API endpoint tests for /advance and /grade
+# ---------------------------------------------------------------------------
+
+
+def test_advance_endpoint(client):
+    """POST /draft/advance should advance one AI pick."""
+    start = client.post(
+        "/draft/start",
+        json={"num_teams": 3, "num_rounds": 2, "user_pick_position": 2},
+    )
+    state = start.json()
+    draft_id = state["draft_id"]
+    assert str(state["current_slot"]) == "1"
+
+    resp = client.post("/draft/advance", json={"draft_id": draft_id})
+    assert resp.status_code == 200
+    new_state = resp.json()
+    assert len(new_state["picks_log"]) == 1
+    assert str(new_state["current_slot"]) == "2"
+
+
+def test_advance_endpoint_returns_400_on_user_turn(client):
+    """POST /draft/advance should return 400 when it's the user's turn."""
+    start = client.post(
+        "/draft/start",
+        json={"num_teams": 2, "num_rounds": 2, "user_pick_position": 1},
+    )
+    state = start.json()
+    resp = client.post("/draft/advance", json={"draft_id": state["draft_id"]})
+    assert resp.status_code == 400
+
+
+def test_grade_endpoint_incomplete_draft(client):
+    """GET /draft/grade should return 400 for incomplete draft."""
+    start = client.post(
+        "/draft/start",
+        json={"num_teams": 2, "num_rounds": 2, "user_pick_position": 1},
+    )
+    state = start.json()
+    resp = client.get(f"/draft/grade/{state['draft_id']}")
+    assert resp.status_code == 400
+
+
+def test_grade_endpoint_complete_draft(client):
+    """GET /draft/grade should return grade data for a completed draft."""
+    start = client.post(
+        "/draft/start",
+        json={"num_teams": 2, "num_rounds": 1, "user_pick_position": 1},
+    )
+    state = start.json()
+    draft_id = state["draft_id"]
+
+    # User picks
+    player_id = state["available_players"][0]["id"]
+    client.post("/draft/pick", json={"draft_id": draft_id, "player_id": player_id})
+    # Advance AI pick to complete
+    client.post("/draft/advance", json={"draft_id": draft_id})
+
+    resp = client.get(f"/draft/grade/{draft_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "grade" in data
+    assert "pick_analysis" in data
+    assert "strengths" in data
+    assert "weaknesses" in data
+
+
+def test_pick_endpoint_includes_commentary(client):
+    """POST /draft/pick should include commentary in the response."""
+    start = client.post(
+        "/draft/start",
+        json={"num_teams": 2, "num_rounds": 2, "user_pick_position": 1},
+    )
+    state = start.json()
+    draft_id = state["draft_id"]
+    player_id = state["available_players"][0]["id"]
+
+    resp = client.post(
+        "/draft/pick",
+        json={"draft_id": draft_id, "player_id": player_id},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "commentary" in data

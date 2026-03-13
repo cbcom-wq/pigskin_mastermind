@@ -1,25 +1,30 @@
 {% extends "base.html" %}
 {% block title %}Mock Draft — Pigskin Mastermind{% endblock %}
-{% block page_title %}Mock Draft{% endblock %}
+{% block page_title %}
+<span class="text-slate-300">Mock Draft</span>
+{% endblock %}
 
 {% block content %}
-<div class="max-w-5xl mx-auto space-y-6">
+<link rel="stylesheet" href="/static/css/draft.css">
 
-  <!-- Header card -->
-  <div class="bg-gradient-to-r from-pigskin-600 to-pigskin-700 rounded-2xl shadow-lg p-6 text-white">
-    <div class="flex items-start justify-between flex-wrap gap-4">
-      <div>
-        <h2 class="text-2xl font-extrabold mb-1">🏈 Interactive Mock Draft</h2>
-        <p class="text-pigskin-100 text-sm">
-          You pick for your team; AI auto-selects for all other teams using configurable strategies.
-          Want to test strategies head-to-head?
-          <a href="/draft/simulate" class="text-white font-semibold underline decoration-dotted hover:no-underline">Run a simulation →</a>
-        </p>
-      </div>
-      <div class="flex items-center gap-3">
-        <div id="lobby-status" class="flex items-center gap-2 bg-pigskin-800/50 rounded-xl px-4 py-2">
-          <span class="w-2 h-2 rounded-full bg-slate-300 inline-block" id="lobby-dot"></span>
-          <span class="text-xs font-semibold text-pigskin-100" id="lobby-status-text">Configure your draft</span>
+<div class="max-w-6xl mx-auto space-y-6">
+
+  <!-- Hero header -->
+  <div class="relative overflow-hidden rounded-2xl border border-slate-700/50" style="background: linear-gradient(135deg, #1a0f00 0%, #2d1a08 30%, #1e293b 100%);">
+    <div class="absolute inset-0 opacity-5" style="background: repeating-linear-gradient(0deg, transparent, transparent 59px, rgba(255,255,255,0.1) 59px, rgba(255,255,255,0.1) 60px), repeating-linear-gradient(90deg, transparent, transparent 59px, rgba(255,255,255,0.1) 59px, rgba(255,255,255,0.1) 60px);"></div>
+    <div class="relative p-8">
+      <div class="flex items-start justify-between flex-wrap gap-4">
+        <div>
+          <p class="text-[10px] uppercase tracking-[0.3em] text-pigskin-400 font-bold mb-2">Interactive Experience</p>
+          <h2 class="text-3xl font-black text-white mb-2">🏈 Mock Draft</h2>
+          <p class="text-sm text-slate-400 max-w-md">
+            Draft your dream team against AI opponents with configurable strategies.
+            <a href="/draft/simulate" class="text-pigskin-400 font-semibold hover:text-pigskin-300 transition-colors ml-1">Simulation mode →</a>
+          </p>
+        </div>
+        <div id="lobby-status" class="flex items-center gap-2 bg-black/30 border border-slate-700/50 rounded-xl px-4 py-2.5 backdrop-blur-sm">
+          <span class="w-2.5 h-2.5 rounded-full bg-slate-500 inline-block" id="lobby-dot"></span>
+          <span class="text-xs font-semibold text-slate-300" id="lobby-status-text">Configure your draft</span>
         </div>
       </div>
     </div>
@@ -28,194 +33,196 @@
   <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
 
     <!-- Left column: setup form -->
-    <div class="lg:col-span-3 space-y-4">
+    <div class="lg:col-span-3 space-y-5">
 
-      <!-- Setup form -->
-      <form id="draft-setup-form" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-5">
-        <h3 class="text-sm font-bold text-slate-600 uppercase tracking-wide">Draft Settings</h3>
+      <!-- Draft Settings Card -->
+      <div class="draft-card p-6 space-y-5">
+        <h3 class="text-xs font-bold text-pigskin-400 uppercase tracking-widest">Draft Settings</h3>
 
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
-            <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Teams</label>
+            <label class="block text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Teams</label>
             <input type="number" id="num-teams" min="2" max="20" value="10"
                    oninput="onSettingsChange()"
-                   class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pigskin-400">
+                   class="w-full bg-slate-800/80 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-pigskin-500 focus:border-transparent">
           </div>
           <div>
-            <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Rounds</label>
+            <label class="block text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Rounds</label>
             <input type="number" id="num-rounds" min="1" max="20" value="15"
                    oninput="onSettingsChange()"
-                   class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pigskin-400">
+                   class="w-full bg-slate-800/80 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-pigskin-500 focus:border-transparent">
           </div>
           <div>
-            <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">My pick slot</label>
+            <label class="block text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5">My Pick Slot</label>
             <input type="number" id="user-pick-pos" min="1" max="20" value="1"
                    oninput="onSettingsChange()"
-                   class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pigskin-400">
+                   class="w-full bg-slate-800/80 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-pigskin-500 focus:border-transparent">
           </div>
         </div>
 
         <!-- Player pool source -->
-        <div class="rounded-xl border border-slate-200 p-4 space-y-3">
-          <p class="text-xs font-semibold text-slate-500 uppercase tracking-wide">Player Pool</p>
-          <div class="space-y-2">
+        <div class="rounded-xl border border-slate-600/30 bg-slate-800/30 p-4 space-y-3">
+          <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Player Pool</p>
+          <div class="space-y-2.5">
             <label class="flex items-start gap-3 cursor-pointer group">
               <input type="radio" name="pool-source" value="default" checked
                      onchange="onPoolSourceChange()"
-                     class="mt-0.5 text-pigskin-500">
+                     class="mt-0.5 text-pigskin-500 bg-slate-700 border-slate-600">
               <div>
-                <span class="text-sm font-medium text-slate-700">Built-in mock players</span>
-                <p class="text-xs text-slate-400">Pre-populated player pool (no internet required)</p>
+                <span class="text-sm font-medium text-slate-200 group-hover:text-white transition-colors">Built-in mock players</span>
+                <p class="text-xs text-slate-500">Pre-populated pool (no internet required)</p>
               </div>
             </label>
             <label class="flex items-start gap-3 cursor-pointer group">
               <input type="radio" name="pool-source" value="espn_adp"
                      onchange="onPoolSourceChange()"
-                     class="mt-0.5 text-pigskin-500">
+                     class="mt-0.5 text-pigskin-500 bg-slate-700 border-slate-600">
               <div>
-                <span class="text-sm font-medium text-slate-700">ESPN ADP Rankings</span>
-                <p class="text-xs text-slate-400">Live rankings from ESPN, ordered by Average Draft Position</p>
+                <span class="text-sm font-medium text-slate-200 group-hover:text-white transition-colors">ESPN ADP Rankings</span>
+                <p class="text-xs text-slate-500">Live rankings ordered by Average Draft Position</p>
               </div>
             </label>
             <label class="flex items-start gap-3 cursor-pointer group">
               <input type="radio" name="pool-source" value="db"
                      onchange="onPoolSourceChange()"
-                     class="mt-0.5 text-pigskin-500">
+                     class="mt-0.5 text-pigskin-500 bg-slate-700 border-slate-600">
               <div>
-                <span class="text-sm font-medium text-slate-700">Imported players (DB)</span>
-                <p class="text-xs text-slate-400">Players synced from your ESPN league</p>
+                <span class="text-sm font-medium text-slate-200 group-hover:text-white transition-colors">Imported players (DB)</span>
+                <p class="text-xs text-slate-500">Players synced from your ESPN league</p>
               </div>
             </label>
           </div>
 
-          <!-- ESPN ADP year selector (shown when ESPN ADP is selected) -->
           <div id="espn-year-row" class="hidden flex items-center gap-3 pl-6">
             <label class="text-xs font-semibold text-slate-500 w-20 flex-shrink-0">Season year</label>
             <input type="number" id="espn-adp-year" min="2019" max="2030" value="2025"
-                   class="w-28 border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+                   class="w-28 bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-pigskin-500">
           </div>
         </div>
 
         <!-- AI strategies accordion -->
         <div>
           <button type="button" onclick="toggleAIConfig()"
-                  class="flex items-center gap-2 text-sm font-semibold text-slate-700 hover:text-pigskin-600 transition-colors">
+                  class="flex items-center gap-2 text-sm font-semibold text-slate-300 hover:text-pigskin-400 transition-colors">
             <svg id="ai-chevron" class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
             </svg>
             Configure AI team strategies
           </button>
           <div id="ai-config" class="hidden mt-4 space-y-3">
-            <p class="text-xs text-slate-400">Leave blank to use <em>Best Available</em> for that slot.</p>
+            <p class="text-xs text-slate-600">Leave blank for <em class="text-slate-400">Best Available</em>.</p>
             <div id="ai-strategy-rows" class="space-y-2"></div>
           </div>
         </div>
 
-        <!-- Position by round (optional) -->
+        <!-- Position by round -->
         <div>
           <button type="button" onclick="togglePBR()"
-                  class="flex items-center gap-2 text-sm font-semibold text-slate-700 hover:text-pigskin-600 transition-colors">
+                  class="flex items-center gap-2 text-sm font-semibold text-slate-300 hover:text-pigskin-400 transition-colors">
             <svg id="pbr-chevron" class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
             </svg>
-            Position-by-round map (for <em>Position by Round</em> strategy)
+            Position-by-round map
           </button>
           <div id="pbr-config" class="hidden mt-4 space-y-3">
-            <p class="text-xs text-slate-400">Optionally specify a target position for each round. Applies to any team using the <em>Position by Round</em> strategy.</p>
+            <p class="text-xs text-slate-600">Target position per round for <em class="text-slate-400">Position by Round</em> strategy.</p>
             <div id="pbr-rows" class="space-y-2"></div>
           </div>
         </div>
 
         <button type="button" id="start-btn" onclick="startDraft()"
-                class="w-full bg-pigskin-500 hover:bg-pigskin-600 text-white font-semibold py-3 rounded-xl transition-colors text-sm">
-          🏈 Start Draft
+                class="w-full btn-enter-draft text-white font-bold py-3.5 rounded-xl text-sm tracking-wide uppercase">
+          🏈 Enter the Draft
         </button>
-      </form>
+      </div>
 
-      <!-- Strategy legend -->
-      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
-        <h3 class="text-xs font-bold text-slate-500 mb-3 uppercase tracking-wide">Strategy Guide</h3>
-        <dl class="space-y-2">
+      <!-- Snake Draft Diagram -->
+      <div class="draft-card p-5">
+        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Your Pick Order (Snake Draft)</h3>
+        <div id="snake-diagram" class="overflow-x-auto">
+          <!-- rendered by JS -->
+        </div>
+      </div>
+
+      <!-- Strategy Guide -->
+      <div class="draft-card p-5">
+        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Strategy Guide</h3>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {% for s in strategies %}
-          <div class="flex gap-2">
-            <dt class="text-xs font-semibold text-pigskin-600 w-36 flex-shrink-0">{{ s.label }}</dt>
-            <dd class="text-xs text-slate-500">{{ s.desc }}</dd>
+          <div class="bg-slate-800/50 rounded-lg p-3 border border-slate-700/30">
+            <p class="text-xs font-bold text-pigskin-400 mb-0.5">{{ s.label }}</p>
+            <p class="text-[11px] text-slate-500">{{ s.desc }}</p>
           </div>
           {% endfor %}
-        </dl>
+        </div>
       </div>
     </div>
 
-    <!-- Right column: live ADP preview -->
-    <div class="lg:col-span-2 space-y-4">
-      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col" style="min-height: 520px;">
-        <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+    <!-- Right column: ADP preview + summary -->
+    <div class="lg:col-span-2 space-y-5">
+      <div class="draft-card flex flex-col" style="min-height: 520px;">
+        <div class="px-5 py-4 draft-card-header flex items-center justify-between">
           <div>
-            <h3 class="text-sm font-bold text-slate-700">Player Rankings</h3>
-            <p id="rankings-subtitle" class="text-xs text-slate-400 mt-0.5">Select ESPN ADP to load live rankings</p>
+            <h3 class="text-sm font-bold text-slate-300">Player Rankings</h3>
+            <p id="rankings-subtitle" class="text-xs text-slate-500 mt-0.5">Select ESPN ADP to load live rankings</p>
           </div>
           <div class="flex gap-2 items-center">
             <select id="adp-pos-filter" onchange="filterAdpPlayers()"
-                    class="border border-slate-300 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+                    class="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-pigskin-500">
               <option value="">All</option>
               <option>QB</option><option>RB</option><option>WR</option>
               <option>TE</option><option>K</option><option>DEF</option>
             </select>
             <button id="load-adp-btn" onclick="loadEspnAdp()"
-                    class="hidden px-3 py-1 bg-pigskin-500 hover:bg-pigskin-600 text-white text-xs font-semibold rounded-lg transition-colors">
+                    class="hidden px-3 py-1 bg-pigskin-600 hover:bg-pigskin-500 text-white text-xs font-semibold rounded-lg transition-colors">
               ↺ Refresh
             </button>
           </div>
         </div>
 
-        <!-- ADP loading state -->
         <div id="adp-loading" class="hidden flex-1 flex items-center justify-center p-8">
           <div class="text-center space-y-3">
             <div class="w-8 h-8 border-2 border-pigskin-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
-            <p class="text-xs text-slate-400">Fetching ESPN ADP data…</p>
+            <p class="text-xs text-slate-500">Fetching ESPN ADP data…</p>
           </div>
         </div>
 
-        <!-- ADP empty state -->
         <div id="adp-empty" class="flex-1 flex items-center justify-center p-8">
           <div class="text-center space-y-3">
             <div class="text-4xl">📋</div>
-            <p class="text-sm font-medium text-slate-600">No rankings loaded</p>
-            <p class="text-xs text-slate-400">Select "ESPN ADP Rankings" above to preview live player rankings ordered by Average Draft Position.</p>
+            <p class="text-sm font-medium text-slate-400">No rankings loaded</p>
+            <p class="text-xs text-slate-600">Select "ESPN ADP Rankings" to preview live player rankings.</p>
           </div>
         </div>
 
-        <!-- ADP error state -->
         <div id="adp-error" class="hidden flex-1 flex items-center justify-center p-8">
           <div class="text-center space-y-3">
             <div class="text-4xl">⚠️</div>
-            <p class="text-sm font-medium text-slate-600">Could not load ESPN ADP</p>
-            <p class="text-xs text-slate-400" id="adp-error-msg">Check your connection and try again.</p>
-            <button onclick="loadEspnAdp()" class="px-3 py-1.5 bg-pigskin-500 text-white text-xs font-semibold rounded-lg hover:bg-pigskin-600 transition-colors">Retry</button>
+            <p class="text-sm font-medium text-slate-400">Could not load ESPN ADP</p>
+            <p class="text-xs text-slate-600" id="adp-error-msg">Check your connection and try again.</p>
+            <button onclick="loadEspnAdp()" class="px-3 py-1.5 bg-pigskin-600 text-white text-xs font-semibold rounded-lg hover:bg-pigskin-500 transition-colors">Retry</button>
           </div>
         </div>
 
-        <!-- ADP player list -->
-        <div id="adp-list" class="hidden flex-1 overflow-y-auto divide-y divide-slate-50">
+        <div id="adp-list" class="hidden flex-1 overflow-y-auto">
           <!-- populated by JS -->
         </div>
 
-        <div id="adp-footer" class="hidden px-4 py-2 border-t border-slate-100 text-xs text-slate-400 text-center">
-          <!-- populated by JS -->
+        <div id="adp-footer" class="hidden px-4 py-2 border-t border-slate-700/30 text-xs text-slate-500 text-center">
         </div>
       </div>
 
-      <!-- Draft summary card (shown after settings change) -->
-      <div id="draft-summary" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 space-y-2">
-        <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wide">Draft Preview</h3>
+      <!-- Draft summary card -->
+      <div class="draft-card p-5 space-y-3">
+        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest">Draft Preview</h3>
         <div class="grid grid-cols-2 gap-3">
-          <div class="bg-slate-50 rounded-xl p-3 text-center">
-            <p class="text-2xl font-extrabold text-slate-800" id="preview-picks">150</p>
-            <p class="text-xs text-slate-400">Total Picks</p>
+          <div class="bg-slate-800/50 rounded-xl p-3 text-center border border-slate-700/30">
+            <p class="text-2xl font-black text-white" id="preview-picks">150</p>
+            <p class="text-[10px] text-slate-500 uppercase font-semibold">Total Picks</p>
           </div>
-          <div class="bg-slate-50 rounded-xl p-3 text-center">
-            <p class="text-2xl font-extrabold text-pigskin-600" id="preview-user-picks">15</p>
-            <p class="text-xs text-slate-400">Your Picks</p>
+          <div class="bg-slate-800/50 rounded-xl p-3 text-center border border-slate-700/30">
+            <p class="text-2xl font-black text-pigskin-400" id="preview-user-picks">15</p>
+            <p class="text-[10px] text-slate-500 uppercase font-semibold">Your Picks</p>
           </div>
         </div>
         <p class="text-xs text-slate-500 text-center" id="preview-snake-note">Snake draft · Slot 1 picks first</p>
@@ -229,21 +236,23 @@
 
 {% block extra_js %}
 <script>
+  // Apply dark theme
+  document.body.classList.add('draft-dark');
+
   const STRATEGIES = {{ strategies | tojson }};
   const POSITIONS = ['QB','RB','WR','TE','K','DEF'];
   const POS_COLORS = {QB:'badge-qb',RB:'badge-rb',WR:'badge-wr',TE:'badge-te',K:'badge-k',DEF:'badge-def'};
-  const ADP_TIER1_MAX = 36;   // early rounds (picks 1–36)
-  const ADP_TIER2_MAX = 72;   // mid rounds (picks 37–72)
+  const ADP_TIER1_MAX = 36;
+  const ADP_TIER2_MAX = 72;
 
   let adpPlayers = [];
 
-  function posClass(pos) { return POS_COLORS[pos] || 'bg-slate-200 text-slate-700'; }
+  function posClass(pos) { return POS_COLORS[pos] || 'bg-slate-600 text-slate-200'; }
 
-  // ---- Lobby status helpers ----
   function setLobbyStatus(text, color) {
     const dot = document.getElementById('lobby-dot');
     const label = document.getElementById('lobby-status-text');
-    dot.className = `w-2 h-2 rounded-full inline-block ${color}`;
+    dot.className = `w-2.5 h-2.5 rounded-full inline-block ${color}`;
     label.textContent = text;
   }
 
@@ -256,6 +265,33 @@
     document.getElementById('preview-snake-note').textContent =
       `Snake draft · Slot ${slot} of ${teams}`;
     setLobbyStatus('Draft configured — ready to start', 'bg-yellow-400');
+    renderSnakeDiagram(teams, rounds, slot);
+  }
+
+  // ---- Snake Draft Diagram ----
+  function renderSnakeDiagram(teams, rounds, userSlot) {
+    const container = document.getElementById('snake-diagram');
+    if (!container) return;
+    const maxRounds = Math.min(rounds, 8); // show first 8 for readability
+    let html = `<div style="display:grid; grid-template-columns: 32px repeat(${teams}, 1fr); gap: 3px;">`;
+    html += `<div></div>`;
+    for (let t = 1; t <= teams; t++) {
+      html += `<div class="text-center text-[8px] font-bold ${t === userSlot ? 'text-pigskin-400' : 'text-slate-600'}">${t === userSlot ? '★' : t}</div>`;
+    }
+    for (let r = 1; r <= maxRounds; r++) {
+      html += `<div class="text-[9px] font-bold text-slate-600 flex items-center">R${r}</div>`;
+      const slots = r % 2 === 1
+        ? Array.from({length: teams}, (_, i) => i + 1)
+        : Array.from({length: teams}, (_, i) => teams - i);
+      for (let t = 1; t <= teams; t++) {
+        const pickNum = (r - 1) * teams + slots.indexOf(t) + 1;
+        const isUser = t === userSlot;
+        html += `<div class="snake-cell ${isUser ? 'snake-cell-user' : 'snake-cell-ai'}" title="R${r} Pick ${pickNum}">${isUser ? pickNum : ''}</div>`;
+      }
+    }
+    html += '</div>';
+    if (rounds > 8) html += `<p class="text-[10px] text-slate-600 mt-2 text-center">Showing first 8 of ${rounds} rounds</p>`;
+    container.innerHTML = html;
   }
 
   // ---- Pool source toggle ----
@@ -275,27 +311,23 @@
       if (source === 'default') {
         showAdpState('empty');
         document.getElementById('rankings-subtitle').textContent = 'Select ESPN ADP to load live rankings';
-        setLobbyStatus('Using built-in mock players', 'bg-slate-400');
+        setLobbyStatus('Using built-in mock players', 'bg-slate-500');
       } else {
         showAdpState('empty');
         document.getElementById('rankings-subtitle').textContent = 'Using imported DB players';
-        setLobbyStatus('Using imported DB players', 'bg-slate-400');
+        setLobbyStatus('Using imported DB players', 'bg-slate-500');
       }
     }
   }
 
-  // ---- ADP panel state machine ----
   function showAdpState(state) {
     ['adp-loading','adp-empty','adp-error','adp-list','adp-footer'].forEach(id => {
       document.getElementById(id).classList.add('hidden');
     });
-    if (state === 'loading') {
-      document.getElementById('adp-loading').classList.remove('hidden');
-    } else if (state === 'empty') {
-      document.getElementById('adp-empty').classList.remove('hidden');
-    } else if (state === 'error') {
-      document.getElementById('adp-error').classList.remove('hidden');
-    } else if (state === 'list') {
+    if (state === 'loading') document.getElementById('adp-loading').classList.remove('hidden');
+    else if (state === 'empty') document.getElementById('adp-empty').classList.remove('hidden');
+    else if (state === 'error') document.getElementById('adp-error').classList.remove('hidden');
+    else if (state === 'list') {
       document.getElementById('adp-list').classList.remove('hidden');
       document.getElementById('adp-footer').classList.remove('hidden');
     }
@@ -305,23 +337,19 @@
     const year = parseInt(document.getElementById('espn-adp-year').value) || 2025;
     showAdpState('loading');
     setLobbyStatus('Fetching ESPN ADP data…', 'bg-blue-400');
-
     try {
       const resp = await fetch(`/draft/adp?year=${year}&limit=300`);
       if (!resp.ok) {
         const err = await resp.json();
-        document.getElementById('adp-error-msg').textContent =
-          err.detail || 'ESPN API unavailable.';
+        document.getElementById('adp-error-msg').textContent = err.detail || 'ESPN API unavailable.';
         showAdpState('error');
         setLobbyStatus('ESPN ADP unavailable', 'bg-red-400');
         return;
       }
       const data = await resp.json();
       adpPlayers = data.players;
-      document.getElementById('rankings-subtitle').textContent =
-        `ESPN ${year} ADP · ${adpPlayers.length} players`;
-      document.getElementById('adp-footer').textContent =
-        `${adpPlayers.length} players ranked by ESPN PPR ADP for ${year}`;
+      document.getElementById('rankings-subtitle').textContent = `ESPN ${data.year} ADP · ${adpPlayers.length} players`;
+      document.getElementById('adp-footer').textContent = `${adpPlayers.length} players ranked by ESPN PPR ADP for ${data.year}`;
       renderAdpList(adpPlayers);
       showAdpState('list');
       setLobbyStatus(`ESPN ADP loaded — ${adpPlayers.length} players`, 'bg-green-400');
@@ -332,33 +360,28 @@
     }
   }
 
-  function filterAdpPlayers() {
-    if (!adpPlayers.length) return;
-    renderAdpList(adpPlayers);
-  }
+  function filterAdpPlayers() { if (adpPlayers.length) renderAdpList(adpPlayers); }
 
   function renderAdpList(players) {
     const posFilter = document.getElementById('adp-pos-filter').value;
     const filtered = posFilter ? players.filter(p => p.position === posFilter) : players;
     const listEl = document.getElementById('adp-list');
     if (!filtered.length) {
-      listEl.innerHTML = '<p class="text-xs text-slate-400 text-center py-6">No players for selected position</p>';
+      listEl.innerHTML = '<p class="text-xs text-slate-500 text-center py-6">No players for selected position</p>';
       return;
     }
     listEl.innerHTML = filtered.slice(0, 150).map((p, i) => {
       const rank = p.adp_rank != null ? p.adp_rank.toFixed(1) : (i + 1);
-      const tier = p.adp_rank <= ADP_TIER1_MAX ? 'text-pigskin-700 font-bold' : p.adp_rank <= ADP_TIER2_MAX ? 'text-field-700 font-semibold' : 'text-slate-500';
+      const tier = p.adp_rank <= ADP_TIER1_MAX ? 'text-pigskin-400 font-bold' : p.adp_rank <= ADP_TIER2_MAX ? 'text-green-400 font-semibold' : 'text-slate-500';
       return `
-        <div class="flex items-center px-3 py-2 hover:bg-slate-50 gap-2">
+        <div class="flex items-center px-3 py-2 hover:bg-slate-700/30 gap-2 transition-colors">
           <span class="text-xs w-8 flex-shrink-0 text-right ${tier}">${rank}</span>
           <span class="inline-flex items-center justify-center w-8 h-5 rounded text-[10px] font-bold flex-shrink-0 ${posClass(p.position)}">${p.position}</span>
           <div class="min-w-0 flex-1">
-            <p class="text-xs font-medium text-slate-700 truncate">${p.name}</p>
-            <p class="text-[10px] text-slate-400">${p.nfl_team}</p>
+            <p class="text-xs font-medium text-slate-200 truncate">${p.name}</p>
+            <p class="text-[10px] text-slate-500">${p.nfl_team}</p>
           </div>
-          ${p.projected_points > 0
-            ? `<span class="text-[10px] text-slate-400 flex-shrink-0">${p.projected_points.toFixed(0)} pts</span>`
-            : ''}
+          ${p.projected_points > 0 ? `<span class="text-[10px] text-slate-500 flex-shrink-0">${p.projected_points.toFixed(0)} pts</span>` : ''}
         </div>`;
     }).join('');
   }
@@ -385,16 +408,14 @@
     const userSlot = parseInt(document.getElementById('user-pick-pos').value) || 1;
     const container = document.getElementById('ai-strategy-rows');
     container.innerHTML = '';
-    const optHtml = STRATEGIES.map(s =>
-      `<option value="${s.value}">${s.label}</option>`
-    ).join('');
+    const optHtml = STRATEGIES.map(s => `<option value="${s.value}">${s.label}</option>`).join('');
     for (let slot = 1; slot <= numTeams; slot++) {
       if (slot === userSlot) continue;
       const div = document.createElement('div');
       div.className = 'flex items-center gap-3';
       div.innerHTML = `
-        <span class="text-xs font-medium text-slate-600 w-16 flex-shrink-0">Slot ${slot}</span>
-        <select id="ai-strat-${slot}" class="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+        <span class="text-xs font-medium text-slate-500 w-16 flex-shrink-0">Slot ${slot}</span>
+        <select id="ai-strat-${slot}" class="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-pigskin-500">
           ${optHtml}
         </select>`;
       container.appendChild(div);
@@ -409,8 +430,8 @@
       const div = document.createElement('div');
       div.className = 'flex items-center gap-3';
       div.innerHTML = `
-        <span class="text-xs font-medium text-slate-600 w-16 flex-shrink-0">Round ${rnd}</span>
-        <select id="pbr-${rnd}" class="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+        <span class="text-xs font-medium text-slate-500 w-16 flex-shrink-0">Round ${rnd}</span>
+        <select id="pbr-${rnd}" class="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-pigskin-500">
           <option value="">Best Available</option>
           ${POSITIONS.map(p => `<option value="${p}">${p}</option>`).join('')}
         </select>`;
@@ -428,14 +449,12 @@
     const useDB      = poolSource === 'db';
     const espnYear   = parseInt(document.getElementById('espn-adp-year').value) || 2025;
 
-    // Collect AI strategies
     const aiStrategies = {};
     for (let slot = 1; slot <= numTeams; slot++) {
       const el = document.getElementById(`ai-strat-${slot}`);
       if (el) aiStrategies[String(slot)] = el.value;
     }
 
-    // Collect position by round
     const positionByRound = {};
     for (let rnd = 1; rnd <= numRounds; rnd++) {
       const el = document.getElementById(`pbr-${rnd}`);
@@ -445,6 +464,7 @@
     const btn = document.getElementById('start-btn');
     btn.disabled = true;
     btn.textContent = '⏳ Setting up draft…';
+    btn.style.animation = 'none';
     setLobbyStatus('Starting draft…', 'bg-yellow-400');
 
     try {
@@ -466,7 +486,8 @@
         const err = await resp.json();
         showToast(err.detail || 'Failed to start draft', 'error');
         btn.disabled = false;
-        btn.textContent = '🏈 Start Draft';
+        btn.textContent = '🏈 Enter the Draft';
+        btn.style.animation = '';
         setLobbyStatus('Draft setup failed', 'bg-red-400');
         return;
       }
@@ -476,7 +497,8 @@
     } catch (e) {
       showToast('Network error', 'error');
       btn.disabled = false;
-      btn.textContent = '🏈 Start Draft';
+      btn.textContent = '🏈 Enter the Draft';
+      btn.style.animation = '';
       setLobbyStatus('Network error', 'bg-red-400');
     }
   }

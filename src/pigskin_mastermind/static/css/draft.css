@@ -1,0 +1,376 @@
+/* ============================================================
+   Draft Day Experience — Dark Theme & Animations
+   Scoped under .draft-dark on <body> or page wrapper
+   ============================================================ */
+
+/* ---------- Dark page override ---------- */
+.draft-dark {
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%) !important;
+    min-height: 100vh;
+}
+.draft-dark main {
+    background: transparent !important;
+}
+
+/* ---------- Glow utility classes ---------- */
+.glow-pigskin {
+    box-shadow: 0 0 20px rgba(212, 122, 30, 0.3), 0 0 40px rgba(212, 122, 30, 0.1);
+}
+.glow-pigskin-strong {
+    box-shadow: 0 0 25px rgba(212, 122, 30, 0.5), 0 0 50px rgba(212, 122, 30, 0.2);
+}
+.glow-green {
+    box-shadow: 0 0 15px rgba(34, 197, 94, 0.3);
+}
+.glow-blue {
+    box-shadow: 0 0 15px rgba(59, 130, 246, 0.3);
+}
+
+/* ---------- Draft board dark cards ---------- */
+.draft-card {
+    background: linear-gradient(145deg, #1e293b, #334155);
+    border: 1px solid rgba(148, 163, 184, 0.15);
+    border-radius: 1rem;
+}
+.draft-card-header {
+    border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+/* ---------- On the Clock banner ---------- */
+@keyframes clock-pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 20px rgba(212, 122, 30, 0.4); }
+    50% { opacity: 0.92; box-shadow: 0 0 40px rgba(212, 122, 30, 0.7); }
+}
+.on-the-clock {
+    animation: clock-pulse 2s ease-in-out infinite;
+    background: linear-gradient(135deg, #c46316 0%, #d47a1e 40%, #dd9642 100%);
+}
+
+@keyframes ai-dots {
+    0%, 80%, 100% { opacity: 0.2; }
+    40% { opacity: 1; }
+}
+.ai-dot-1 { animation: ai-dots 1.4s infinite 0s; }
+.ai-dot-2 { animation: ai-dots 1.4s infinite 0.2s; }
+.ai-dot-3 { animation: ai-dots 1.4s infinite 0.4s; }
+
+/* ---------- Pick card animations ---------- */
+@keyframes pick-slide-in {
+    from { transform: translateX(80px); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+@keyframes pick-pop {
+    0% { transform: scale(0.7); opacity: 0; }
+    60% { transform: scale(1.08); }
+    100% { transform: scale(1); opacity: 1; }
+}
+@keyframes pick-fly-up {
+    0% { transform: translateY(0) scale(1); opacity: 1; }
+    100% { transform: translateY(-40px) scale(0.8); opacity: 0; }
+}
+.pick-slide { animation: pick-slide-in 0.4s ease-out forwards; }
+.pick-pop { animation: pick-pop 0.35s ease-out forwards; }
+.pick-fly { animation: pick-fly-up 0.5s ease-in forwards; }
+
+/* ---------- Grid cell fill animation ---------- */
+@keyframes cell-fill {
+    from { opacity: 0; transform: scale(0.85); }
+    to { opacity: 1; transform: scale(1); }
+}
+.cell-animate {
+    animation: cell-fill 0.3s ease-out forwards;
+}
+
+/* ---------- User column highlight ---------- */
+.user-col-highlight {
+    background: rgba(212, 122, 30, 0.08) !important;
+    border-left: 2px solid rgba(212, 122, 30, 0.4);
+    border-right: 2px solid rgba(212, 122, 30, 0.4);
+}
+
+/* Current pick cell pulsing */
+@keyframes current-cell-pulse {
+    0%, 100% { box-shadow: inset 0 0 8px rgba(212, 122, 30, 0.3); }
+    50% { box-shadow: inset 0 0 16px rgba(212, 122, 30, 0.6); }
+}
+.current-cell {
+    animation: current-cell-pulse 2s ease-in-out infinite;
+    border: 1.5px solid rgba(212, 122, 30, 0.6) !important;
+}
+
+/* ---------- Ticker ---------- */
+@keyframes ticker-slide {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+.ticker-item-enter {
+    animation: ticker-slide 0.5s ease-out forwards;
+}
+
+.ticker-strip {
+    display: flex;
+    gap: 0.5rem;
+    overflow-x: auto;
+    scroll-behavior: smooth;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+.ticker-strip::-webkit-scrollbar { display: none; }
+
+/* ---------- Player spotlight panel ---------- */
+@keyframes spotlight-in {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+@keyframes spotlight-out {
+    from { transform: translateX(0); opacity: 1; }
+    to { transform: translateX(100%); opacity: 0; }
+}
+.spotlight-enter { animation: spotlight-in 0.3s ease-out forwards; }
+.spotlight-exit { animation: spotlight-out 0.2s ease-in forwards; }
+
+/* ---------- Value meter ---------- */
+.value-steal { color: #22c55e; }
+.value-fair { color: #3b82f6; }
+.value-reach { color: #f59e0b; }
+.value-steal-bg { background: rgba(34, 197, 94, 0.15); border-color: rgba(34, 197, 94, 0.3); }
+.value-fair-bg { background: rgba(59, 130, 246, 0.15); border-color: rgba(59, 130, 246, 0.3); }
+.value-reach-bg { background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.3); }
+
+/* ---------- Roster slot states ---------- */
+@keyframes needed-pulse {
+    0%, 100% { border-color: rgba(148, 163, 184, 0.2); }
+    50% { border-color: rgba(212, 122, 30, 0.5); }
+}
+.slot-empty {
+    border: 1.5px dashed rgba(148, 163, 184, 0.3);
+    animation: needed-pulse 3s ease-in-out infinite;
+}
+.slot-filled {
+    border: 1.5px solid rgba(34, 197, 94, 0.3);
+    background: rgba(34, 197, 94, 0.05);
+}
+
+/* ---------- Queue panel ---------- */
+.queue-stolen {
+    text-decoration: line-through;
+    opacity: 0.4;
+}
+@keyframes queue-alert {
+    0% { background: rgba(239, 68, 68, 0.2); }
+    100% { background: transparent; }
+}
+.queue-alert { animation: queue-alert 1s ease-out forwards; }
+
+/* ---------- Confetti ---------- */
+@keyframes confetti-fall {
+    0% { transform: translateY(-10px) rotate(0deg); opacity: 1; }
+    100% { transform: translateY(120vh) rotate(720deg); opacity: 0; }
+}
+.confetti-piece {
+    position: fixed;
+    top: -10px;
+    width: 10px;
+    height: 10px;
+    z-index: 100;
+    pointer-events: none;
+    animation: confetti-fall linear forwards;
+}
+
+/* ---------- Countdown overlay ---------- */
+@keyframes countdown-zoom {
+    0% { transform: scale(3); opacity: 0; }
+    30% { transform: scale(1); opacity: 1; }
+    70% { transform: scale(1); opacity: 1; }
+    100% { transform: scale(0.5); opacity: 0; }
+}
+@keyframes draft-title {
+    0% { transform: scale(0.3); opacity: 0; letter-spacing: 0.5em; }
+    50% { transform: scale(1.05); opacity: 1; }
+    100% { transform: scale(1); opacity: 1; letter-spacing: 0.2em; }
+}
+.countdown-number {
+    animation: countdown-zoom 0.9s ease-out forwards;
+    font-size: 12rem;
+    font-weight: 900;
+    color: white;
+    text-shadow: 0 0 40px rgba(212, 122, 30, 0.8), 0 0 80px rgba(212, 122, 30, 0.4);
+}
+.draft-title-text {
+    animation: draft-title 0.8s ease-out forwards;
+    font-size: 4rem;
+    font-weight: 900;
+    letter-spacing: 0.2em;
+    color: white;
+    text-shadow: 0 0 30px rgba(212, 122, 30, 0.6);
+}
+.countdown-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    background: #0f172a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* ---------- Commentary feed ---------- */
+@keyframes commentary-in {
+    from { transform: translateY(-10px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+.commentary-item { animation: commentary-in 0.3s ease-out forwards; }
+
+.commentary-steal { border-left: 3px solid #22c55e; background: rgba(34, 197, 94, 0.08); }
+.commentary-reach { border-left: 3px solid #f59e0b; background: rgba(245, 158, 11, 0.08); }
+.commentary-alert { border-left: 3px solid #3b82f6; background: rgba(59, 130, 246, 0.08); }
+.commentary-tip { border-left: 3px solid #a78bfa; background: rgba(167, 139, 250, 0.08); }
+.commentary-info { border-left: 3px solid #64748b; background: rgba(100, 116, 139, 0.08); }
+
+/* ---------- Draft grade ---------- */
+.grade-a { color: #22c55e; text-shadow: 0 0 20px rgba(34, 197, 94, 0.5); }
+.grade-b { color: #3b82f6; text-shadow: 0 0 20px rgba(59, 130, 246, 0.5); }
+.grade-c { color: #f59e0b; text-shadow: 0 0 20px rgba(245, 158, 11, 0.5); }
+.grade-d { color: #ef4444; text-shadow: 0 0 20px rgba(239, 68, 68, 0.5); }
+.grade-f { color: #dc2626; text-shadow: 0 0 20px rgba(220, 38, 38, 0.5); }
+
+/* ---------- War Room setup (index.html) ---------- */
+@keyframes grid-line-pulse {
+    0%, 100% { opacity: 0.03; }
+    50% { opacity: 0.08; }
+}
+.war-room-bg {
+    background:
+        linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+    position: relative;
+}
+.war-room-bg::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+        repeating-linear-gradient(0deg, transparent, transparent 59px, rgba(148,163,184,0.05) 59px, rgba(148,163,184,0.05) 60px),
+        repeating-linear-gradient(90deg, transparent, transparent 59px, rgba(148,163,184,0.05) 59px, rgba(148,163,184,0.05) 60px);
+    animation: grid-line-pulse 4s ease-in-out infinite;
+    pointer-events: none;
+}
+
+/* Strategy tiles */
+.strategy-tile {
+    background: linear-gradient(145deg, #1e293b, #334155);
+    border: 1.5px solid rgba(148, 163, 184, 0.15);
+    border-radius: 0.75rem;
+    padding: 1rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+.strategy-tile:hover {
+    border-color: rgba(212, 122, 30, 0.4);
+    box-shadow: 0 0 15px rgba(212, 122, 30, 0.15);
+    transform: translateY(-2px);
+}
+.strategy-tile.active {
+    border-color: rgba(212, 122, 30, 0.6);
+    box-shadow: 0 0 20px rgba(212, 122, 30, 0.25);
+    background: linear-gradient(145deg, #1e293b, #3b2a1a);
+}
+
+/* Enter the draft button */
+@keyframes glow-breathe {
+    0%, 100% { box-shadow: 0 0 15px rgba(212, 122, 30, 0.4), 0 4px 15px rgba(0,0,0,0.3); }
+    50% { box-shadow: 0 0 30px rgba(212, 122, 30, 0.6), 0 4px 20px rgba(0,0,0,0.4); }
+}
+.btn-enter-draft {
+    background: linear-gradient(135deg, #c46316 0%, #dd9642 100%);
+    animation: glow-breathe 3s ease-in-out infinite;
+    transition: transform 0.2s ease;
+}
+.btn-enter-draft:hover {
+    transform: scale(1.03);
+}
+.btn-enter-draft:active {
+    transform: scale(0.98);
+}
+
+/* ---------- Snake diagram ---------- */
+.snake-cell {
+    width: 28px;
+    height: 22px;
+    border-radius: 4px;
+    font-size: 9px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    transition: all 0.15s;
+}
+.snake-cell-user {
+    background: rgba(212, 122, 30, 0.3);
+    border: 1px solid rgba(212, 122, 30, 0.6);
+    color: #dd9642;
+}
+.snake-cell-ai {
+    background: rgba(100, 116, 139, 0.15);
+    border: 1px solid rgba(100, 116, 139, 0.2);
+    color: #64748b;
+}
+
+/* ---------- Draft board grid ---------- */
+.draft-grid {
+    display: grid;
+    gap: 2px;
+    font-size: 11px;
+}
+.draft-grid-cell {
+    padding: 4px 6px;
+    border-radius: 4px;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(30, 41, 59, 0.5);
+    border: 1px solid rgba(148, 163, 184, 0.08);
+    transition: background 0.2s;
+    overflow: hidden;
+}
+.draft-grid-cell.filled {
+    background: rgba(30, 41, 59, 0.8);
+}
+.draft-grid-header {
+    padding: 6px;
+    text-align: center;
+    font-weight: 700;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #94a3b8;
+    background: rgba(15, 23, 42, 0.5);
+    border-radius: 4px;
+}
+.round-label {
+    font-weight: 800;
+    font-size: 10px;
+    color: #64748b;
+    text-align: center;
+    padding: 4px;
+    white-space: nowrap;
+}
+
+/* ---------- Scrollbar for dark theme ---------- */
+.draft-dark ::-webkit-scrollbar { width: 5px; height: 5px; }
+.draft-dark ::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.5); }
+.draft-dark ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+.draft-dark ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+/* ---------- Responsive ---------- */
+@media (max-width: 1024px) {
+    .draft-grid { font-size: 10px; }
+    .draft-grid-cell { padding: 3px 4px; min-height: 30px; }
+    .countdown-number { font-size: 8rem; }
+    .draft-title-text { font-size: 2.5rem; }
+}
+@media (max-width: 768px) {
+    .draft-grid { display: none; }
+    .countdown-number { font-size: 6rem; }
+    .draft-title-text { font-size: 2rem; }
+}

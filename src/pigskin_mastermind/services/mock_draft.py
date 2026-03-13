@@ -357,15 +357,18 @@ class MockDraftEngine:
         return self._public_state(state) if state else None
 
     def make_user_pick(
-        self, draft_id: str, player_id: str
+        self, draft_id: str, player_id: str, *, advance_ai: bool = True
     ) -> Dict[str, Any]:
         """
-        Register a manual pick by the user and then auto-advance AI picks
+        Register a manual pick by the user and optionally auto-advance AI picks
         until it is the user's turn again (or the draft ends).
 
         Args:
             draft_id: Draft identifier.
             player_id: ``id`` field of the chosen player.
+            advance_ai: When *True* (default), AI picks are auto-advanced after
+                the user's pick.  Set to *False* when the frontend will use the
+                staggered ``/draft/advance`` endpoint instead.
 
         Returns:
             Updated draft state.
@@ -382,8 +385,8 @@ class MockDraftEngine:
             raise ValueError("It is not the user's turn to pick")
 
         self._apply_pick(state, player_id)
-        # Advance AI picks until user's turn or draft over
-        self._advance_ai_picks(state)
+        if advance_ai:
+            self._advance_ai_picks(state)
         return self._public_state(state)
 
     def run_simulations(
@@ -703,6 +706,221 @@ class MockDraftEngine:
 
         summary.sort(key=lambda s: s["avg_projected_points"], reverse=True)
         return {"by_strategy": summary}
+
+    def advance_one_ai_pick(self, draft_id: str) -> Optional[Dict[str, Any]]:
+        """Advance exactly one AI pick and return the updated state.
+
+        Returns ``None`` if it is the user's turn or the draft is complete.
+        """
+        state = self._drafts.get(draft_id)
+        if not state or state["status"] == "complete":
+            return None
+
+        user_slot = str(state.get("user_pick_position", ""))
+        current_slot = self._current_slot(state)
+        if current_slot is None or str(current_slot) == user_slot:
+            return None
+
+        slot_str = str(current_slot)
+        strat = state["strategies"].get(slot_str, DraftStrategy.BEST_AVAILABLE)
+        current_round = self._current_round(state)
+        player_id = self._ai_choose_player(
+            state["available_players"],
+            state["rosters"][slot_str],
+            strat,
+            current_round,
+            state.get("position_by_round", {}),
+        )
+        if player_id:
+            self._apply_pick(state, player_id)
+
+        return self._public_state(state)
+
+    def grade_draft(self, draft_id: str) -> Optional[Dict[str, Any]]:
+        """Grade the user's draft performance.
+
+        Returns a dictionary with letter grade, pick-by-pick analysis,
+        and team strengths/weaknesses, or ``None`` if the draft is not
+        found or not yet complete.
+        """
+        state = self._drafts.get(draft_id)
+        if not state or state["status"] != "complete":
+            return None
+
+        user_slot = str(state.get("user_pick_position", ""))
+        user_roster = state["rosters"].get(user_slot, [])
+        all_picks = state["picks_log"]
+
+        # Pick-by-pick value analysis
+        pick_analysis = []
+        total_value = 0.0
+        for pick in all_picks:
+            if str(pick["slot"]) != user_slot:
+                continue
+            p = pick["player"]
+            adp = p.get("adp_rank")
+            pick_num = pick["pick_number"]
+            delta = (adp - pick_num) if adp is not None else 0
+            total_value += delta
+
+            if delta >= 10:
+                verdict = "steal"
+                label = "🔥 Great Steal"
+            elif delta >= 3:
+                verdict = "value"
+                label = "✅ Good Value"
+            elif delta >= -3:
+                verdict = "fair"
+                label = "Fair"
+            elif delta >= -10:
+                verdict = "slight_reach"
+                label = "⚠️ Slight Reach"
+            else:
+                verdict = "reach"
+                label = "⚠️ Big Reach"
+
+            pick_analysis.append({
+                "round": pick["round"],
+                "pick_number": pick_num,
+                "player": p["name"],
+                "position": p["position"],
+                "adp": adp,
+                "delta": round(delta, 1) if adp is not None else None,
+                "verdict": verdict,
+                "label": label,
+            })
+
+        # Positional balance score (30%)
+        pos_counts = self._count_positions(user_roster)
+        balance_score = 0
+        required = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DEF": 1}
+        for pos, need in required.items():
+            have = pos_counts.get(pos, 0)
+            if have >= need:
+                balance_score += 1
+        balance_pct = balance_score / len(required)
+
+        # Tier distribution score (20%)
+        tier1 = sum(1 for p in user_roster if (p.get("adp_rank") or 999) <= 36)
+        tier2 = sum(1 for p in user_roster if 36 < (p.get("adp_rank") or 999) <= 72)
+        tier_score = min(1.0, (tier1 * 0.15 + tier2 * 0.08))
+
+        # ADP value score (50%) — normalize to 0-1 range
+        num_picks = len(pick_analysis) or 1
+        avg_value = total_value / num_picks
+        value_pct = min(1.0, max(0.0, (avg_value + 10) / 20))
+
+        # Composite score → letter grade
+        composite = value_pct * 0.50 + balance_pct * 0.30 + tier_score * 0.20
+        if composite >= 0.85:
+            letter, modifier = "A", "+"
+        elif composite >= 0.75:
+            letter, modifier = "A", ""
+        elif composite >= 0.65:
+            letter, modifier = "B", "+"
+        elif composite >= 0.55:
+            letter, modifier = "B", ""
+        elif composite >= 0.45:
+            letter, modifier = "C", "+"
+        elif composite >= 0.35:
+            letter, modifier = "C", ""
+        elif composite >= 0.25:
+            letter, modifier = "D", ""
+        else:
+            letter, modifier = "F", ""
+
+        # Strengths / weaknesses
+        strengths = []
+        weaknesses = []
+        for pos in DRAFT_POSITIONS:
+            cnt = pos_counts.get(pos, 0)
+            req = required.get(pos, 0)
+            if cnt >= req + 2:
+                strengths.append(f"Deep at {pos} ({cnt} players)")
+            elif cnt >= req:
+                strengths.append(f"Solid {pos} coverage")
+            elif cnt < req:
+                weaknesses.append(f"Need more {pos} depth ({cnt}/{req})")
+
+        if tier1 >= 3:
+            strengths.append(f"{tier1} elite-tier players (top 36 ADP)")
+        if tier1 == 0:
+            weaknesses.append("No elite-tier talent (top 36 ADP)")
+
+        steals = sum(1 for pa in pick_analysis if pa["verdict"] == "steal")
+        reaches = sum(1 for pa in pick_analysis if pa["verdict"] in ("reach", "slight_reach"))
+        if steals >= 3:
+            strengths.append(f"Found {steals} steals in the draft")
+        if reaches >= 3:
+            weaknesses.append(f"{reaches} picks were reaches")
+
+        # Best AI team comparison
+        best_ai_slot = None
+        best_ai_total = 0.0
+        for slot, roster in state["rosters"].items():
+            if slot == user_slot:
+                continue
+            total = sum(p["projected_points"] for p in roster)
+            if total > best_ai_total:
+                best_ai_total = total
+                best_ai_slot = slot
+
+        user_total = sum(p["projected_points"] for p in user_roster)
+
+        return {
+            "grade": letter + modifier,
+            "composite_score": round(composite, 3),
+            "total_projected": round(user_total, 1),
+            "pick_analysis": pick_analysis,
+            "position_counts": pos_counts,
+            "strengths": strengths[:5],
+            "weaknesses": weaknesses[:5],
+            "best_ai": {
+                "slot": best_ai_slot,
+                "projected": round(best_ai_total, 1),
+                "strategy": state["strategies"].get(best_ai_slot, "unknown") if best_ai_slot else None,
+            },
+        }
+
+    @staticmethod
+    def generate_commentary(
+        picks_log: List[Dict[str, Any]],
+        available: List[Dict[str, Any]],
+        pick: Dict[str, Any],
+    ) -> List[Dict[str, str]]:
+        """Generate commentary items for a single pick.
+
+        Returns a list of ``{"type": ..., "text": ...}`` dicts.
+        """
+        items: List[Dict[str, str]] = []
+        p = pick["player"]
+        pick_num = pick["pick_number"]
+        adp = p.get("adp_rank")
+
+        # Value assessment
+        if adp is not None:
+            delta = adp - pick_num
+            if delta >= 15:
+                items.append({"type": "steal", "text": f"🔥 Steal! {p['name']} (ADP {adp:.0f}) falls {delta:.0f} spots past ADP"})
+            elif delta >= 5:
+                items.append({"type": "steal", "text": f"✅ Value pick — {p['name']} going {delta:.0f} picks later than ADP"})
+            elif delta <= -15:
+                items.append({"type": "reach", "text": f"⚠️ Big reach — {p['name']} drafted {abs(delta):.0f} picks above ADP {adp:.0f}"})
+            elif delta <= -8:
+                items.append({"type": "reach", "text": f"⚠️ Reach — {p['name']} going {abs(delta):.0f} picks early"})
+
+        # Position run
+        recent = picks_log[-5:] if len(picks_log) >= 5 else picks_log
+        pos_run = sum(1 for pk in recent if pk["player"]["position"] == p["position"])
+        if pos_run >= 3:
+            items.append({"type": "alert", "text": f"📊 {p['position']} run! {pos_run} of last {len(recent)} picks are {p['position']}s"})
+
+        # Scarcity
+        same_pos_remaining = [pl for pl in available if pl["position"] == p["position"]]
+        if p["position"] in ("QB", "TE", "K", "DEF") and 0 < len(same_pos_remaining) <= 3:
+            items.append({"type": "tip", "text": f"⏳ Only {len(same_pos_remaining)} {p['position']}{'s' if len(same_pos_remaining) != 1 else ''} left"})
+
+        return items
 
     @staticmethod
     def _public_state(state: Dict[str, Any]) -> Dict[str, Any]:
