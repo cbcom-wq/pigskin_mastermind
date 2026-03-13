@@ -89,6 +89,35 @@ def _load_db_players(db: Session) -> List[dict]:
     ]
 
 
+def _enrich_with_headshots(players: List[dict], db: Session) -> List[dict]:
+    """Attach headshot_url to each player by matching on normalised name.
+
+    Players already carrying a non-empty headshot_url are left unchanged.
+    """
+    # Only query if there are players that still need headshots
+    needs = [p for p in players if not p.get("headshot_url")]
+    if not needs:
+        return players
+
+    db_rows = db.query(DBPlayer.name, DBPlayer.headshot_url).filter(
+        DBPlayer.headshot_url.isnot(None),
+        DBPlayer.headshot_url != "",
+    ).all()
+
+    # Build a normalised name → URL lookup (lowercase, strip whitespace)
+    headshot_map: Dict[str, str] = {
+        row.name.strip().lower(): row.headshot_url
+        for row in db_rows
+        if row.headshot_url
+    }
+
+    for p in players:
+        if not p.get("headshot_url"):
+            p["headshot_url"] = headshot_map.get(p["name"].strip().lower(), "")
+
+    return players
+
+
 def _has_meaningful_adp(players: List[dict]) -> bool:
     """Return True when the player list has varied ADP values.
 
@@ -171,6 +200,7 @@ async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
                 status_code=503,
                 detail="Failed to fetch ADP data from ESPN. Check connectivity or try again.",
             )
+        player_pool = _enrich_with_headshots(player_pool, db)
     elif req.use_db_players:
         player_pool = _load_db_players(db)
 

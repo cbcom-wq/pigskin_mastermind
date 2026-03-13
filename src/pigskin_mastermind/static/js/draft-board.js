@@ -450,7 +450,11 @@ const DraftBoard = (() => {
       html += `<p class="text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1.5">Bench (${bench.length})</p>`;
       html += '<div class="space-y-1">';
       bench.forEach(p => {
+        const benchHeadshot = p.headshot_url
+          ? `<img src="${p.headshot_url}" alt="" class="w-5 h-5 rounded-full object-cover bg-slate-700 flex-shrink-0" onerror="this.style.display='none'" />`
+          : `<div class="w-5 h-5 rounded-full bg-slate-700 flex items-center justify-center flex-shrink-0 text-[8px]">${POS_EMOJI[p.position] || '🏈'}</div>`;
         html += `<div class="flex items-center gap-2 px-3 py-1.5 rounded bg-slate-800/30">
+          ${benchHeadshot}
           <span class="inline-flex items-center justify-center w-7 h-4 rounded text-[8px] font-bold ${posClass(p.position)}">${p.position}</span>
           <span class="text-xs text-slate-400 truncate flex-1">${p.name}</span>
           <span class="text-[10px] text-slate-600">${p.projected_points.toFixed(1)}</span>
@@ -506,8 +510,12 @@ const DraftBoard = (() => {
       const p = pick.player;
       const isNew = i === 0;
       const isUserPick = String(pick.slot) === userSlot;
+      const headshotHtml = p.headshot_url
+        ? `<img src="${p.headshot_url}" alt="" class="w-5 h-5 rounded-full object-cover bg-slate-700 flex-shrink-0" onerror="this.style.display='none'" />`
+        : '';
       return `<div class="flex items-center gap-2 px-2 py-1.5 text-xs rounded ${isNew ? 'pick-slide' : ''} ${isUserPick ? 'bg-pigskin-900/30' : ''}">
         <span class="text-slate-500 w-12 flex-shrink-0 font-mono">R${pick.round}P${pick.pick_number}</span>
+        ${headshotHtml}
         <span class="inline-flex items-center justify-center w-7 h-4 rounded text-[8px] font-bold flex-shrink-0 ${posClass(p.position)}">${p.position}</span>
         <span class="truncate font-medium ${isUserPick ? 'text-pigskin-300' : 'text-slate-300'}">${p.name}</span>
         <span class="ml-auto text-slate-600 flex-shrink-0">${isUserPick ? '★ You' : 'Tm ' + pick.slot}</span>
@@ -555,8 +563,12 @@ const DraftBoard = (() => {
         <button onclick="DraftBoard.removeFromQueue('${id}')" class="ml-auto text-slate-600 hover:text-red-400">×</button>
       </div>`;
 
+      const queueHeadshot = p.headshot_url
+        ? `<img src="${p.headshot_url}" alt="" class="w-5 h-5 rounded-full object-cover bg-slate-700 flex-shrink-0" onerror="this.style.display='none'" />`
+        : '';
       return `<div class="flex items-center gap-2 px-2 py-1.5 text-xs">
         <span class="text-slate-500 font-bold w-4">${i+1}.</span>
+        ${queueHeadshot}
         <span class="inline-flex items-center justify-center w-7 h-4 rounded text-[8px] font-bold ${posClass(p.position)}">${p.position}</span>
         <span class="truncate text-slate-300 flex-1">${p.name}</span>
         <span class="text-slate-600">${p.projected_points.toFixed(1)}</span>
