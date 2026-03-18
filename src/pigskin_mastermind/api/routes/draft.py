@@ -4,15 +4,26 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pigskin_mastermind.api.database import get_db
-from pigskin_mastermind.models.database import DBPlayer, DBPlayerSeasonStats
+from pigskin_mastermind.models.database import (
+    DBLeague,
+    DBPlayer,
+    DBTeam,
+    DBWeeklyPlayerStats,
+    DBWeeklyTeamStats,
+)
+from pigskin_mastermind.services.adp_service import ADPService
 from pigskin_mastermind.services.mock_draft import (
+    AIProfile,
+    DEFAULT_LINEUP_SLOTS,
     DraftStrategy,
+    LINEUP_PRESETS,
     MockDraftEngine,
     draft_engine,
     fetch_espn_adp,
+    randomize_ai_profiles,
 )
 
 router = APIRouter(prefix="/draft", tags=["draft"])
@@ -28,10 +39,20 @@ class StartDraftRequest(BaseModel):
     num_rounds: int = Field(15, ge=1, le=20)
     user_pick_position: int = Field(1, ge=1, le=20)
     ai_strategies: Optional[Dict[str, str]] = None
-    use_db_players: bool = False
+    ai_profiles: Optional[Dict[str, Dict[str, float]]] = None
+    ai_aggressiveness: float = Field(0.5, ge=0.0, le=1.0)
     use_espn_adp: bool = False
+    use_ffc_adp: bool = False
     espn_adp_year: int = Field(2025, ge=2019, le=2030)
     position_by_round: Optional[Dict[str, str]] = None
+    player_pool: Optional[List[Dict[str, Any]]] = None
+    lineup_slots: Optional[Dict[str, int]] = None
+
+
+class RandomizeRequest(BaseModel):
+    num_teams: int = Field(10, ge=2, le=20)
+    user_pick_position: int = Field(1, ge=1, le=20)
+    overall_aggressiveness: float = Field(0.5, ge=0.0, le=1.0)
 
 
 class UserPickRequest(BaseModel):
@@ -44,49 +65,14 @@ class SimulationRequest(BaseModel):
     num_rounds: int = Field(15, ge=1, le=20)
     strategies: Optional[Dict[str, str]] = None
     num_simulations: int = Field(5, ge=1, le=20)
-    use_db_players: bool = False
     position_by_round: Optional[Dict[str, str]] = None
+    player_pool: Optional[List[Dict[str, Any]]] = None
+    lineup_slots: Optional[Dict[str, int]] = None
 
 
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
-
-
-def _load_db_players(db: Session) -> List[dict]:
-    """Load all DB players and convert to draft pool format, enriching with ADP if available."""
-    db_players = (
-        db.query(DBPlayer)
-        .order_by(DBPlayer.projected_points.desc())
-        .all()
-    )
-    # Build ADP lookup: player_id → latest adp value
-    adp_map: Dict[int, float] = {}
-    try:
-        adp_rows = (
-            db.query(DBPlayerSeasonStats.player_id, DBPlayerSeasonStats.adp)
-            .filter(DBPlayerSeasonStats.adp.isnot(None))
-            .all()
-        )
-        for row in adp_rows:
-            if row.player_id not in adp_map or row.adp < adp_map[row.player_id]:
-                adp_map[row.player_id] = row.adp
-    except Exception:
-        pass
-
-    return [
-        {
-            "id": str(p.player_id),
-            "name": p.name,
-            "position": p.position,
-            "nfl_team": p.nfl_team,
-            "projected_points": p.projected_points or 0.0,
-            "adp_rank": adp_map.get(p.id),
-            "headshot_url": p.headshot_url or "",
-        }
-        for p in db_players
-        if p.position in ("QB", "RB", "WR", "TE", "K", "DEF")
-    ]
 
 
 def _enrich_with_headshots(players: List[dict], db: Session) -> List[dict]:
@@ -149,6 +135,105 @@ def _fetch_espn_adp_with_fallback(
     return players, year
 
 
+def _slot_to_lineup_key(slot_position: Optional[str]) -> Optional[str]:
+    """Map stored weekly slot labels to draft lineup slot keys."""
+    if not slot_position:
+        return None
+    slot = slot_position.strip().upper()
+    slot_map = {
+        "QB": "QB",
+        "RB": "RB",
+        "WR": "WR",
+        "TE": "TE",
+        "FLEX": "FLEX",
+        "RB/WR/TE": "FLEX",
+        "OP": "SUPERFLEX",
+        "SUPERFLEX": "SUPERFLEX",
+        "K": "K",
+        "D/ST": "DEF",
+        "DST": "DEF",
+        "DEF": "DEF",
+    }
+    return slot_map.get(slot)
+
+
+def _derive_roster_slots_from_imported_roster(
+    league_identifier: str,
+    db: Session,
+) -> Optional[Dict[str, int]]:
+    """Infer starting slot counts from locally stored weekly roster data.
+
+    Prefers the user's team (``is_user_team``) and uses the most recent week
+    with weekly player slot data.
+    """
+    teams = db.query(DBTeam).filter(DBTeam.league_id == league_identifier).all()
+    if not teams:
+        return None
+
+    ordered_teams = sorted(
+        teams,
+        key=lambda team: (
+            0 if team.is_user_team else 1,
+            -int(team.last_synced_at.timestamp()) if team.last_synced_at else 0,
+        ),
+    )
+
+    for team in ordered_teams:
+        latest_weekly = (
+            db.query(DBWeeklyTeamStats.id)
+            .filter(DBWeeklyTeamStats.team_id == team.id)
+            .order_by(DBWeeklyTeamStats.week.desc())
+            .first()
+        )
+        if not latest_weekly:
+            continue
+        latest_weekly_id = latest_weekly[0]
+
+        rows = (
+            db.query(DBWeeklyPlayerStats.slot_position)
+            .filter(DBWeeklyPlayerStats.weekly_team_stats_id == latest_weekly_id)
+            .all()
+        )
+        counts: Dict[str, int] = {}
+        for row in rows:
+            key = _slot_to_lineup_key(row.slot_position)
+            if key:
+                counts[key] = counts.get(key, 0) + 1
+
+        if counts:
+            return counts
+
+    return None
+
+
+def _build_league_presets(db: Session) -> List[Dict[str, Any]]:
+    """Build league preset payloads using saved slots or inferred local data."""
+    leagues = db.query(DBLeague).order_by(DBLeague.created_at.desc()).all()
+    league_presets: List[Dict[str, Any]] = []
+
+    for league in leagues:
+        inferred_slots = None
+        if not league.roster_slots:
+            inferred_slots = _derive_roster_slots_from_imported_roster(
+                league_identifier=league.league_id,
+                db=db,
+            )
+
+        resolved_slots = league.roster_slots or inferred_slots or dict(DEFAULT_LINEUP_SLOTS)
+        league_presets.append(
+            {
+                "id": league.id,
+                "league_id": league.league_id,
+                "name": league.name,
+                "year": league.year,
+                "roster_slots": resolved_slots,
+                "has_custom_slots": bool(league.roster_slots or inferred_slots),
+            }
+        )
+
+    return league_presets
+
+
 # ---------------------------------------------------------------------------
 # Page routes
 # ---------------------------------------------------------------------------
@@ -163,10 +248,29 @@ async def draft_home(request: Request, db: Session = Depends(get_db)):
         {"value": s.value, "label": s.value.replace("_", " ").title(), "desc": desc}
         for s, desc in DraftStrategy.descriptions().items()
     ]
+    league_presets = _build_league_presets(db)
     return templates.TemplateResponse(
         "draft/index.html",
-        {"request": request, "strategies": strategies},
+        {
+            "request": request,
+            "strategies": strategies,
+            "lineup_presets": list(LINEUP_PRESETS.values()),
+            "league_presets": league_presets,
+        },
     )
+
+
+@router.get("/lineup-presets")
+async def get_lineup_presets(db: Session = Depends(get_db)):
+    """Return built-in lineup format presets plus any league roster slots imported by the user."""
+    league_presets = _build_league_presets(db)
+    return {
+        "presets": [
+            {"key": key, **preset}
+            for key, preset in LINEUP_PRESETS.items()
+        ],
+        "league_presets": league_presets,
+    }
 
 
 @router.get("/simulate")
@@ -178,9 +282,15 @@ async def simulation_page(request: Request, db: Session = Depends(get_db)):
         {"value": s.value, "label": s.value.replace("_", " ").title(), "desc": desc}
         for s, desc in DraftStrategy.descriptions().items()
     ]
+    league_presets = _build_league_presets(db)
     return templates.TemplateResponse(
         "draft/simulate.html",
-        {"request": request, "strategies": strategies},
+        {
+            "request": request,
+            "strategies": strategies,
+            "lineup_presets": list(LINEUP_PRESETS.values()),
+            "league_presets": league_presets,
+        },
     )
 
 
@@ -193,7 +303,30 @@ async def simulation_page(request: Request, db: Session = Depends(get_db)):
 async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
     """Create a new interactive mock draft and return its initial state."""
     player_pool: Optional[List[dict]] = None
-    if req.use_espn_adp:
+    if req.use_ffc_adp:
+        adp_svc = ADPService(db)
+        player_pool = adp_svc.get_adp_for_draft_pool(year=req.espn_adp_year)
+        if not player_pool:
+            import_result = adp_svc.import_from_ffc(year=req.espn_adp_year)
+            if import_result.get("error"):
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "No local FFC ADP data and automatic import failed. "
+                        f"{import_result['error']}"
+                    ),
+                )
+
+            player_pool = adp_svc.get_adp_for_draft_pool(year=req.espn_adp_year)
+            if not player_pool:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        "FFC ADP import completed but no players matched your local DB. "
+                        "Import or sync players first, then retry."
+                    ),
+                )
+    elif req.use_espn_adp:
         player_pool, _ = _fetch_espn_adp_with_fallback(year=req.espn_adp_year)
         if player_pool is None:
             raise HTTPException(
@@ -201,13 +334,28 @@ async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
                 detail="Failed to fetch ADP data from ESPN. Check connectivity or try again.",
             )
         player_pool = _enrich_with_headshots(player_pool, db)
-    elif req.use_db_players:
-        player_pool = _load_db_players(db)
+    elif req.player_pool:
+        player_pool = req.player_pool
 
     # Convert position_by_round keys to int
     pbr: Optional[Dict[int, str]] = None
     if req.position_by_round:
         pbr = {int(k): v for k, v in req.position_by_round.items()}
+
+    # Build ai_profiles from explicit profiles or aggressiveness knob
+    profiles: Optional[Dict[str, Dict[str, Any]]] = None
+    if req.ai_profiles:
+        profiles = {k: v for k, v in req.ai_profiles.items()}
+    elif req.ai_aggressiveness != 0.5:
+        # Generate per-slot profiles based on overall aggressiveness
+        random_result = randomize_ai_profiles(
+            num_teams=req.num_teams,
+            user_pick_position=req.user_pick_position,
+            overall_aggressiveness=req.ai_aggressiveness,
+        )
+        profiles = {
+            k: v["profile"] for k, v in random_result.items()
+        }
 
     try:
         state = draft_engine.create_draft(
@@ -217,6 +365,8 @@ async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
             ai_strategies=req.ai_strategies,
             player_pool=player_pool,
             position_by_round=pbr,
+            ai_profiles=profiles,
+            lineup_slots=req.lineup_slots or None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -225,18 +375,74 @@ async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
     return state
 
 
+@router.post("/randomize-strategies")
+async def randomize_strategies(req: RandomizeRequest):
+    """Generate randomised AI strategies and profiles for all non-user slots.
+
+    Returns a dict mapping slot string → {strategy, profile}.
+    """
+    return randomize_ai_profiles(
+        num_teams=req.num_teams,
+        user_pick_position=req.user_pick_position,
+        overall_aggressiveness=req.overall_aggressiveness,
+    )
+
+
 @router.get("/adp")
-async def get_espn_adp(year: int = 2025, limit: int = 300):
-    """Fetch live ADP-ordered player rankings from ESPN's public fantasy API.
+async def get_draft_adp(
+    year: int = 2025,
+    limit: int = 300,
+    source: str = "ffc",
+    db: Session = Depends(get_db),
+):
+    """Return ADP-ordered player rankings for the draft page.
+
+    Supports two sources:
+    - ``ffc`` (default): Locally stored Fantasy Football Calculator data.
+    - ``espn``: Live fetch from ESPN public API (legacy fallback).
 
     Args:
         year: Fantasy football season year (default 2025).
         limit: Maximum players to return (default 300, max 500).
+        source: ADP data source (``ffc`` or ``espn``).
 
     Returns:
         JSON with ``players`` list ordered by ADP and ``source`` label.
     """
     limit = max(1, min(limit, 500))
+
+    if source == "ffc":
+        adp_svc = ADPService(db)
+        all_players = adp_svc.get_adp_for_draft_pool(year=year)
+        if not all_players:
+            import_result = adp_svc.import_from_ffc(year=year)
+            if import_result.get("error"):
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "No local FFC ADP data and automatic import failed. "
+                        f"{import_result['error']}"
+                    ),
+                )
+            all_players = adp_svc.get_adp_for_draft_pool(year=year)
+
+        players = all_players[:limit]
+        if not players:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "FFC ADP data is available but no players matched your local DB. "
+                    "Import or sync players first."
+                ),
+            )
+        return {
+            "source": "fantasyfootballcalculator",
+            "year": year,
+            "count": len(players),
+            "players": players,
+        }
+
+    # Legacy ESPN fallback
     players, actual_year = _fetch_espn_adp_with_fallback(year=year, limit=limit)
     if players is None:
         raise HTTPException(
@@ -342,23 +548,27 @@ async def get_draft_grade(draft_id: str):
 
 
 @router.post("/run-simulation")
-async def run_simulation(req: SimulationRequest, db: Session = Depends(get_db)):
+async def run_simulation(req: SimulationRequest):
     """Run automated draft simulations and return aggregated results."""
-    player_pool = _load_db_players(db) if req.use_db_players else None
+    player_pool = req.player_pool if req.player_pool else None
 
     pbr: Optional[Dict[int, str]] = None
     if req.position_by_round:
         pbr = {int(k): v for k, v in req.position_by_round.items()}
 
     engine = MockDraftEngine()
-    results = engine.run_simulations(
-        num_teams=req.num_teams,
-        num_rounds=req.num_rounds,
-        strategies=req.strategies,
-        num_simulations=req.num_simulations,
-        player_pool=player_pool,
-        position_by_round=pbr,
-    )
+    try:
+        results = engine.run_simulations(
+            num_teams=req.num_teams,
+            num_rounds=req.num_rounds,
+            strategies=req.strategies,
+            num_simulations=req.num_simulations,
+            player_pool=player_pool,
+            position_by_round=pbr,
+            lineup_slots=req.lineup_slots or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return results
 
 

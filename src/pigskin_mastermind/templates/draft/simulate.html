@@ -43,6 +43,44 @@
               class="mt-3 text-xs text-pigskin-600 hover:underline font-medium">↻ Refresh slots</button>
     </div>
 
+    <!-- Roster format -->
+    <div>
+      <button type="button" onclick="toggleRosterFormat()"
+              class="flex items-center gap-2 text-sm font-semibold text-slate-700 hover:text-pigskin-600 transition-colors">
+        <svg id="rf-chevron" class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+        </svg>
+        Roster format &amp; starting slots
+      </button>
+      <div id="rf-config" class="hidden mt-4 space-y-4">
+
+        <!-- Presets -->
+        <div>
+          <p class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Quick Presets</p>
+          <div class="flex flex-wrap gap-2" id="lineup-preset-btns"></div>
+        </div>
+
+        <!-- League presets -->
+        <div id="league-preset-row" class="hidden">
+          <p class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Load from Imported League</p>
+          <select id="league-preset-select" onchange="applyLeaguePreset(this.value)"
+                  class="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-pigskin-400">
+            <option value="">— select a league —</option>
+          </select>
+        </div>
+
+        <!-- Manual slot inputs -->
+        <div>
+          <p class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Starting Slots</p>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2" id="slot-inputs"></div>
+        </div>
+
+        <p class="text-xs text-slate-400">
+          FLEX = RB/WR/TE · SUPERFLEX = QB/RB/WR/TE. AI logic adapts automatically.
+        </p>
+      </div>
+    </div>
+
     <!-- Position by round -->
     <div>
       <button type="button" onclick="togglePBR()"
@@ -56,13 +94,6 @@
         <p class="text-xs text-slate-400">Applies to any team using the <em>Position by Round</em> strategy.</p>
         <div id="pbr-rows"></div>
       </div>
-    </div>
-
-    <div class="flex items-center gap-3">
-      <label class="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
-        <input type="checkbox" id="use-db-players" class="rounded border-slate-300 text-pigskin-500">
-        Use my imported players
-      </label>
     </div>
 
     <button type="button" onclick="runSimulation()"
@@ -90,8 +121,13 @@
 {% block extra_js %}
 <script>
   const STRATEGIES = {{ strategies | tojson }};
+  const LINEUP_PRESETS = {{ lineup_presets | tojson }};
+  const LEAGUE_PRESETS = {{ league_presets | tojson }};
   const POSITIONS = ['QB','RB','WR','TE','K','DEF'];
+  const ALL_SLOT_POSITIONS = ['QB','RB','WR','TE','FLEX','SUPERFLEX','K','DEF'];
   const POS_COLORS = {QB:'badge-qb',RB:'badge-rb',WR:'badge-wr',TE:'badge-te',K:'badge-k',DEF:'badge-def'};
+
+  let currentLineupSlots = {QB:1, RB:2, WR:2, TE:1, FLEX:1, K:1, DEF:1};
 
   function posClass(pos) { return POS_COLORS[pos] || 'bg-slate-200 text-slate-700'; }
 
@@ -140,11 +176,98 @@
     }
   }
 
+  // ---- Roster format ----
+  function toggleRosterFormat() {
+    const el = document.getElementById('rf-config');
+    const ch = document.getElementById('rf-chevron');
+    el.classList.toggle('hidden');
+    ch.style.transform = el.classList.contains('hidden') ? '' : 'rotate(90deg)';
+    if (!el.classList.contains('hidden')) initRosterFormat();
+  }
+
+  function initRosterFormat() {
+    const btnContainer = document.getElementById('lineup-preset-btns');
+    if (btnContainer && !btnContainer.children.length) {
+      LINEUP_PRESETS.forEach(preset => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.title = preset.description;
+        btn.className = 'px-2.5 py-1 rounded-lg text-xs font-semibold border border-slate-300 bg-slate-50 text-slate-600 hover:border-pigskin-500 hover:text-pigskin-600 transition-colors';
+        btn.textContent = preset.label;
+        btn.onclick = (e) => applyPreset(preset.slots, e.currentTarget);
+        btnContainer.appendChild(btn);
+      });
+    }
+    const leagueRow = document.getElementById('league-preset-row');
+    const leagueSel = document.getElementById('league-preset-select');
+    if (LEAGUE_PRESETS.length > 0 && leagueSel.options.length <= 1) {
+      LEAGUE_PRESETS.forEach(lp => {
+        const opt = document.createElement('option');
+        opt.value = JSON.stringify({id: lp.id, slots: lp.roster_slots, has_custom: lp.has_custom_slots});
+        const suffix = lp.has_custom_slots ? '' : ' \u2014 default slots';
+        opt.textContent = `${lp.name} (${lp.year})${suffix}`;
+        leagueSel.appendChild(opt);
+      });
+      leagueRow.classList.remove('hidden');
+    }
+    buildSlotInputs();
+  }
+
+  function buildSlotInputs() {
+    const container = document.getElementById('slot-inputs');
+    container.innerHTML = '';
+    ALL_SLOT_POSITIONS.forEach(pos => {
+      const val = currentLineupSlots[pos] ?? 0;
+      const div = document.createElement('div');
+      div.className = 'flex items-center gap-2 border border-slate-200 rounded-lg px-2 py-1.5';
+      div.innerHTML = `
+        <span class="text-[10px] font-bold text-slate-500 w-16 flex-shrink-0">${pos}</span>
+        <input type="number" id="slot-${pos}" min="0" max="4" value="${val}"
+               oninput="onSlotChange('${pos}', this.value)"
+               class="w-12 border border-slate-300 rounded px-1.5 py-0.5 text-xs text-center focus:outline-none focus:ring-1 focus:ring-pigskin-400">`;
+      container.appendChild(div);
+    });
+  }
+
+  function onSlotChange(pos, value) {
+    currentLineupSlots[pos] = parseInt(value) || 0;
+  }
+
+  function applyPreset(slots, btn) {
+    currentLineupSlots = {};
+    ALL_SLOT_POSITIONS.forEach(pos => { currentLineupSlots[pos] = slots[pos] ?? 0; });
+    buildSlotInputs();
+    document.getElementById('lineup-preset-btns').querySelectorAll('button')
+      .forEach(b => b.classList.remove('border-pigskin-500','text-pigskin-600'));
+    if (btn) { btn.classList.add('border-pigskin-500','text-pigskin-600'); }
+  }
+
+  function applyLeaguePreset(jsonVal) {
+    if (!jsonVal) return;
+    try {
+      const {slots} = JSON.parse(jsonVal);
+      applyPreset(slots, null);
+      document.getElementById('lineup-preset-btns').querySelectorAll('button')
+        .forEach(b => b.classList.remove('border-pigskin-500','text-pigskin-600'));
+    } catch(e) {}
+  }
+
+  function getCurrentLineupSlots() {
+    const result = {};
+    let nonDefault = false;
+    const defaults = {QB:1, RB:2, WR:2, TE:1, FLEX:1, K:1, DEF:1};
+    ALL_SLOT_POSITIONS.forEach(pos => {
+      const v = currentLineupSlots[pos] ?? 0;
+      if (v > 0) result[pos] = v;
+      if (v !== (defaults[pos] ?? 0)) nonDefault = true;
+    });
+    return nonDefault ? result : null;
+  }
+
   async function runSimulation() {
     const numTeams  = parseInt(document.getElementById('num-teams').value);
     const numRounds = parseInt(document.getElementById('num-rounds').value);
     const numSims   = parseInt(document.getElementById('num-sims').value);
-    const useDB     = document.getElementById('use-db-players').checked;
 
     const strategies = {};
     for (let slot = 1; slot <= numTeams; slot++) {
@@ -171,8 +294,8 @@
           num_rounds: numRounds,
           strategies,
           num_simulations: numSims,
-          use_db_players: useDB,
           position_by_round: Object.keys(positionByRound).length ? positionByRound : null,
+          lineup_slots: getCurrentLineupSlots(),
         }),
       });
 

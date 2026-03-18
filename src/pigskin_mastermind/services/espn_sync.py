@@ -75,6 +75,41 @@ class ESPNSyncService:
                 settings[key] = item.get("points", 0)
         return settings
 
+    # Maps ESPN position_slot_counts keys → our internal lineup slot names.
+    # Keys not listed here (TQB, RB/WR, WR/TE, BE, IR, …) are ignored.
+    _ESPN_SLOT_NAME_MAP: Dict[str, str] = {
+        "QB": "QB",
+        "RB": "RB",
+        "WR": "WR",
+        "TE": "TE",
+        "D/ST": "DEF",
+        "K": "K",
+        "RB/WR/TE": "FLEX",
+        "OP": "SUPERFLEX",  # Offensive Player / QB-eligible flex
+    }
+
+    @staticmethod
+    def extract_roster_slots(espn_league) -> dict:
+        """Extract starting lineup slot counts from an ESPN League object.
+
+        Reads ``espn_league.settings.position_slot_counts`` (populated by the
+        espn_api library from ``rosterSettings.lineupSlotCounts``) and maps
+        ESPN position names to our internal names (QB, RB, WR, TE, FLEX,
+        SUPERFLEX, K, DEF).  Bench/IR slots and unrecognised positions are
+        excluded.  Returns an empty dict if the data is unavailable.
+        """
+        position_slot_counts = getattr(
+            getattr(espn_league, "settings", None), "position_slot_counts", None
+        )
+        if not position_slot_counts:
+            return {}
+        slots: Dict[str, int] = {}
+        for espn_pos, count in position_slot_counts.items():
+            internal = ESPNSyncService._ESPN_SLOT_NAME_MAP.get(espn_pos)
+            if internal and count and int(count) > 0:
+                slots[internal] = int(count)
+        return slots
+
     def import_team(
         self,
         league_id: str,

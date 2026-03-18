@@ -240,6 +240,7 @@ class DBLeague(Base):
     espn_s2 = Column(String, nullable=True)
     swid = Column(String, nullable=True)
     scoring_settings = Column(JSON, nullable=True)
+    roster_slots = Column(JSON, nullable=True)
     last_synced_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 

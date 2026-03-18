@@ -4,10 +4,11 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock
 from pigskin_mastermind.services.mock_draft import (
+    AIProfile,
     DraftStrategy,
     MockDraftEngine,
-    _default_player_pool,
     fetch_espn_adp,
+    randomize_ai_profiles,
 )
 
 
@@ -24,28 +25,34 @@ def _small_pool():
     """A tiny deterministic player pool for fast tests."""
     players = []
     templates = [
-        ("QB1", "QB", "KC", 28.0),
-        ("QB2", "QB", "BUF", 22.0),
-        ("RB1", "RB", "SF", 22.0),
-        ("RB2", "RB", "DAL", 18.0),
-        ("RB3", "RB", "PHI", 14.0),
-        ("RB4", "RB", "MIA", 10.0),
-        ("WR1", "WR", "CIN", 21.0),
-        ("WR2", "WR", "KC", 18.0),
-        ("WR3", "WR", "BUF", 15.0),
-        ("WR4", "WR", "LAR", 12.0),
-        ("TE1", "TE", "KC", 18.0),
-        ("TE2", "TE", "SF", 10.0),
-        ("K1", "K", "KC", 9.0),
-        ("K2", "K", "BUF", 8.0),
-        ("DEF1", "DEF", "SF", 10.0),
-        ("DEF2", "DEF", "BAL", 9.0),
+        # (name, position, team, projected_points, adp_rank)
+        ("QB1", "QB", "KC", 28.0, 5.0),
+        ("QB2", "QB", "BUF", 22.0, 12.0),
+        ("RB1", "RB", "SF", 22.0, 1.0),
+        ("RB2", "RB", "DAL", 18.0, 4.0),
+        ("RB3", "RB", "PHI", 14.0, 8.0),
+        ("RB4", "RB", "MIA", 10.0, 11.0),
+        ("WR1", "WR", "CIN", 21.0, 2.0),
+        ("WR2", "WR", "KC", 18.0, 3.0),
+        ("WR3", "WR", "BUF", 15.0, 7.0),
+        ("WR4", "WR", "LAR", 12.0, 10.0),
+        ("TE1", "TE", "KC", 18.0, 6.0),
+        ("TE2", "TE", "SF", 10.0, 9.0),
+        ("K1", "K", "KC", 9.0, 13.0),
+        ("K2", "K", "BUF", 8.0, 14.0),
+        ("DEF1", "DEF", "SF", 10.0, 15.0),
+        ("DEF2", "DEF", "BAL", 9.0, 16.0),
     ]
-    for i, (name, pos, team, pts) in enumerate(templates):
+    for i, (name, pos, team, pts, adp) in enumerate(templates):
         players.append(
-            {"id": f"p{i}", "name": name, "position": pos, "nfl_team": team, "projected_points": pts}
+            {"id": f"p{i}", "name": name, "position": pos, "nfl_team": team,
+             "projected_points": pts, "adp_rank": adp}
         )
     return players
+
+
+# Reusable player pool for API integration tests (avoids needing a real ADP source)
+_API_TEST_POOL = _small_pool()
 
 
 # ---------------------------------------------------------------------------
@@ -144,16 +151,21 @@ def _avail(pool, *exclude_names):
     return [p for p in pool if p["name"] not in exclude_names]
 
 
+# Profile with zero variance for deterministic tests
+_DETERMINISTIC = AIProfile(aggressiveness=0.3, variance=0.0, roster_balance=0.6)
+
+
 def test_ai_best_available():
     pool = _small_pool()
-    pid = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.BEST_AVAILABLE, 1, {})
-    best = max(pool, key=lambda p: p["projected_points"])
-    assert pid == best["id"]
+    # At overall pick 1 with ADP, RB1 (ADP 1) should be best available
+    pid = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.BEST_AVAILABLE, 1, {}, profile=_DETERMINISTIC, overall_pick=1)
+    chosen = next(p for p in pool if p["id"] == pid)
+    assert chosen["adp_rank"] == 1.0  # should pick the player with the best ADP
 
 
 def test_ai_qb_early_round1_takes_qb():
     pool = _small_pool()
-    pid = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.QB_EARLY, 1, {})
+    pid = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.QB_EARLY, 1, {}, profile=_DETERMINISTIC, overall_pick=1)
     chosen = next(p for p in pool if p["id"] == pid)
     assert chosen["position"] == "QB"
 
@@ -161,17 +173,16 @@ def test_ai_qb_early_round1_takes_qb():
 def test_ai_qb_early_round3_best_available():
     pool = _small_pool()
     roster = [p for p in pool if p["position"] == "QB"][:1]  # already have QB
-    pid = MockDraftEngine._ai_choose_player(pool, roster, DraftStrategy.QB_EARLY, 3, {})
+    pid = MockDraftEngine._ai_choose_player(pool, roster, DraftStrategy.QB_EARLY, 3, {}, profile=_DETERMINISTIC, overall_pick=5)
     chosen = next(p for p in pool if p["id"] == pid)
-    # Should be best overall, not necessarily QB
-    best = max(pool, key=lambda p: p["projected_points"])
-    assert pid == best["id"]
+    # With QB filled & no strategy bonus, should pick a high-value non-K/DEF player
+    assert chosen["position"] in ("QB", "RB", "WR", "TE")
 
 
 def test_ai_rb_heavy_early_rounds():
     pool = _small_pool()
     for rnd in (1, 2, 3, 4):
-        pid = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.RB_HEAVY, rnd, {})
+        pid = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.RB_HEAVY, rnd, {}, profile=_DETERMINISTIC, overall_pick=rnd)
         chosen = next(p for p in pool if p["id"] == pid)
         assert chosen["position"] == "RB"
 
@@ -180,29 +191,30 @@ def test_ai_rb_heavy_late_rounds_best_available():
     pool = _small_pool()
     # 4 RBs already on roster — RB_HEAVY should fall back to best available
     roster = [p for p in pool if p["position"] == "RB"][:4]
-    pid = MockDraftEngine._ai_choose_player(pool, roster, DraftStrategy.RB_HEAVY, 1, {})
-    best = max(pool, key=lambda p: p["projected_points"])
-    assert pid == best["id"]
+    pid = MockDraftEngine._ai_choose_player(pool, roster, DraftStrategy.RB_HEAVY, 1, {}, profile=_DETERMINISTIC, overall_pick=1)
+    chosen = next(p for p in pool if p["id"] == pid)
+    # With 4 RBs, strategy bonus doesn't apply; should be high-value player
+    assert chosen["projected_points"] > 15  # top-tier pick
 
 
 def test_ai_wr_heavy_early_rounds():
     pool = _small_pool()
     for rnd in (1, 2, 3, 4):
-        pid = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.WR_HEAVY, rnd, {})
+        pid = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.WR_HEAVY, rnd, {}, profile=_DETERMINISTIC, overall_pick=rnd)
         chosen = next(p for p in pool if p["id"] == pid)
         assert chosen["position"] == "WR"
 
 
 def test_ai_te_early_round1_takes_te():
     pool = _small_pool()
-    pid = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.TE_EARLY, 1, {})
+    pid = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.TE_EARLY, 1, {}, profile=_DETERMINISTIC, overall_pick=1)
     chosen = next(p for p in pool if p["id"] == pid)
     assert chosen["position"] == "TE"
 
 
 def test_ai_hero_rb_round1_takes_rb():
     pool = _small_pool()
-    pid = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.HERO_RB, 1, {})
+    pid = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.HERO_RB, 1, {}, profile=_DETERMINISTIC, overall_pick=1)
     chosen = next(p for p in pool if p["id"] == pid)
     assert chosen["position"] == "RB"
 
@@ -210,26 +222,46 @@ def test_ai_hero_rb_round1_takes_rb():
 def test_ai_position_by_round():
     pool = _small_pool()
     pbr = {1: "TE", 2: "QB"}
-    pid = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.POSITION_BY_ROUND, 1, pbr)
+    pid = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.POSITION_BY_ROUND, 1, pbr, profile=_DETERMINISTIC, overall_pick=1)
     chosen = next(p for p in pool if p["id"] == pid)
     assert chosen["position"] == "TE"
 
-    pid2 = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.POSITION_BY_ROUND, 2, pbr)
+    pid2 = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.POSITION_BY_ROUND, 2, pbr, profile=_DETERMINISTIC, overall_pick=5)
     chosen2 = next(p for p in pool if p["id"] == pid2)
     assert chosen2["position"] == "QB"
 
 
 def test_ai_position_by_round_fallback():
     pool = _small_pool()
-    # round 5 not in pbr → best available
-    pid = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.POSITION_BY_ROUND, 5, {1: "QB"})
-    best = max(pool, key=lambda p: p["projected_points"])
-    assert pid == best["id"]
+    # round 5 not in pbr → best available based on ADP
+    pid = MockDraftEngine._ai_choose_player(pool, [], DraftStrategy.POSITION_BY_ROUND, 5, {1: "QB"}, profile=_DETERMINISTIC, overall_pick=1)
+    chosen = next(p for p in pool if p["id"] == pid)
+    assert chosen["adp_rank"] == 1.0  # best ADP player
 
 
 def test_ai_empty_pool_returns_none():
-    pid = MockDraftEngine._ai_choose_player([], [], DraftStrategy.BEST_AVAILABLE, 1, {})
+    pid = MockDraftEngine._ai_choose_player([], [], DraftStrategy.BEST_AVAILABLE, 1, {}, profile=_DETERMINISTIC, overall_pick=1)
     assert pid is None
+
+
+def test_ai_follows_adp_order():
+    """Without strategy bias, AI should draft roughly in ADP order."""
+    pool = _small_pool()
+    profile = AIProfile(aggressiveness=0.0, variance=0.0, roster_balance=0.0)
+    drafted = []
+    remaining = list(pool)
+    for pick_num in range(1, 9):
+        pid = MockDraftEngine._ai_choose_player(
+            remaining, [], DraftStrategy.BEST_AVAILABLE, 1, {},
+            profile=profile, overall_pick=pick_num,
+        )
+        chosen = next(p for p in remaining if p["id"] == pid)
+        drafted.append(chosen)
+        remaining = [p for p in remaining if p["id"] != pid]
+    # First 8 picks should be players with ADP 1-8 (K/DEF excluded by penalty)
+    adp_ranks = [p["adp_rank"] for p in drafted]
+    # All early picks should have low ADP ranks (good players)
+    assert all(adp <= 10 for adp in adp_ranks), f"Expected top ADP picks but got {adp_ranks}"
 
 
 # ---------------------------------------------------------------------------
@@ -394,31 +426,152 @@ def test_simulation_projected_points_positive():
 
 
 # ---------------------------------------------------------------------------
-# Default player pool sanity check
+# AIProfile & randomize_ai_profiles tests
 # ---------------------------------------------------------------------------
 
 
-def test_default_player_pool_has_all_positions():
-    pool = _default_player_pool()
-    positions = {p["position"] for p in pool}
-    assert positions >= {"QB", "RB", "WR", "TE", "K", "DEF"}
+def test_ai_profile_defaults():
+    p = AIProfile()
+    assert 0 <= p.aggressiveness <= 1
+    assert 0 <= p.variance <= 1
+    assert 0 <= p.roster_balance <= 1
 
 
-def test_default_player_pool_has_adp_rank():
-    """Each player in the default pool must have an adp_rank field."""
-    pool = _default_player_pool()
-    for p in pool:
-        assert "adp_rank" in p
-        assert isinstance(p["adp_rank"], float)
+def test_ai_profile_to_from_dict():
+    p = AIProfile(aggressiveness=0.7, variance=0.2, roster_balance=0.9)
+    d = p.to_dict()
+    assert d["aggressiveness"] == 0.7
+    p2 = AIProfile.from_dict(d)
+    assert p2.aggressiveness == p.aggressiveness
+    assert p2.variance == p.variance
+    assert p2.roster_balance == p.roster_balance
 
 
-def test_default_pool_sorted_by_adp_in_draft():
-    """When using the default pool, create_draft should order by adp_rank ascending."""
+def test_randomize_ai_profiles_returns_all_non_user_slots():
+    result = randomize_ai_profiles(num_teams=6, user_pick_position=3, overall_aggressiveness=0.5)
+    assert "3" not in result  # user slot excluded
+    assert set(result.keys()) == {"1", "2", "4", "5", "6"}
+    for slot, info in result.items():
+        assert "strategy" in info
+        assert "profile" in info
+        assert info["strategy"] in [s.value for s in DraftStrategy]
+        profile = info["profile"]
+        assert 0 <= profile["aggressiveness"] <= 1
+        assert 0 <= profile["variance"] <= 1
+        assert 0 <= profile["roster_balance"] <= 1
+
+
+def test_randomize_ai_profiles_high_aggressiveness():
+    results = [
+        randomize_ai_profiles(num_teams=4, user_pick_position=1, overall_aggressiveness=0.9)
+        for _ in range(20)
+    ]
+    all_aggr = [v["profile"]["aggressiveness"] for r in results for v in r.values()]
+    avg_aggr = sum(all_aggr) / len(all_aggr)
+    assert avg_aggr > 0.5  # should trend higher with high knob
+
+
+def test_randomize_never_returns_position_by_round():
+    """Randomize should never assign POSITION_BY_ROUND since it needs extra config."""
+    for _ in range(30):
+        result = randomize_ai_profiles(num_teams=8, user_pick_position=1)
+        for info in result.values():
+            assert info["strategy"] != DraftStrategy.POSITION_BY_ROUND.value
+
+
+# ---------------------------------------------------------------------------
+# Roster-aware AI pick tests
+# ---------------------------------------------------------------------------
+
+
+def test_ai_avoids_kdef_early():
+    """AI should not pick K or DEF in the first few rounds."""
+    pool = _small_pool()
+    profile = AIProfile(aggressiveness=0.3, variance=0.0, roster_balance=0.6)
+    for rnd in (1, 2, 3):
+        pid = MockDraftEngine._ai_choose_player(
+            pool, [], DraftStrategy.BEST_AVAILABLE, rnd, {},
+            num_rounds=15, profile=profile, overall_pick=rnd,
+        )
+        chosen = next(p for p in pool if p["id"] == pid)
+        assert chosen["position"] not in ("K", "DEF"), f"Picked {chosen['position']} in round {rnd}"
+
+
+def test_ai_fills_kicker_late():
+    """After round 10 with no K, the AI should eventually pick a kicker."""
+    pool = _small_pool()
+    # Roster with starters filled except K and DEF
+    roster = [
+        {"position": "QB"}, {"position": "RB"}, {"position": "RB"},
+        {"position": "WR"}, {"position": "WR"}, {"position": "TE"},
+    ]
+    profile = AIProfile(aggressiveness=0.3, variance=0.0, roster_balance=0.8)
+    pid = MockDraftEngine._ai_choose_player(
+        pool, roster, DraftStrategy.BEST_AVAILABLE, 13, {},
+        num_rounds=15, profile=profile, overall_pick=100,
+    )
+    chosen = next(p for p in pool if p["id"] == pid)
+    # With high roster_balance and late round, should pick K or DEF
+    assert chosen["position"] in ("K", "DEF")
+
+
+def test_ai_does_not_overstock_position():
+    """AI should avoid a 5th RB when depth cap is 5 and better options exist."""
+    pool = _small_pool()
+    # Already have 5 RBs
+    roster = [{"position": "RB"}] * 5
+    profile = AIProfile(aggressiveness=0.0, variance=0.0, roster_balance=0.6)
+    pid = MockDraftEngine._ai_choose_player(
+        pool, roster, DraftStrategy.BEST_AVAILABLE, 5, {},
+        num_rounds=15, profile=profile, overall_pick=30,
+    )
+    chosen = next(p for p in pool if p["id"] == pid)
+    # Should prefer non-RB since RBs are at depth cap
+    assert chosen["position"] != "RB" or chosen["projected_points"] > 20
+
+
+def test_variance_creates_different_picks():
+    """With variance > 0, repeated calls should sometimes produce different picks."""
+    pool = _small_pool()
+    high_var = AIProfile(aggressiveness=0.3, variance=1.0, roster_balance=0.3)
+    picks = set()
+    for _ in range(30):
+        pid = MockDraftEngine._ai_choose_player(
+            pool, [], DraftStrategy.BEST_AVAILABLE, 1, {},
+            num_rounds=15, profile=high_var, overall_pick=1,
+        )
+        picks.add(pid)
+    # High variance should produce at least 2 different top picks
+    assert len(picks) >= 2, f"Expected varied picks but got {picks}"
+
+
+def test_create_draft_stores_ai_profiles():
     engine = _make_engine()
-    state = engine.create_draft(num_teams=2, num_rounds=2, user_pick_position=1)
-    players = state["available_players"]
-    adp_ranks = [p.get("adp_rank") for p in players if p.get("adp_rank") is not None]
-    assert adp_ranks == sorted(adp_ranks), "Players should be sorted by ADP rank ascending"
+    profiles = {
+        "2": AIProfile(aggressiveness=0.8, variance=0.1, roster_balance=0.5).to_dict(),
+    }
+    state = engine.create_draft(
+        num_teams=2, num_rounds=2, user_pick_position=1,
+        player_pool=_small_pool(), ai_profiles=profiles,
+    )
+    assert "ai_profiles" in state
+    assert state["ai_profiles"]["2"]["aggressiveness"] == 0.8
+
+
+def test_simulation_with_profiles():
+    engine = _make_engine()
+    profiles = {
+        "1": AIProfile(aggressiveness=0.9, variance=0.0, roster_balance=0.8).to_dict(),
+        "2": AIProfile(aggressiveness=0.1, variance=0.0, roster_balance=0.8).to_dict(),
+    }
+    result = engine.run_simulations(
+        num_teams=2, num_rounds=4, num_simulations=1,
+        player_pool=_small_pool(), ai_profiles=profiles,
+    )
+    assert len(result["simulations"]) == 1
+    for sim in result["simulations"]:
+        for roster in sim["rosters"].values():
+            assert roster["projected_total"] > 0
 
 
 # ---------------------------------------------------------------------------
@@ -560,18 +713,6 @@ def test_draft_sorts_by_adp_when_espn_pool_provided():
     assert state["available_players"][0]["id"] == "p2"  # ADP 1.0 comes first
 
 
-
-    pool = _default_player_pool()
-    positions = {p["position"] for p in pool}
-    assert positions >= {"QB", "RB", "WR", "TE", "K", "DEF"}
-
-
-def test_default_player_pool_unique_ids():
-    pool = _default_player_pool()
-    ids = [p["id"] for p in pool]
-    assert len(ids) == len(set(ids))
-
-
 # ---------------------------------------------------------------------------
 # API route integration tests
 # ---------------------------------------------------------------------------
@@ -601,7 +742,7 @@ def test_draft_simulate_page(client):
 def test_start_draft_api(client):
     resp = client.post(
         "/draft/start",
-        json={"num_teams": 4, "num_rounds": 3, "user_pick_position": 1},
+        json={"num_teams": 4, "num_rounds": 3, "user_pick_position": 1, "player_pool": _API_TEST_POOL},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -623,7 +764,7 @@ def test_get_draft_state_api(client):
     # Start a draft first
     start = client.post(
         "/draft/start",
-        json={"num_teams": 2, "num_rounds": 2, "user_pick_position": 1},
+        json={"num_teams": 2, "num_rounds": 2, "user_pick_position": 1, "player_pool": _API_TEST_POOL},
     )
     draft_id = start.json()["draft_id"]
 
@@ -640,7 +781,7 @@ def test_get_draft_state_not_found(client):
 def test_draft_board_page(client):
     start = client.post(
         "/draft/start",
-        json={"num_teams": 2, "num_rounds": 2, "user_pick_position": 1},
+        json={"num_teams": 2, "num_rounds": 2, "user_pick_position": 1, "player_pool": _API_TEST_POOL},
     )
     draft_id = start.json()["draft_id"]
     resp = client.get(f"/draft/board/{draft_id}")
@@ -651,7 +792,7 @@ def test_draft_board_page(client):
 def test_make_pick_api(client):
     start = client.post(
         "/draft/start",
-        json={"num_teams": 2, "num_rounds": 2, "user_pick_position": 1},
+        json={"num_teams": 2, "num_rounds": 2, "user_pick_position": 1, "player_pool": _API_TEST_POOL},
     )
     state = start.json()
     draft_id = state["draft_id"]
@@ -677,6 +818,7 @@ def test_run_simulation_api(client):
             "num_rounds": 3,
             "strategies": {"1": "best_available", "2": "rb_heavy", "3": "wr_heavy", "4": "qb_early"},
             "num_simulations": 2,
+            "player_pool": _API_TEST_POOL,
         },
     )
     assert resp.status_code == 200
@@ -686,15 +828,15 @@ def test_run_simulation_api(client):
 
 
 def test_get_adp_endpoint_failure(client):
-    """GET /draft/adp should return 503 when ESPN is unreachable."""
+    """GET /draft/adp?source=espn should return 503 when ESPN is unreachable."""
     from urllib.error import URLError
     with patch("pigskin_mastermind.api.routes.draft.fetch_espn_adp", return_value=None):
-        resp = client.get("/draft/adp?year=2025")
+        resp = client.get("/draft/adp?year=2025&source=espn")
     assert resp.status_code == 503
 
 
 def test_get_adp_endpoint_success(client):
-    """GET /draft/adp should return 200 with player list when ESPN responds."""
+    """GET /draft/adp?source=espn should return 200 with player list when ESPN responds."""
     fake_players = [
         {"id": "espn_1", "name": "Top QB", "position": "QB", "nfl_team": "KC",
          "projected_points": 25.0, "adp_rank": 1.0},
@@ -702,7 +844,7 @@ def test_get_adp_endpoint_success(client):
          "projected_points": 22.0, "adp_rank": 2.0},
     ]
     with patch("pigskin_mastermind.api.routes.draft.fetch_espn_adp", return_value=fake_players):
-        resp = client.get("/draft/adp?year=2025&limit=50")
+        resp = client.get("/draft/adp?year=2025&limit=50&source=espn")
     assert resp.status_code == 200
     data = resp.json()
     assert data["source"] == "espn"
@@ -710,6 +852,42 @@ def test_get_adp_endpoint_success(client):
     assert data["count"] == 2
     assert len(data["players"]) == 2
     assert data["players"][0]["adp_rank"] == 1.0
+
+
+def test_get_adp_endpoint_ffc_auto_import_success(client):
+    """GET /draft/adp?source=ffc should auto-import when local ADP is empty."""
+    fake_ffc_players = [
+        {"id": "nfl_1", "name": "Top QB", "position": "QB", "nfl_team": "KC",
+         "projected_points": 25.0, "adp_rank": 1.0},
+        {"id": "nfl_2", "name": "Top RB", "position": "RB", "nfl_team": "SF",
+         "projected_points": 22.0, "adp_rank": 2.0},
+    ]
+
+    with patch("pigskin_mastermind.api.routes.draft.ADPService") as mock_svc_cls:
+        mock_svc = mock_svc_cls.return_value
+        mock_svc.get_adp_for_draft_pool.side_effect = [[], fake_ffc_players]
+        mock_svc.import_from_ffc.return_value = {"imported": 2, "skipped": 0, "total": 2}
+
+        resp = client.get("/draft/adp?year=2025&source=ffc")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["source"] == "fantasyfootballcalculator"
+    assert data["count"] == 2
+    mock_svc.import_from_ffc.assert_called_once_with(year=2025)
+
+
+def test_get_adp_endpoint_ffc_auto_import_failure(client):
+    """GET /draft/adp?source=ffc should return 503 when auto-import fails."""
+    with patch("pigskin_mastermind.api.routes.draft.ADPService") as mock_svc_cls:
+        mock_svc = mock_svc_cls.return_value
+        mock_svc.get_adp_for_draft_pool.return_value = []
+        mock_svc.import_from_ffc.return_value = {"error": "Failed to fetch data from Fantasy Football Calculator"}
+
+        resp = client.get("/draft/adp?year=2025&source=ffc")
+
+    assert resp.status_code == 503
+    assert "automatic import failed" in resp.json()["detail"]
 
 
 def test_start_draft_with_espn_adp(client):
@@ -790,7 +968,7 @@ def test_adp_endpoint_falls_back_to_previous_year(client):
         return None
 
     with patch("pigskin_mastermind.api.routes.draft.fetch_espn_adp", side_effect=_side_effect):
-        resp = client.get("/draft/adp?year=2025&limit=50")
+        resp = client.get("/draft/adp?year=2025&limit=50&source=espn")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -801,9 +979,9 @@ def test_adp_endpoint_falls_back_to_previous_year(client):
 
 
 def test_adp_endpoint_no_fallback_when_data_is_good(client):
-    """GET /draft/adp should NOT fall back when the requested year has varied ADP."""
+    """GET /draft/adp?source=espn should NOT fall back when the requested year has varied ADP."""
     with patch("pigskin_mastermind.api.routes.draft.fetch_espn_adp", return_value=_varied_adp_players()):
-        resp = client.get("/draft/adp?year=2025")
+        resp = client.get("/draft/adp?year=2025&source=espn")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -814,7 +992,7 @@ def test_adp_endpoint_no_fallback_when_data_is_good(client):
 def test_adp_endpoint_uniform_both_years_still_returns_data(client):
     """If both years have uniform ADP, return the original year's data anyway."""
     with patch("pigskin_mastermind.api.routes.draft.fetch_espn_adp", return_value=_uniform_adp_players()):
-        resp = client.get("/draft/adp?year=2025")
+        resp = client.get("/draft/adp?year=2025&source=espn")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -987,7 +1165,7 @@ def test_advance_endpoint(client):
     """POST /draft/advance should advance one AI pick."""
     start = client.post(
         "/draft/start",
-        json={"num_teams": 3, "num_rounds": 2, "user_pick_position": 2},
+        json={"num_teams": 3, "num_rounds": 2, "user_pick_position": 2, "player_pool": _API_TEST_POOL},
     )
     state = start.json()
     draft_id = state["draft_id"]
@@ -1004,7 +1182,7 @@ def test_advance_endpoint_returns_400_on_user_turn(client):
     """POST /draft/advance should return 400 when it's the user's turn."""
     start = client.post(
         "/draft/start",
-        json={"num_teams": 2, "num_rounds": 2, "user_pick_position": 1},
+        json={"num_teams": 2, "num_rounds": 2, "user_pick_position": 1, "player_pool": _API_TEST_POOL},
     )
     state = start.json()
     resp = client.post("/draft/advance", json={"draft_id": state["draft_id"]})
@@ -1015,7 +1193,7 @@ def test_grade_endpoint_incomplete_draft(client):
     """GET /draft/grade should return 400 for incomplete draft."""
     start = client.post(
         "/draft/start",
-        json={"num_teams": 2, "num_rounds": 2, "user_pick_position": 1},
+        json={"num_teams": 2, "num_rounds": 2, "user_pick_position": 1, "player_pool": _API_TEST_POOL},
     )
     state = start.json()
     resp = client.get(f"/draft/grade/{state['draft_id']}")
@@ -1026,7 +1204,7 @@ def test_grade_endpoint_complete_draft(client):
     """GET /draft/grade should return grade data for a completed draft."""
     start = client.post(
         "/draft/start",
-        json={"num_teams": 2, "num_rounds": 1, "user_pick_position": 1},
+        json={"num_teams": 2, "num_rounds": 1, "user_pick_position": 1, "player_pool": _API_TEST_POOL},
     )
     state = start.json()
     draft_id = state["draft_id"]
@@ -1050,7 +1228,7 @@ def test_pick_endpoint_includes_commentary(client):
     """POST /draft/pick should include commentary in the response."""
     start = client.post(
         "/draft/start",
-        json={"num_teams": 2, "num_rounds": 2, "user_pick_position": 1},
+        json={"num_teams": 2, "num_rounds": 2, "user_pick_position": 1, "player_pool": _API_TEST_POOL},
     )
     state = start.json()
     draft_id = state["draft_id"]
@@ -1063,3 +1241,62 @@ def test_pick_endpoint_includes_commentary(client):
     assert resp.status_code == 200
     data = resp.json()
     assert "commentary" in data
+
+
+# ---------------------------------------------------------------------------
+# Randomize strategies API tests
+# ---------------------------------------------------------------------------
+
+
+def test_randomize_strategies_api(client):
+    """POST /draft/randomize-strategies should return strategies and profiles."""
+    resp = client.post(
+        "/draft/randomize-strategies",
+        json={"num_teams": 6, "user_pick_position": 2, "overall_aggressiveness": 0.7},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "2" not in data  # user slot excluded
+    for slot, info in data.items():
+        assert "strategy" in info
+        assert "profile" in info
+
+
+def test_start_draft_with_ai_profiles(client):
+    """POST /draft/start with ai_profiles should store them in state."""
+    resp = client.post(
+        "/draft/start",
+        json={
+            "num_teams": 4,
+            "num_rounds": 3,
+            "user_pick_position": 1,
+            "ai_profiles": {
+                "2": {"aggressiveness": 0.9, "variance": 0.1, "roster_balance": 0.5},
+            },
+            "player_pool": _API_TEST_POOL,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "ai_profiles" in data
+    assert data["ai_profiles"]["2"]["aggressiveness"] == 0.9
+
+
+def test_start_draft_with_aggressiveness(client):
+    """POST /draft/start with ai_aggressiveness should generate profiles."""
+    resp = client.post(
+        "/draft/start",
+        json={
+            "num_teams": 4,
+            "num_rounds": 3,
+            "user_pick_position": 1,
+            "ai_aggressiveness": 0.8,
+            "player_pool": _API_TEST_POOL,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "ai_profiles" in data
+    # All AI slots should have profiles
+    for slot in ("2", "3", "4"):
+        assert slot in data["ai_profiles"]

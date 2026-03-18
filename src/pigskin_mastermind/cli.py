@@ -422,6 +422,37 @@ def stats_import_adp(csv_file, year, source):
         db.close()
 
 
+@stats.command('import-ffc-adp')
+@click.option('--year', type=int, required=True, help='Season year (e.g. 2025)')
+@click.option('--scoring', default='ppr', show_default=True,
+              type=click.Choice(['standard', 'ppr', 'half-ppr', '2qb', 'dynasty'],
+                                case_sensitive=False),
+              help='Scoring format')
+@click.option('--teams', type=int, default=12, show_default=True,
+              help='Number of teams in the league')
+def stats_import_ffc_adp(year, scoring, teams):
+    """Import ADP data from Fantasy Football Calculator.
+
+    Fetches current ADP rankings from the FFC public API and stores
+    them in the local database.  Players are matched by name + position.
+    """
+    from pigskin_mastermind.services.adp_service import ADPService
+
+    db = _get_stats_db()
+    try:
+        service = ADPService(db)
+        result = service.import_from_ffc(year=year, scoring=scoring, num_teams=teams)
+        if result.get("error"):
+            click.echo(f"Error: {result['error']}", err=True)
+            return
+        click.echo(
+            f"FFC ADP import complete: {result['imported']} imported, "
+            f"{result['skipped']} skipped, {result['total']} total from FFC."
+        )
+    finally:
+        db.close()
+
+
 @stats.command('yearly-rankings')
 @click.option('--year', type=int, required=True, help='Season year')
 @click.option('--position', default=None,

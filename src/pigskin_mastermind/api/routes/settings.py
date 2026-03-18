@@ -150,6 +150,11 @@ async def sync_league(league_db_id: int, db: Session = Depends(get_db)):
         if scoring:
             league.scoring_settings = scoring
 
+        # Extract and save roster slot counts from ESPN
+        roster_slots = sync_service.extract_roster_slots(espn_league)
+        if roster_slots:
+            league.roster_slots = roster_slots
+
         league.last_synced_at = datetime.utcnow()
         db.commit()
 

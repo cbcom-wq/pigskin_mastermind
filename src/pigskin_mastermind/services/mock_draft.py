@@ -1,8 +1,10 @@
 """Mock draft service for fantasy football draft simulation."""
 
 import json
+import math
 import random
 import uuid
+from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from urllib.error import URLError
@@ -146,108 +148,155 @@ DEFAULT_LINEUP_SLOTS = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "
 FLEX_ELIGIBLE = {"RB", "WR", "TE"}
 DRAFT_POSITIONS = ["QB", "RB", "WR", "TE", "K", "DEF"]
 
+# Minimum roster targets for a well-constructed team
+_STARTER_NEEDS = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DEF": 1}
+# Comfortable depth (includes bench) — beyond this the AI deprioritises
+_DEPTH_CAPS = {"QB": 2, "RB": 5, "WR": 5, "TE": 2, "K": 1, "DEF": 1}
+# Positions that should only be drafted in later rounds
+_LATE_ROUND_POSITIONS = {"K", "DEF"}
+_LATE_ROUND_THRESHOLD_FRAC = 0.7  # don't draft K/DEF before 70% of rounds done
 
-def _default_player_pool() -> List[Dict[str, Any]]:
-    """Generate a default pool of mock players when no DB players are available."""
-    pool: List[Dict[str, Any]] = []
+# ---------------------------------------------------------------------------
+# Common lineup format presets
+# ---------------------------------------------------------------------------
+#
+# Each preset is a dict of position → number of starting slots.
+# FLEX = RB/WR/TE eligible slot.  SUPERFLEX = QB/RB/WR/TE eligible slot.
+# ---------------------------------------------------------------------------
+LINEUP_PRESETS: Dict[str, Dict[str, Any]] = {
+    "standard": {
+        "label": "Standard (9-man)",
+        "description": "Classic 9-starter format: 1QB 2RB 2WR 1TE 1FLEX 1K 1DST",
+        "slots": {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1},
+    },
+    "ppr_10": {
+        "label": "PPR (10-man)",
+        "description": "10-starter PPR: 1QB 2RB 3WR 1TE 1FLEX 1K 1DST",
+        "slots": {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1},
+    },
+    "superflex": {
+        "label": "Superflex",
+        "description": "10-starter with a QB-eligible SUPERFLEX slot; QBs have huge value",
+        "slots": {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "SUPERFLEX": 1, "K": 1, "DEF": 1},
+    },
+    "two_qb": {
+        "label": "2-QB",
+        "description": "Requires two starting QBs — draft a QB early AND late",
+        "slots": {"QB": 2, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1},
+    },
+    "te_premium": {
+        "label": "TE Premium",
+        "description": "Two TE starter slots — elite TEs are must-have targets",
+        "slots": {"QB": 1, "RB": 2, "WR": 2, "TE": 2, "FLEX": 1, "K": 1, "DEF": 1},
+    },
+    "deep_flex": {
+        "label": "Deep Flex (3 FLEX)",
+        "description": "Three FLEX slots on top of 1QB 2RB 2WR 1TE — great for depth",
+        "slots": {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 3, "K": 1, "DEF": 1},
+    },
+    "no_k_def": {
+        "label": "No K/DST",
+        "description": "Skip kickers and defenses entirely — 1QB 3RB 4WR 2TE 2FLEX",
+        "slots": {"QB": 1, "RB": 3, "WR": 4, "TE": 2, "FLEX": 2, "K": 0, "DEF": 0},
+    },
+}
 
-    # (name_prefix, position, nfl_team, base_proj)
-    templates = [
-        # QBs
-        ("Elite QB", "QB", "KC", 28.0),
-        ("QB Alpha", "QB", "BUF", 25.0),
-        ("QB Beta", "QB", "SF", 23.0),
-        ("QB Gamma", "QB", "PHI", 21.0),
-        ("QB Delta", "QB", "MIA", 19.0),
-        ("QB Epsilon", "QB", "LAR", 17.0),
-        ("QB Zeta", "QB", "CIN", 16.0),
-        ("QB Eta", "QB", "DAL", 15.0),
-        ("QB Theta", "QB", "GB", 14.0),
-        ("QB Iota", "QB", "NYJ", 13.0),
-        ("QB Kappa", "QB", "LV", 12.0),
-        ("QB Lambda", "QB", "NE", 11.0),
-        # RBs
-        ("RB1 Alpha", "RB", "SF", 22.0),
-        ("RB2 Beta", "RB", "DAL", 20.5),
-        ("RB3 Gamma", "RB", "BUF", 19.0),
-        ("RB4 Delta", "RB", "PHI", 17.5),
-        ("RB5 Epsilon", "RB", "MIA", 16.0),
-        ("RB6 Zeta", "RB", "KC", 15.0),
-        ("RB7 Eta", "RB", "GB", 14.0),
-        ("RB8 Theta", "RB", "LAR", 13.5),
-        ("RB9 Iota", "RB", "CIN", 12.5),
-        ("RB10 Kappa", "RB", "SEA", 12.0),
-        ("RB11 Lambda", "RB", "ATL", 11.5),
-        ("RB12 Mu", "RB", "DEN", 11.0),
-        ("RB13 Nu", "RB", "NYG", 10.5),
-        ("RB14 Xi", "RB", "TEN", 10.0),
-        ("RB15 Omicron", "RB", "JAX", 9.5),
-        ("RB16 Pi", "RB", "CAR", 9.0),
-        ("RB17 Rho", "RB", "ARI", 8.5),
-        ("RB18 Sigma", "RB", "WAS", 8.0),
-        ("RB19 Tau", "RB", "IND", 7.5),
-        ("RB20 Upsilon", "RB", "HOU", 7.0),
-        # WRs
-        ("WR1 Alpha", "WR", "CIN", 21.0),
-        ("WR2 Beta", "WR", "KC", 20.0),
-        ("WR3 Gamma", "WR", "BUF", 18.5),
-        ("WR4 Delta", "WR", "LAR", 18.0),
-        ("WR5 Epsilon", "WR", "PHI", 17.5),
-        ("WR6 Zeta", "WR", "MIA", 16.5),
-        ("WR7 Eta", "WR", "SF", 16.0),
-        ("WR8 Theta", "WR", "GB", 15.5),
-        ("WR9 Iota", "WR", "DAL", 15.0),
-        ("WR10 Kappa", "WR", "SEA", 14.5),
-        ("WR11 Lambda", "WR", "NYJ", 14.0),
-        ("WR12 Mu", "WR", "TB", 13.5),
-        ("WR13 Nu", "WR", "MIN", 13.0),
-        ("WR14 Xi", "WR", "DEN", 12.5),
-        ("WR15 Omicron", "WR", "ATL", 12.0),
-        ("WR16 Pi", "WR", "CLE", 11.5),
-        ("WR17 Rho", "WR", "CAR", 11.0),
-        ("WR18 Sigma", "WR", "HOU", 10.5),
-        ("WR19 Tau", "WR", "IND", 10.0),
-        ("WR20 Upsilon", "WR", "ARI", 9.5),
-        # TEs
-        ("TE1 Alpha", "TE", "KC", 18.0),
-        ("TE2 Beta", "TE", "BUF", 14.0),
-        ("TE3 Gamma", "TE", "SF", 12.0),
-        ("TE4 Delta", "TE", "PHI", 10.5),
-        ("TE5 Epsilon", "TE", "LAR", 9.5),
-        ("TE6 Zeta", "TE", "CIN", 8.5),
-        ("TE7 Eta", "TE", "SEA", 8.0),
-        ("TE8 Theta", "TE", "GB", 7.5),
-        ("TE9 Iota", "TE", "DAL", 7.0),
-        ("TE10 Kappa", "TE", "MIA", 6.5),
-        # Ks
-        ("K1 Alpha", "K", "KC", 9.0),
-        ("K2 Beta", "K", "BUF", 8.5),
-        ("K3 Gamma", "K", "BAL", 8.0),
-        ("K4 Delta", "K", "LAR", 7.5),
-        ("K5 Epsilon", "K", "SF", 7.0),
-        ("K6 Zeta", "K", "MIA", 6.5),
-        # DEFs
-        ("DEF1 Alpha", "DEF", "SF", 10.0),
-        ("DEF2 Beta", "DEF", "BAL", 9.5),
-        ("DEF3 Gamma", "DEF", "BUF", 9.0),
-        ("DEF4 Delta", "DEF", "DAL", 8.5),
-        ("DEF5 Epsilon", "DEF", "PIT", 8.0),
-        ("DEF6 Zeta", "DEF", "MIA", 7.5),
-    ]
 
-    for i, (name, pos, team, base) in enumerate(templates):
-        # Small random jitter so players aren't perfectly deterministic
-        proj = round(base + random.uniform(-0.5, 0.5), 1)
-        pool.append({
-            "id": f"mock_{i}",
-            "name": name,
-            "position": pos,
-            "nfl_team": team,
-            "projected_points": proj,
-            "adp_rank": float(i + 1),
-        })
+def _derive_starter_needs(lineup_slots: Dict[str, int]) -> Dict[str, int]:
+    """Compute minimum starter targets for each draftable position.
 
-    return pool
+    FLEX slots are counted toward the most-needed flex-eligible position (RB).
+    SUPERFLEX slots count toward QB needs.
+    """
+    needs: Dict[str, int] = {}
+    for pos in DRAFT_POSITIONS:
+        needs[pos] = lineup_slots.get(pos, 0)
+    # Each FLEX slot bumps RB need by 1 (RB is the most common FLEX player)
+    flex = lineup_slots.get("FLEX", 0)
+    if flex > 0:
+        needs["RB"] = needs.get("RB", 0) + flex
+    # Each SUPERFLEX slot bumps QB need
+    superflex = lineup_slots.get("SUPERFLEX", 0)
+    if superflex > 0:
+        needs["QB"] = needs.get("QB", 0) + superflex
+    return needs
+
+
+def _derive_depth_caps(starter_needs: Dict[str, int]) -> Dict[str, int]:
+    """Compute comfortable roster depth caps derived from starter requirements."""
+    return {
+        "QB": max(starter_needs.get("QB", 1) + 1, 2),
+        "RB": max(starter_needs.get("RB", 2) + 3, 5),
+        "WR": max(starter_needs.get("WR", 2) + 3, 5),
+        "TE": max(starter_needs.get("TE", 1) + 1, 2),
+        "K":  max(starter_needs.get("K",  1), 1),
+        "DEF": max(starter_needs.get("DEF", 1), 1),
+    }
+
+
+@dataclass
+class AIProfile:
+    """Per-slot AI behaviour profile controlling how aggressively / erratically
+    a team drafts.  All values are 0-1 floats.
+
+    Attributes:
+        aggressiveness: How willing the AI is to reach for a need vs following
+                        strict BPA.  0 = pure BPA, 1 = very aggressive reaches.
+        variance: Controls the width of random noise injected into the
+                  candidate scoring function.  0 = deterministic, 1 = chaotic.
+        roster_balance: How much weight the AI puts on filling starting lineup
+                        holes vs taking the best raw talent.  0 = ignore roster,
+                        1 = strictly prioritise starters.
+    """
+    aggressiveness: float = 0.3
+    variance: float = 0.15
+    roster_balance: float = 0.6
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "AIProfile":
+        return cls(
+            aggressiveness=float(d.get("aggressiveness", 0.3)),
+            variance=float(d.get("variance", 0.15)),
+            roster_balance=float(d.get("roster_balance", 0.6)),
+        )
+
+
+def randomize_ai_profiles(
+    num_teams: int,
+    user_pick_position: int,
+    overall_aggressiveness: float = 0.5,
+) -> Dict[str, Dict[str, Any]]:
+    """Generate randomised AI profiles and strategies for every non-user slot.
+
+    Args:
+        num_teams: Total teams in draft.
+        user_pick_position: 1-indexed slot belonging to the human.
+        overall_aggressiveness: 0-1 master knob.  Higher values widen the
+            range of per-slot aggressiveness and variance.
+
+    Returns:
+        Dict mapping slot string → ``{"strategy": str, "profile": dict}``.
+    """
+    ai_strats = [s for s in DraftStrategy if s != DraftStrategy.POSITION_BY_ROUND]
+    result: Dict[str, Dict[str, Any]] = {}
+    for slot in range(1, num_teams + 1):
+        if slot == user_pick_position:
+            continue
+        strat = random.choice(ai_strats)
+        # Centre aggressiveness around the overall knob with per-slot jitter
+        aggr = max(0.0, min(1.0, overall_aggressiveness + random.gauss(0, 0.15)))
+        var = max(0.0, min(1.0, 0.10 + overall_aggressiveness * 0.2 + random.gauss(0, 0.05)))
+        bal = max(0.0, min(1.0, 0.55 + random.gauss(0, 0.1)))
+        result[str(slot)] = {
+            "strategy": strat.value,
+            "profile": AIProfile(aggressiveness=round(aggr, 2),
+                                 variance=round(var, 2),
+                                 roster_balance=round(bal, 2)).to_dict(),
+        }
+    return result
 
 
 class MockDraftEngine:
@@ -279,6 +328,8 @@ class MockDraftEngine:
         ai_strategies: Optional[Dict[str, str]] = None,
         player_pool: Optional[List[Dict[str, Any]]] = None,
         position_by_round: Optional[Dict[int, str]] = None,
+        ai_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
+        lineup_slots: Optional[Dict[str, int]] = None,
     ) -> Dict[str, Any]:
         """
         Create and return a new draft state.
@@ -295,6 +346,13 @@ class MockDraftEngine:
             position_by_round: Mapping of round (1-indexed) → position for the
                                 POSITION_BY_ROUND strategy (applied to the user team
                                 when that strategy is selected).
+            ai_profiles: Mapping of pick-slot string → AIProfile dict.  Controls
+                         aggressiveness, variance, and roster-balance per AI team.
+                         Defaults to a moderate profile for all AI teams.
+            lineup_slots: Mapping of position → number of starting slots that
+                          defines the roster format (e.g. ``{"QB": 1, "RB": 2,
+                          "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1}``).
+                          Defaults to ``DEFAULT_LINEUP_SLOTS``.
 
         Returns:
             Draft state dictionary suitable for JSON serialisation.
@@ -311,27 +369,37 @@ class MockDraftEngine:
         # Build pick order (snake draft)
         pick_order = self._build_snake_order(num_teams, num_rounds)
 
-        # Assign strategies
+        # Assign strategies and profiles
         strategies: Dict[str, str] = {}
+        profiles: Dict[str, Dict[str, Any]] = {}
         for slot in range(1, num_teams + 1):
+            slot_s = str(slot)
             if slot == user_pick_position:
-                strategies[str(slot)] = "user"
+                strategies[slot_s] = "user"
             else:
-                strategies[str(slot)] = (
-                    (ai_strategies or {}).get(str(slot), DraftStrategy.BEST_AVAILABLE)
+                strategies[slot_s] = (
+                    (ai_strategies or {}).get(slot_s, DraftStrategy.BEST_AVAILABLE)
                 )
+                if ai_profiles and slot_s in ai_profiles:
+                    profiles[slot_s] = ai_profiles[slot_s]
+                else:
+                    profiles[slot_s] = AIProfile().to_dict()
 
         # Initialise team rosters
         rosters: Dict[str, List[Dict[str, Any]]] = {
             str(slot): [] for slot in range(1, num_teams + 1)
         }
 
-        pool = player_pool if player_pool is not None else _default_player_pool()
+        if player_pool is None:
+            raise ValueError("player_pool is required; use use_ffc_adp or use_espn_adp to load players")
+        pool = list(player_pool)
         # Sort pool: by ADP rank (ascending) when available, else by projected_points (descending)
         if pool and pool[0].get("adp_rank") is not None:
             pool = sorted(pool, key=lambda p: p.get("adp_rank") or 9999)
         else:
             pool = sorted(pool, key=lambda p: p["projected_points"], reverse=True)
+
+        resolved_lineup = dict(lineup_slots) if lineup_slots else dict(DEFAULT_LINEUP_SLOTS)
 
         state: Dict[str, Any] = {
             "draft_id": draft_id,
@@ -339,6 +407,7 @@ class MockDraftEngine:
             "num_rounds": num_rounds,
             "user_pick_position": user_pick_position,
             "strategies": strategies,
+            "ai_profiles": profiles,
             "pick_order": pick_order,            # flat list of (round, slot) tuples → stored as lists
             "current_pick_index": 0,
             "available_players": pool,
@@ -346,6 +415,7 @@ class MockDraftEngine:
             "picks_log": [],                     # [{"round": r, "slot": s, "player": {...}}]
             "status": "in_progress",             # in_progress | complete
             "position_by_round": position_by_round or {},
+            "lineup_slots": resolved_lineup,
         }
 
         self._drafts[draft_id] = state
@@ -397,6 +467,8 @@ class MockDraftEngine:
         num_simulations: int = 5,
         player_pool: Optional[List[Dict[str, Any]]] = None,
         position_by_round: Optional[Dict[int, str]] = None,
+        ai_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
+        lineup_slots: Optional[Dict[str, int]] = None,
     ) -> Dict[str, Any]:
         """
         Run fully automated draft simulations and return aggregated results.
@@ -409,6 +481,8 @@ class MockDraftEngine:
             num_simulations: How many simulations to run (1–20).
             player_pool: Optional player pool override.
             position_by_round: Round→position map for POSITION_BY_ROUND strategy.
+            ai_profiles: Optional mapping slot → AIProfile dict.
+            lineup_slots: Roster format overriding ``DEFAULT_LINEUP_SLOTS``.
 
         Returns:
             Dictionary with ``simulations`` (list of draft results) and
@@ -416,24 +490,34 @@ class MockDraftEngine:
         """
         num_simulations = max(1, min(num_simulations, self.MAX_SIMULATIONS))
 
+        resolved_lineup = dict(lineup_slots) if lineup_slots else dict(DEFAULT_LINEUP_SLOTS)
+        sim_starter_needs = _derive_starter_needs(resolved_lineup)
+        sim_depth_caps = _derive_depth_caps(sim_starter_needs)
+
         results = []
         strategy_map: Dict[str, str] = strategies or {}
+        profile_map: Dict[str, Dict[str, Any]] = ai_profiles or {}
 
         for sim_num in range(1, num_simulations + 1):
             draft_id = str(uuid.uuid4())
             pick_order = self._build_snake_order(num_teams, num_rounds)
 
             resolved: Dict[str, str] = {}
+            profiles: Dict[str, Dict[str, Any]] = {}
             for slot in range(1, num_teams + 1):
-                resolved[str(slot)] = strategy_map.get(
-                    str(slot), DraftStrategy.BEST_AVAILABLE
+                slot_s = str(slot)
+                resolved[slot_s] = strategy_map.get(
+                    slot_s, DraftStrategy.BEST_AVAILABLE
                 )
+                profiles[slot_s] = profile_map.get(slot_s, AIProfile().to_dict())
 
             rosters: Dict[str, List[Dict[str, Any]]] = {
                 str(slot): [] for slot in range(1, num_teams + 1)
             }
 
-            pool = player_pool if player_pool is not None else _default_player_pool()
+            if player_pool is None:
+                raise ValueError("player_pool is required; use use_ffc_adp or use_espn_adp to load players")
+            pool = list(player_pool)
             if pool and pool[0].get("adp_rank") is not None:
                 pool = sorted(pool, key=lambda p: p.get("adp_rank") or 9999)
             else:
@@ -445,6 +529,7 @@ class MockDraftEngine:
                 "num_rounds": num_rounds,
                 "user_pick_position": None,
                 "strategies": resolved,
+                "ai_profiles": profiles,
                 "pick_order": pick_order,
                 "current_pick_index": 0,
                 "available_players": pool,
@@ -452,6 +537,7 @@ class MockDraftEngine:
                 "picks_log": [],
                 "status": "in_progress",
                 "position_by_round": position_by_round or {},
+                "lineup_slots": resolved_lineup,
             }
 
             # Run all picks automatically
@@ -462,12 +548,19 @@ class MockDraftEngine:
                 slot_str = str(current_slot)
                 strat = state["strategies"].get(slot_str, DraftStrategy.BEST_AVAILABLE)
                 current_round = self._current_round(state)
+                overall_pick = state["current_pick_index"] + 1
+                profile = AIProfile.from_dict(state["ai_profiles"].get(slot_str, {}))
                 player_id = self._ai_choose_player(
                     state["available_players"],
                     state["rosters"][slot_str],
                     strat,
                     current_round,
                     state.get("position_by_round", {}),
+                    num_rounds=num_rounds,
+                    profile=profile,
+                    overall_pick=overall_pick,
+                    starter_needs=sim_starter_needs,
+                    depth_caps=sim_depth_caps,
                 )
                 if player_id:
                     self._apply_pick(state, player_id)
@@ -552,6 +645,8 @@ class MockDraftEngine:
     def _advance_ai_picks(self, state: Dict[str, Any]) -> None:
         """Auto-pick for every AI team until it is the user's turn or draft ends."""
         user_slot = str(state.get("user_pick_position", ""))
+        s_needs = _derive_starter_needs(state.get("lineup_slots") or DEFAULT_LINEUP_SLOTS)
+        d_caps = _derive_depth_caps(s_needs)
         while state["status"] == "in_progress":
             current_slot = self._current_slot(state)
             if current_slot is None:
@@ -561,12 +656,19 @@ class MockDraftEngine:
             slot_str = str(current_slot)
             strat = state["strategies"].get(slot_str, DraftStrategy.BEST_AVAILABLE)
             current_round = self._current_round(state)
+            overall_pick = state["current_pick_index"] + 1
+            profile = AIProfile.from_dict(state.get("ai_profiles", {}).get(slot_str, {}))
             player_id = self._ai_choose_player(
                 state["available_players"],
                 state["rosters"][slot_str],
                 strat,
                 current_round,
                 state.get("position_by_round", {}),
+                num_rounds=state["num_rounds"],
+                profile=profile,
+                overall_pick=overall_pick,
+                starter_needs=s_needs,
+                depth_caps=d_caps,
             )
             if player_id:
                 self._apply_pick(state, player_id)
@@ -580,81 +682,176 @@ class MockDraftEngine:
         strategy: str,
         current_round: int,
         position_by_round: Dict[int, str],
+        *,
+        num_rounds: int = 15,
+        profile: Optional["AIProfile"] = None,
+        overall_pick: int = 1,
+        starter_needs: Optional[Dict[str, int]] = None,
+        depth_caps: Optional[Dict[str, int]] = None,
     ) -> Optional[str]:
         """
-        Choose the best available player for an AI team based on strategy.
+        Choose the best available player for an AI team using a score-based
+        evaluation that considers ADP, projected points, strategy, roster needs,
+        positional scarcity, and bounded randomness.
+
+        The scoring is anchored on **ADP** (the primary signal) so the AI drafts
+        players roughly in consensus order, with strategy / needs creating
+        sensible deviations.
 
         Returns the player ``id`` string, or None if pool is empty.
         """
         if not available:
             return None
 
+        prof = profile or AIProfile()
+        _eff_starter_needs = starter_needs if starter_needs is not None else _STARTER_NEEDS
+        _eff_depth_caps = depth_caps if depth_caps is not None else _DEPTH_CAPS
         owned_positions = [p["position"] for p in roster]
+        pos_counts: Dict[str, int] = {}
+        for pos in owned_positions:
+            pos_counts[pos] = pos_counts.get(pos, 0) + 1
 
-        def best_at(pos: str) -> Optional[Dict[str, Any]]:
-            candidates = [p for p in available if p["position"] == pos]
-            return max(candidates, key=lambda p: p["projected_points"]) if candidates else None
+        round_frac = current_round / max(num_rounds, 1)  # 0..1
+        total_picks = max(len(available) + len(roster), 1)  # approximate pool size
 
-        def best_overall() -> Dict[str, Any]:
-            return max(available, key=lambda p: p["projected_points"])
+        # ---- helper: ADP-based primary score ----
+        # Players with ADP near the current pick get the highest score;
+        # players whose ADP is far above the current pick are penalised.
+        has_adp = any(p.get("adp_rank") is not None for p in available)
 
-        def needs_position(pos: str, limit: int) -> bool:
-            return owned_positions.count(pos) < limit
+        def _adp_score(p: Dict[str, Any]) -> float:
+            """Primary score based on how well player ADP aligns with pick.
 
-        strat = strategy
+            Returns 0-1 where 1.0 = perfect value, declining for reaches.
+            Players with no ADP fall back to projected-points ordering.
+            """
+            adp = p.get("adp_rank")
+            if adp is None or not has_adp:
+                # Fallback: use projected points as proxy for rank
+                max_proj = max(q["projected_points"] for q in available) or 1.0
+                return p["projected_points"] / max_proj
 
-        if strat == DraftStrategy.POSITION_BY_ROUND:
-            target_pos = position_by_round.get(current_round) or position_by_round.get(str(current_round))
-            if target_pos:
-                pick = best_at(target_pos)
-                return pick["id"] if pick else best_overall()["id"]
-            return best_overall()["id"]
+            # How far the player's ADP is from the current pick.
+            # Negative delta = player ADP is before our pick (reach).
+            # Positive delta = player ADP is after our pick (steal/value).
+            delta = adp - overall_pick
 
-        if strat == DraftStrategy.QB_EARLY:
-            if current_round <= 2 and needs_position("QB", 1):
-                pick = best_at("QB")
-                if pick:
-                    return pick["id"]
-            return best_overall()["id"]
+            if delta >= 0:
+                # Player's ADP is at or after current pick — value pick.
+                # Diminish slightly as the gap grows (tier 30 players when
+                # we're at pick 1 shouldn't score as high as a pick-1 player).
+                value = 1.0 - (delta / total_picks) * 0.5
+                return max(value, 0.1)
+            else:
+                # Reaching for a player drafted before their ADP.
+                # Mild reward for short reaches (still a good player),
+                # but penalise significant reaches.
+                reach = abs(delta)
+                return max(1.0 - (reach / total_picks) * 1.5, 0.05)
 
-        if strat == DraftStrategy.TE_EARLY:
-            if current_round <= 2 and needs_position("TE", 1):
-                pick = best_at("TE")
-                if pick:
-                    return pick["id"]
-            return best_overall()["id"]
+        # ---- helper: projected-points tiebreaker ----
+        max_proj = max(p["projected_points"] for p in available) or 1.0
 
-        if strat == DraftStrategy.RB_HEAVY:
-            rb_count = owned_positions.count("RB")
-            if current_round <= 4 and rb_count < 4:
-                pick = best_at("RB")
-                if pick:
-                    return pick["id"]
-            return best_overall()["id"]
+        def _proj_score(p: Dict[str, Any]) -> float:
+            """Normalised projected points (0-1), used as tiebreaker."""
+            return p["projected_points"] / max_proj if max_proj else 0.0
 
-        if strat == DraftStrategy.WR_HEAVY:
-            wr_count = owned_positions.count("WR")
-            if current_round <= 4 and wr_count < 4:
-                pick = best_at("WR")
-                if pick:
-                    return pick["id"]
-            return best_overall()["id"]
+        # ---- helper: roster-need bonus ----
+        def _need_score(p: Dict[str, Any]) -> float:
+            pos = p["position"]
+            have = pos_counts.get(pos, 0)
+            starter_need = _eff_starter_needs.get(pos, 0)
+            depth_cap = _eff_depth_caps.get(pos, 99)
 
-        if strat == DraftStrategy.HERO_RB:
-            rb_count = owned_positions.count("RB")
-            wr_count = owned_positions.count("WR")
-            if current_round == 1 and rb_count == 0:
-                pick = best_at("RB")
-                if pick:
-                    return pick["id"]
-            if current_round in (2, 3, 4) and wr_count < (current_round - 1):
-                pick = best_at("WR")
-                if pick:
-                    return pick["id"]
-            return best_overall()["id"]
+            if have < starter_need:
+                # Still missing a starter — bonus scales up as draft progresses
+                urgency = 0.15 + 0.25 * round_frac
+                return urgency
+            if have >= depth_cap:
+                # Over-stocked — penalty
+                return -0.35
+            # Bench depth — small positive
+            return 0.02
 
-        # Default: BEST_AVAILABLE
-        return best_overall()["id"]
+        # ---- helper: late-round K/DEF logic ----
+        def _kdef_penalty(p: Dict[str, Any]) -> float:
+            if p["position"] not in _LATE_ROUND_POSITIONS:
+                return 0.0
+            if pos_counts.get(p["position"], 0) >= _eff_starter_needs.get(p["position"], 1):
+                return -0.8  # already have one — hard avoid
+            if round_frac < _LATE_ROUND_THRESHOLD_FRAC:
+                return -0.6  # too early for K/DEF
+            # Late round, still need starter — ramp up urgency toward final rounds
+            late_progress = (round_frac - _LATE_ROUND_THRESHOLD_FRAC) / (1 - _LATE_ROUND_THRESHOLD_FRAC + 0.01)
+            return 0.1 + 0.8 * late_progress
+
+        # ---- helper: strategy bias ----
+        def _strategy_score(p: Dict[str, Any]) -> float:
+            pos = p["position"]
+            strat = strategy
+
+            if strat == DraftStrategy.POSITION_BY_ROUND:
+                target = (position_by_round.get(current_round)
+                          or position_by_round.get(str(current_round)))
+                if target and pos == target:
+                    return 0.6
+                return 0.0
+
+            if strat == DraftStrategy.QB_EARLY:
+                if current_round <= 2 and pos == "QB" and pos_counts.get("QB", 0) < 1:
+                    return 0.55
+                return 0.0
+
+            if strat == DraftStrategy.TE_EARLY:
+                if current_round <= 2 and pos == "TE" and pos_counts.get("TE", 0) < 1:
+                    return 0.6
+                return 0.0
+
+            if strat == DraftStrategy.RB_HEAVY:
+                if current_round <= 4 and pos == "RB" and pos_counts.get("RB", 0) < 4:
+                    return 0.5
+                return 0.0
+
+            if strat == DraftStrategy.WR_HEAVY:
+                if current_round <= 4 and pos == "WR" and pos_counts.get("WR", 0) < 4:
+                    return 0.5
+                return 0.0
+
+            if strat == DraftStrategy.HERO_RB:
+                rb_cnt = pos_counts.get("RB", 0)
+                wr_cnt = pos_counts.get("WR", 0)
+                if current_round == 1 and pos == "RB" and rb_cnt == 0:
+                    return 0.55
+                if current_round in (2, 3, 4) and pos == "WR" and wr_cnt < (current_round - 1):
+                    return 0.5
+                return 0.0
+
+            # BEST_AVAILABLE — no extra bias
+            return 0.0
+
+        # ---- composite score ----
+        # Weights: ADP is the primary signal; projections are a meaningful
+        # secondary factor; roster needs and strategy provide targeted boosts.
+        W_ADP = 1.0        # Primary: follow consensus ADP
+        W_PROJ = 0.3       # Secondary: reward higher projected points
+        W_NEED = 0.5       # Roster construction
+        W_STRAT = 0.6      # Strategy emphasis
+        W_KDEF = 1.0       # K/DEF timing gate
+
+        scored: List[tuple] = []
+        for p in available:
+            adp = _adp_score(p) * W_ADP
+            proj = _proj_score(p) * W_PROJ
+            need = _need_score(p) * W_NEED * prof.roster_balance
+            strat_bonus = _strategy_score(p) * W_STRAT * (0.5 + 0.5 * prof.aggressiveness)
+            kdef = _kdef_penalty(p) * W_KDEF
+            noise = random.gauss(0, prof.variance * 0.12) if prof.variance > 0 else 0.0
+
+            total = adp + proj + need + strat_bonus + kdef + noise
+            scored.append((total, p))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return scored[0][1]["id"]
 
     @staticmethod
     def _count_positions(players: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -724,12 +921,21 @@ class MockDraftEngine:
         slot_str = str(current_slot)
         strat = state["strategies"].get(slot_str, DraftStrategy.BEST_AVAILABLE)
         current_round = self._current_round(state)
+        overall_pick = state["current_pick_index"] + 1
+        profile = AIProfile.from_dict(state.get("ai_profiles", {}).get(slot_str, {}))
+        s_needs = _derive_starter_needs(state.get("lineup_slots") or DEFAULT_LINEUP_SLOTS)
+        d_caps = _derive_depth_caps(s_needs)
         player_id = self._ai_choose_player(
             state["available_players"],
             state["rosters"][slot_str],
             strat,
             current_round,
             state.get("position_by_round", {}),
+            num_rounds=state["num_rounds"],
+            profile=profile,
+            overall_pick=overall_pick,
+            starter_needs=s_needs,
+            depth_caps=d_caps,
         )
         if player_id:
             self._apply_pick(state, player_id)
@@ -793,7 +999,9 @@ class MockDraftEngine:
         # Positional balance score (30%)
         pos_counts = self._count_positions(user_roster)
         balance_score = 0
-        required = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DEF": 1}
+        # Use the draft's configured lineup slots for grading (fall back to defaults)
+        _grade_lineup = state.get("lineup_slots") or DEFAULT_LINEUP_SLOTS
+        required = {pos: _grade_lineup.get(pos, 0) for pos in DRAFT_POSITIONS if _grade_lineup.get(pos, 0) > 0}
         for pos, need in required.items():
             have = pos_counts.get(pos, 0)
             if have >= need:
@@ -834,7 +1042,7 @@ class MockDraftEngine:
         weaknesses = []
         for pos in DRAFT_POSITIONS:
             cnt = pos_counts.get(pos, 0)
-            req = required.get(pos, 0)
+            req = required.get(pos, 0)  # required already derived from lineup_slots above
             if cnt >= req + 2:
                 strengths.append(f"Deep at {pos} ({cnt} players)")
             elif cnt >= req:
@@ -938,6 +1146,7 @@ class MockDraftEngine:
             "num_rounds": state["num_rounds"],
             "user_pick_position": state["user_pick_position"],
             "strategies": state["strategies"],
+            "ai_profiles": state.get("ai_profiles", {}),
             "current_pick_index": idx,
             "current_round": current_round,
             "current_slot": current_slot,
@@ -947,6 +1156,7 @@ class MockDraftEngine:
             "picks_log": state["picks_log"],
             "status": state["status"],
             "position_by_round": state.get("position_by_round", {}),
+            "lineup_slots": state.get("lineup_slots", dict(DEFAULT_LINEUP_SLOTS)),
         }
 
 

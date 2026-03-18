@@ -49,6 +49,7 @@ from pigskin_mastermind.api.routes.odds import router as odds_router
 from pigskin_mastermind.api.routes.projections import router as projections_router
 from pigskin_mastermind.api.routes.projection_tuner import router as projection_tuner_router
 from pigskin_mastermind.api.routes.monte_carlo import router as monte_carlo_router
+from pigskin_mastermind.api.routes.adp import router as adp_router
 
 app.include_router(teams_router)
 app.include_router(leagues_router)
@@ -64,6 +65,7 @@ app.include_router(odds_router)
 app.include_router(projections_router)
 app.include_router(projection_tuner_router)
 app.include_router(monte_carlo_router)
+app.include_router(adp_router)
 
 
 @app.get("/health")
