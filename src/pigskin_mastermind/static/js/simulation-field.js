@@ -21,14 +21,38 @@ const SimField = (function () {
     /* ── field geometry constants ────────────────────────────────────── */
     const VB_W = 400;
     const VB_H = 300;
-    const FIELD_DEPTH_YARDS = 40;
+    const MIN_FIELD_DEPTH_YARDS = 40;
     const BEHIND_LOS_YARDS = 8;
-    const TOTAL_DEPTH_YARDS = FIELD_DEPTH_YARDS + BEHIND_LOS_YARDS;
+    let fieldDepthYards = MIN_FIELD_DEPTH_YARDS;
+    let totalDepthYards = fieldDepthYards + BEHIND_LOS_YARDS;
     const FIELD_TOP_Y = 20;
     const FIELD_BOT_Y = 280;
-    const LOS_Y = FIELD_BOT_Y - (BEHIND_LOS_YARDS / TOTAL_DEPTH_YARDS) * (FIELD_BOT_Y - FIELD_TOP_Y);
     const FIELD_LEFT_X = 30;
     const FIELD_RIGHT_X = 370;
+
+    function getLosY() {
+        return FIELD_BOT_Y - (BEHIND_LOS_YARDS / totalDepthYards) * (FIELD_BOT_Y - FIELD_TOP_Y);
+    }
+
+    /** Scan events and return the field depth (yards beyond LOS) needed. */
+    function computeNeededDepth(events) {
+        let maxBeyond = MIN_FIELD_DEPTH_YARDS;
+        events.forEach(function(evt) {
+            if (!evt.route_path || !evt.route_path.segments) return;
+            var losX = evt.start_x;
+            evt.route_path.segments.forEach(function(seg) {
+                var beyond = seg.depth - losX;
+                if (beyond > maxBeyond) maxBeyond = beyond;
+            });
+        });
+        /* Round up to next 5-yard increment with 5-yard pad */
+        return Math.ceil((maxBeyond + 5) / 5) * 5;
+    }
+
+    function updateFieldDepth(depth) {
+        fieldDepthYards = depth;
+        totalDepthYards = fieldDepthYards + BEHIND_LOS_YARDS;
+    }
 
     /* ── state ──────────────────────────────────────────────────────── */
     let simEvents = [];
@@ -60,7 +84,7 @@ const SimField = (function () {
 
     function depthToY(depthPct, losX) {
         const yardsBeyond = depthPct - losX;
-        const frac = (yardsBeyond + BEHIND_LOS_YARDS) / TOTAL_DEPTH_YARDS;
+        const frac = (yardsBeyond + BEHIND_LOS_YARDS) / totalDepthYards;
         return FIELD_BOT_Y - frac * (FIELD_BOT_Y - FIELD_TOP_Y);
     }
 
@@ -78,7 +102,7 @@ const SimField = (function () {
 
         const losYard = losFieldX;
         const startYard = Math.floor((losYard - BEHIND_LOS_YARDS - 5) / 5) * 5;
-        const endYard = losYard + FIELD_DEPTH_YARDS + 5;
+        const endYard = losYard + fieldDepthYards + 5;
         for (let yd = startYard; yd <= endYard; yd += 5) {
             const y = depthToY(yd, losFieldX);
             if (y < 0 || y > VB_H) continue;
@@ -116,7 +140,7 @@ const SimField = (function () {
     function drawLOS(losFieldX) {
         const g = _q('svg-los-group');
         g.innerHTML = '';
-        const y = LOS_Y;
+        const y = getLosY();
         g.appendChild(svgEl('line', {
             x1: FIELD_LEFT_X - 8, y1: y, x2: FIELD_RIGHT_X + 8, y2: y,
             stroke: '#3b82f6', 'stroke-width': 1.5, opacity: 0.9,
@@ -288,28 +312,38 @@ const SimField = (function () {
             /* QB at throw/drop point */
             const qbSeg = dropSeg || segs[0];
             if (qbSeg) {
+                const _qx = lateralToX(qbSeg.lateral);
+                const _qy = depthToY(qbSeg.depth, losX);
                 if (qbUrl) {
                     drawStaticHeadshot(qbSeg, losX, qbUrl, qbColor);
+                    if (qbName) drawNameBadge(_qx, _qy + 12, qbName, qbColor);
                 } else if (qbName) {
-                    const _qx = lateralToX(qbSeg.lateral);
-                    const _qy = depthToY(qbSeg.depth, losX);
                     drawNameBadge(_qx, _qy - 14, qbName, qbColor);
                 }
             }
 
             /* Receiver travels to / sits at route endpoint */
+            const _rcvLastSeg = segs[segs.length - 1];
+            const _rcvEx = lateralToX(_rcvLastSeg.lateral);
+            const _rcvEy = depthToY(_rcvLastSeg.depth, losX);
             if (rcvUrl) {
                 drawHeadshotMarker(segs, losX, animate, rcvUrl, rcvColor);
+                if (rcvName) drawNameBadge(_rcvEx, _rcvEy + 12, rcvName, rcvColor);
             } else if (rcvName) {
-                const _ls = segs[segs.length - 1];
-                const _ex = lateralToX(_ls.lateral);
-                const _ey = depthToY(_ls.depth, losX);
-                drawNameBadge(_ex, _ey - 14, rcvName, rcvColor);
+                drawNameBadge(_rcvEx, _rcvEy - 14, rcvName, rcvColor);
             } else {
                 drawHeadshotMarker(segs, losX, animate, headshotUrl, playerColor);
             }
         } else if (headshotUrl && opacity >= 0.8) {
             drawHeadshotMarker(segs, losX, animate, headshotUrl, playerColor);
+            /* Also show name badge below the headshot */
+            const _primaryName = evt.player_name || evt.rusher_name || evt.passer_name || evt.receiver_name || '';
+            if (_primaryName) {
+                const _ls = segs[segs.length - 1];
+                const _ex = lateralToX(_ls.lateral);
+                const _ey = depthToY(_ls.depth, losX);
+                drawNameBadge(_ex, _ey + 12, _primaryName, playerColor);
+            }
         } else {
             /* Try name badge before falling back to bare position dot */
             const _primaryName = evt.player_name || evt.rusher_name || evt.passer_name || evt.receiver_name || '';
@@ -524,6 +558,7 @@ const SimField = (function () {
     function drawAllRoutes() {
         if (!simEvents.length) return;
         const refLos = simEvents[0].start_x;
+        updateFieldDepth(computeNeededDepth(simEvents));
         clearRoutes();
         buildFieldBackground(refLos);
         drawLOS(refLos);
@@ -661,6 +696,7 @@ const SimField = (function () {
         if (allRoutesMode) {
             drawAllRoutes();
         } else {
+            updateFieldDepth(computeNeededDepth([e]));
             clearRoutes();
             buildFieldBackground(e.start_x);
             drawLOS(e.start_x);

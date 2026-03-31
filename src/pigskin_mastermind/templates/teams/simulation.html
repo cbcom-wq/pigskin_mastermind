@@ -211,10 +211,13 @@
                 <div id="roster-sidebar" class="space-y-1.5 max-h-96 overflow-y-auto">
                     {% for p in roster if p.is_active %}
                     <div id="roster-player-{{ p.id }}" class="roster-player flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-transparent text-sm">
-                        <span class="inline-flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold text-white"
+                        <span class="inline-flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold text-white flex-shrink-0"
                               style="background-color: {{ {'QB':'#ef4444','RB':'#22c55e','WR':'#3b82f6','TE':'#f59e0b','K':'#8b5cf6','DEF':'#64748b','DST':'#64748b'}.get(p.position, '#94a3b8') }}">
                             {{ p.position[:2] }}
                         </span>
+                        {% if p.headshot_url %}
+                        <img src="{{ p.headshot_url }}" alt="" class="w-7 h-7 rounded-full object-cover bg-slate-200 flex-shrink-0" onerror="this.style.display='none'">
+                        {% endif %}
                         <div class="min-w-0 flex-1">
                             <p class="font-medium text-slate-700 truncate text-xs">{{ p.name }}</p>
                             <p class="text-[10px] text-slate-400">{{ p.nfl_team }}</p>

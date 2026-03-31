@@ -57,6 +57,11 @@
             <input type="number" id="user-pick-pos" min="1" max="20" value="1"
                    oninput="onSettingsChange()"
                    class="w-full bg-slate-800/80 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-pigskin-500 focus:border-transparent">
+            <label class="mt-2 flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer select-none">
+              <input type="checkbox" id="random-user-slot" onchange="onSettingsChange()"
+                     class="text-pigskin-500 bg-slate-700 border-slate-600 rounded">
+              Randomize my slot at draft start
+            </label>
           </div>
         </div>
 
@@ -85,10 +90,19 @@
 
           </div>
 
-          <div id="espn-year-row" class="hidden flex items-center gap-3 pl-6">
+          <div id="espn-year-row" class="hidden flex items-center gap-3 pl-6 flex-wrap">
             <label class="text-xs font-semibold text-slate-500 w-20 flex-shrink-0">Season year</label>
             <input type="number" id="espn-adp-year" min="2019" max="2030" value="2025"
                    class="w-28 bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-pigskin-500">
+            <span id="ffc-scoring-format-group" class="hidden flex items-center gap-2">
+              <label class="text-xs font-semibold text-slate-500 flex-shrink-0 ml-1">Scoring</label>
+              <select id="ffc-scoring-format" onchange="loadAdpData()"
+                      class="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-pigskin-500">
+                <option value="half-ppr">Half PPR</option>
+                <option value="ppr">PPR (Full)</option>
+                <option value="standard">Standard</option>
+              </select>
+            </span>
           </div>
         </div>
 
@@ -310,11 +324,24 @@
   function onSettingsChange() {
     const teams = parseInt(document.getElementById('num-teams').value) || 10;
     const rounds = parseInt(document.getElementById('num-rounds').value) || 15;
-    const slot = parseInt(document.getElementById('user-pick-pos').value) || 1;
+    const randomUserSlot = document.getElementById('random-user-slot').checked;
+    const slotInput = document.getElementById('user-pick-pos');
+    slotInput.max = String(teams);
+    let slot;
+    if (randomUserSlot) {
+      slot = Math.floor(Math.random() * teams) + 1;
+      slotInput.value = String(slot);
+    } else {
+      slot = Math.max(1, Math.min(teams, parseInt(slotInput.value) || 1));
+      slotInput.value = String(slot);
+    }
+    slotInput.disabled = randomUserSlot;
     document.getElementById('preview-picks').textContent = teams * rounds;
     document.getElementById('preview-user-picks').textContent = rounds;
     document.getElementById('preview-snake-note').textContent =
-      `Snake draft · Slot ${slot} of ${teams}`;
+      randomUserSlot
+        ? `Snake draft · Random slot (1-${teams})`
+        : `Snake draft · Slot ${slot} of ${teams}`;
     setLobbyStatus('Draft configured — ready to start', 'bg-yellow-400');
     renderSnakeDiagram(teams, rounds, slot);
     if (adpPlayers.length) filterAdpPlayers();
@@ -357,12 +384,16 @@
     if (source === 'ffc_adp') {
       yearRow.classList.remove('hidden');
       loadBtn.classList.remove('hidden');
+      const sfGroup = document.getElementById('ffc-scoring-format-group');
+      if (sfGroup) sfGroup.classList.remove('hidden');
       currentAdpSource = 'ffc';
       loadAdpData();
       setLobbyStatus('Loading FFC ADP rankings…', 'bg-blue-400');
     } else if (source === 'espn_adp') {
       yearRow.classList.remove('hidden');
       loadBtn.classList.remove('hidden');
+      const sfGroup = document.getElementById('ffc-scoring-format-group');
+      if (sfGroup) sfGroup.classList.add('hidden');
       currentAdpSource = 'espn';
       loadAdpData();
       setLobbyStatus('Loading ESPN ADP rankings…', 'bg-blue-400');
@@ -390,10 +421,12 @@
     const year = parseInt(document.getElementById('espn-adp-year').value) || 2025;
     const source = currentAdpSource || 'ffc';
     const sourceLabel = source === 'ffc' ? 'FFC' : 'ESPN';
+    const scoringEl = document.getElementById('ffc-scoring-format');
+    const scoring = (source === 'ffc' && scoringEl) ? scoringEl.value : 'half-ppr';
     showAdpState('loading');
     setLobbyStatus(`Fetching ${sourceLabel} ADP data…`, 'bg-blue-400');
     try {
-      const resp = await fetch(`/draft/adp?year=${year}&limit=300&source=${source}`);
+      const resp = await fetch(`/draft/adp?year=${year}&limit=300&source=${source}&scoring=${scoring}`);
       if (!resp.ok) {
         const err = await resp.json();
         document.getElementById('adp-error-msg').textContent = err.detail || `${sourceLabel} ADP unavailable.`;
@@ -403,8 +436,9 @@
       }
       const data = await resp.json();
       adpPlayers = data.players;
-      document.getElementById('rankings-subtitle').textContent = `${sourceLabel} ${data.year || year} ADP · ${adpPlayers.length} players`;
-      document.getElementById('adp-footer').textContent = `${adpPlayers.length} players ranked by ${sourceLabel} ADP for ${data.year || year}`;
+      const scoringLabel = data.scoring ? ` · ${data.scoring.toUpperCase().replace('-PPR',' PPR')}` : '';
+      document.getElementById('rankings-subtitle').textContent = `${sourceLabel} ${data.year || year} ADP${scoringLabel} · ${adpPlayers.length} players`;
+      document.getElementById('adp-footer').textContent = `${adpPlayers.length} players ranked by ${sourceLabel} ADP for ${data.year || year}${scoringLabel}`;
       renderAdpList(adpPlayers);
       showAdpState('list');
       setLobbyStatus(`${sourceLabel} ADP loaded — ${adpPlayers.length} players`, 'bg-green-400');
@@ -471,7 +505,8 @@
 
   function buildAIRows() {
     const numTeams = parseInt(document.getElementById('num-teams').value) || 10;
-    const userSlot = parseInt(document.getElementById('user-pick-pos').value) || 1;
+    const randomUserSlot = document.getElementById('random-user-slot').checked;
+    const userSlot = randomUserSlot ? null : (parseInt(document.getElementById('user-pick-pos').value) || 1);
     const container = document.getElementById('ai-strategy-rows');
     container.innerHTML = '';
     const optHtml = STRATEGIES.map(s => `<option value="${s.value}">${s.label}</option>`).join('');
@@ -500,7 +535,8 @@
 
   async function randomizeAI() {
     const numTeams = parseInt(document.getElementById('num-teams').value) || 10;
-    const userSlot = parseInt(document.getElementById('user-pick-pos').value) || 1;
+    const randomUserSlot = document.getElementById('random-user-slot').checked;
+    const userSlot = randomUserSlot ? null : (parseInt(document.getElementById('user-pick-pos').value) || 1);
     const aggr = parseInt(document.getElementById('ai-aggressiveness').value) / 100;
     try {
       const resp = await fetch('/draft/randomize-strategies', {
@@ -573,9 +609,10 @@
     if (LEAGUE_PRESETS.length > 0 && leagueSel.options.length <= 1) {
       LEAGUE_PRESETS.forEach(lp => {
         const opt = document.createElement('option');
-        opt.value = JSON.stringify({id: lp.id, slots: lp.roster_slots, has_custom: lp.has_custom_slots});
+        opt.value = JSON.stringify({id: lp.id, slots: lp.roster_slots, has_custom: lp.has_custom_slots, scoring_format: lp.scoring_format});
+        const formatLabel = lp.scoring_format ? lp.scoring_format.toUpperCase().replace('-PPR', ' PPR') : '';
         const suffix = lp.has_custom_slots ? '' : ' \u2014 default slots';
-        opt.textContent = `${lp.name} (${lp.year})${suffix}`;
+        opt.textContent = `${lp.name} (${lp.year}) · ${formatLabel}${suffix}`;
         leagueSel.appendChild(opt);
       });
       leagueRow.classList.remove('hidden');
@@ -617,11 +654,19 @@
   function applyLeaguePreset(jsonVal) {
     if (!jsonVal) return;
     try {
-      const {slots} = JSON.parse(jsonVal);
+      const {slots, scoring_format} = JSON.parse(jsonVal);
       applyPreset(slots);
       // Clear preset button highlights since this came from a league
       const btns = document.getElementById('lineup-preset-btns').querySelectorAll('button');
       btns.forEach(b => b.classList.remove('border-pigskin-500','text-pigskin-300'));
+      // Apply scoring format to the FFC selector and reload ADP if FFC is active
+      if (scoring_format) {
+        const scoringEl = document.getElementById('ffc-scoring-format');
+        if (scoringEl) {
+          scoringEl.value = scoring_format;
+          if (currentAdpSource === 'ffc') loadAdpData();
+        }
+      }
     } catch(e) {}
   }
 
@@ -642,11 +687,14 @@
   async function startDraft() {
     const numTeams   = parseInt(document.getElementById('num-teams').value);
     const numRounds  = parseInt(document.getElementById('num-rounds').value);
+    const randomUserSlot = document.getElementById('random-user-slot').checked;
     const userSlot   = parseInt(document.getElementById('user-pick-pos').value);
     const poolSource = document.querySelector('input[name="pool-source"]:checked').value;
     const useEspnAdp = poolSource === 'espn_adp';
     const useFfcAdp  = poolSource === 'ffc_adp';
     const espnYear   = parseInt(document.getElementById('espn-adp-year').value) || 2025;
+    const ffcScoringEl = document.getElementById('ffc-scoring-format');
+    const ffcScoring = ffcScoringEl ? ffcScoringEl.value : 'half-ppr';
 
     const aiStrategies = {};
     for (let slot = 1; slot <= numTeams; slot++) {
@@ -684,13 +732,15 @@
         body: JSON.stringify({
           num_teams: numTeams,
           num_rounds: numRounds,
-          user_pick_position: userSlot,
+          user_pick_position: randomUserSlot ? null : userSlot,
+          randomize_user_pick_position: randomUserSlot,
           ai_strategies: aiStrategies,
           ai_profiles: Object.keys(aiProfiles).length ? aiProfiles : null,
           ai_aggressiveness: aggrSlider,
           use_espn_adp: useEspnAdp,
           use_ffc_adp: useFfcAdp,
           espn_adp_year: espnYear,
+          ffc_scoring: ffcScoring,
           position_by_round: Object.keys(positionByRound).length ? positionByRound : null,
           lineup_slots: getCurrentLineupSlots(),
         }),
@@ -715,6 +765,17 @@
       setLobbyStatus('Network error', 'bg-red-400');
     }
   }
+
+  // Reset button state when page is restored from bfcache (e.g. user hits Back)
+  window.addEventListener('pageshow', function(event) {
+    if (event.persisted) {
+      const btn = document.getElementById('start-btn');
+      btn.disabled = false;
+      btn.textContent = '🏈 Enter the Draft';
+      btn.style.animation = '';
+      setLobbyStatus('Draft configured — ready to start', 'bg-yellow-400');
+    }
+  });
 
   // Init
   onSettingsChange();

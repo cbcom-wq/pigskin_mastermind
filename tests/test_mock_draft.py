@@ -109,6 +109,19 @@ def test_create_draft_invalid_user_position():
         engine.create_draft(num_teams=4, num_rounds=3, user_pick_position=5, player_pool=_small_pool())
 
 
+def test_create_draft_random_user_position_when_none():
+    engine = _make_engine()
+    with patch("pigskin_mastermind.services.mock_draft.random.randint", return_value=3):
+        state = engine.create_draft(
+            num_teams=4,
+            num_rounds=3,
+            user_pick_position=None,
+            player_pool=_small_pool(),
+        )
+    assert state["user_pick_position"] == 3
+    assert state["strategies"]["3"] == "user"
+
+
 def test_create_draft_assigns_user_strategy():
     engine = _make_engine()
     state = engine.create_draft(num_teams=4, num_rounds=2, user_pick_position=2, player_pool=_small_pool())
@@ -545,6 +558,45 @@ def test_variance_creates_different_picks():
     assert len(picks) >= 2, f"Expected varied picks but got {picks}"
 
 
+def test_ai_prefers_fallen_player_over_on_schedule():
+    """AI should pick a player who fell well past their ADP over one drafted
+    right at their ADP — the steal bonus must outweigh the baseline."""
+    # Construct a pool where one player has fallen far past ADP and another is
+    # right at their ADP for the current pick.
+    pool = [
+        {"id": "steal", "name": "Fallen Star", "position": "WR",
+         "nfl_team": "KC", "projected_points": 20.0, "adp_rank": 5.0},
+        {"id": "ontime", "name": "On Schedule", "position": "WR",
+         "nfl_team": "BUF", "projected_points": 12.0, "adp_rank": 30.0},
+    ]
+    profile = AIProfile(aggressiveness=0.0, variance=0.0, roster_balance=0.0)
+    pid = MockDraftEngine._ai_choose_player(
+        pool, [], DraftStrategy.BEST_AVAILABLE, 5, {},
+        num_rounds=15, profile=profile, overall_pick=30,
+    )
+    assert pid == "steal", "AI should prefer a player who fell 25 picks past ADP"
+
+
+def test_ai_steal_bonus_increases_with_fall():
+    """The ADP score for a fallen player should be *above* 1.0 (baseline)."""
+    # Access the private _adp_score helper indirectly by checking pick order:
+    # two players at the same position/projection — the one with a bigger fall
+    # should be chosen.
+    pool = [
+        {"id": "big_fall", "name": "Big Fall", "position": "RB",
+         "nfl_team": "KC", "projected_points": 15.0, "adp_rank": 10.0},
+        {"id": "small_fall", "name": "Small Fall", "position": "RB",
+         "nfl_team": "BUF", "projected_points": 15.0, "adp_rank": 25.0},
+    ]
+    profile = AIProfile(aggressiveness=0.0, variance=0.0, roster_balance=0.0)
+    pid = MockDraftEngine._ai_choose_player(
+        pool, [], DraftStrategy.BEST_AVAILABLE, 5, {},
+        num_rounds=15, profile=profile, overall_pick=30,
+    )
+    # big_fall fell 20 picks; small_fall fell 5 picks — bigger steal wins
+    assert pid == "big_fall"
+
+
 def test_create_draft_stores_ai_profiles():
     engine = _make_engine()
     profiles = {
@@ -749,6 +801,24 @@ def test_start_draft_api(client):
     assert data["num_teams"] == 4
     assert data["status"] in ("in_progress", "complete")
     assert "available_players" in data
+
+
+def test_start_draft_api_randomized_user_slot(client):
+    with patch("pigskin_mastermind.api.routes.draft.random.randint", return_value=4):
+        resp = client.post(
+            "/draft/start",
+            json={
+                "num_teams": 6,
+                "num_rounds": 3,
+                "randomize_user_pick_position": True,
+                "user_pick_position": None,
+                "player_pool": _API_TEST_POOL,
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["user_pick_position"] == 4
+    assert data["strategies"]["4"] == "user"
 
 
 def test_start_draft_invalid_params(client):
@@ -1124,7 +1194,7 @@ def test_generate_commentary_steal():
     pick = {
         "round": 5, "slot": 1, "pick_number": 50,
         "player": {"id": "p1", "name": "TestPlayer", "position": "RB",
-                    "nfl_team": "KC", "projected_points": 15.0, "adp_rank": 80},
+                    "nfl_team": "KC", "projected_points": 15.0, "adp_rank": 20},
     }
     items = MockDraftEngine.generate_commentary([], [], pick)
     assert any(i["type"] == "steal" for i in items)
@@ -1134,7 +1204,7 @@ def test_generate_commentary_reach():
     pick = {
         "round": 1, "slot": 1, "pick_number": 50,
         "player": {"id": "p1", "name": "Reacher", "position": "QB",
-                    "nfl_team": "KC", "projected_points": 10.0, "adp_rank": 20},
+                    "nfl_team": "KC", "projected_points": 10.0, "adp_rank": 80},
     }
     items = MockDraftEngine.generate_commentary([], [], pick)
     assert any(i["type"] == "reach" for i in items)

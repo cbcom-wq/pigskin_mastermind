@@ -6,6 +6,7 @@ const DraftBoard = (() => {
   // --- State ---
   let state = null;
   let userSlot = null;
+  let viewedSlot = null;
   let clockInterval = null;
   let clockSeconds = 90;
   let highlightedIdx = -1;
@@ -28,6 +29,7 @@ const DraftBoard = (() => {
   function init(initialState) {
     state = initialState;
     userSlot = String(state.user_pick_position);
+    viewedSlot = userSlot;
     loadQueue();
     render(state);
     setupKeyboardShortcuts();
@@ -40,6 +42,7 @@ const DraftBoard = (() => {
     renderGrid();
     renderTicker();
     renderPlayerList();
+    renderTeamSelector();
     renderRosterSlots();
     renderPicksLog();
     renderQueuePanel();
@@ -138,7 +141,16 @@ const DraftBoard = (() => {
     clockInterval = setInterval(() => {
       clockSeconds = Math.max(0, clockSeconds - 1);
       const el = document.getElementById('clock-display');
-      if (el) el.textContent = formatTime(clockSeconds);
+      if (el) {
+        el.textContent = formatTime(clockSeconds);
+        // Flash red in final 10 seconds
+        if (clockSeconds <= 10) el.classList.add('text-red-400');
+        else el.classList.remove('text-red-400');
+      }
+      if (clockSeconds === 0) {
+        stopClock();
+        autoPickOnTimeout();
+      }
     }, 1000);
   }
   function stopClock() {
@@ -146,6 +158,34 @@ const DraftBoard = (() => {
   }
   function formatTime(s) {
     return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+  }
+
+  // ============================================================
+  // Auto-pick on clock expiry
+  // ============================================================
+  function autoPickOnTimeout() {
+    // Only trigger if it is still the user's turn
+    if (!state || state.status !== 'in_progress') return;
+    if (String(state.current_slot) !== userSlot) return;
+
+    const availableIds = new Set(state.available_players.map(p => p.id));
+
+    // 1. Try to pick the first queued player still available
+    const queuePick = queue.find(id => availableIds.has(id));
+    if (queuePick) {
+      if (typeof showToast === 'function') showToast('⏱️ Time\'s up! Auto-picking from your queue…', 'info');
+      addCommentary([{ type: 'alert', text: '⏱️ Time expired — auto-picking from queue.' }]);
+      makePick(queuePick);
+      return;
+    }
+
+    // 2. Fall back to best available player (first in the sorted list)
+    if (state.available_players.length > 0) {
+      const best = state.available_players[0];
+      if (typeof showToast === 'function') showToast(`⏱️ Time's up! Auto-picking ${best.name}…`, 'info');
+      addCommentary([{ type: 'alert', text: `⏱️ Time expired — auto-picking best available: ${best.name} (${best.position}).` }]);
+      makePick(best.id);
+    }
   }
 
   // ============================================================
@@ -252,7 +292,7 @@ const DraftBoard = (() => {
 
     container.innerHTML = players.slice(0, 200).map((p, i) => {
       const adpLabel = p.adp_rank != null ? p.adp_rank.toFixed(1) : '';
-      const valueDelta = p.adp_rank != null ? p.adp_rank - currentPick : null;
+      const valueDelta = p.adp_rank != null ? currentPick - p.adp_rank : null;
       let valueTag = '';
       if (valueDelta !== null) {
         if (valueDelta >= 10) valueTag = '<span class="text-[9px] font-bold value-steal ml-1">🔥 STEAL</span>';
@@ -313,7 +353,7 @@ const DraftBoard = (() => {
     // Value assessment
     let valueClass = 'value-fair', valueLabel = '✅ Fair Value', valueBg = 'value-fair-bg';
     if (player.adp_rank != null) {
-      const delta = player.adp_rank - currentPick;
+      const delta = currentPick - player.adp_rank;
       if (delta >= 10) { valueClass = 'value-steal'; valueLabel = '🔥 Great Steal'; valueBg = 'value-steal-bg'; }
       else if (delta >= 3) { valueClass = 'value-steal'; valueLabel = '✅ Good Value'; valueBg = 'value-steal-bg'; }
       else if (delta <= -15) { valueClass = 'value-reach'; valueLabel = '⚠️ Big Reach'; valueBg = 'value-reach-bg'; }
@@ -346,7 +386,7 @@ const DraftBoard = (() => {
 
         <div class="rounded-lg border p-3 ${valueBg}">
           <p class="text-sm font-bold ${valueClass}">${valueLabel}</p>
-          ${player.adp_rank != null ? `<p class="text-xs text-slate-400 mt-0.5">ADP: ${player.adp_rank.toFixed(1)} · Current Pick: ${currentPick} · Delta: ${(player.adp_rank - currentPick) > 0 ? '+' : ''}${(player.adp_rank - currentPick).toFixed(0)}</p>` : ''}
+          ${player.adp_rank != null ? `<p class="text-xs text-slate-400 mt-0.5">ADP: ${player.adp_rank.toFixed(1)} · Current Pick: ${currentPick} · Delta: ${(currentPick - player.adp_rank) > 0 ? '+' : ''}${(currentPick - player.adp_rank).toFixed(0)}</p>` : ''}
         </div>
 
         <div class="grid grid-cols-2 gap-3">
@@ -395,13 +435,41 @@ const DraftBoard = (() => {
   }
 
   // ============================================================
+  // Team Selector
+  // ============================================================
+  function renderTeamSelector() {
+    const sel = document.getElementById('team-view-select');
+    if (!sel || !state) return;
+    const slots = Object.keys(state.rosters || {}).sort((a, b) => Number(a) - Number(b));
+    sel.innerHTML = slots.map(slot => {
+      const label = slot === userSlot ? `Slot ${slot} (You)` : `Slot ${slot}`;
+      const selected = slot === viewedSlot ? ' selected' : '';
+      return `<option value="${slot}"${selected}>${label}</option>`;
+    }).join('');
+  }
+
+  function switchTeamView(slot) {
+    viewedSlot = String(slot);
+    renderRosterSlots();
+    // Update the panel title
+    const title = document.getElementById('roster-panel-title');
+    if (title) {
+      if (viewedSlot === userSlot) {
+        title.innerHTML = `My Team <span class="text-slate-500 font-normal">(Slot ${userSlot})</span>`;
+      } else {
+        title.innerHTML = `Team <span class="text-slate-500 font-normal">(Slot ${viewedSlot})</span>`;
+      }
+    }
+  }
+
+  // ============================================================
   // Roster Slots (Visual Lineup Builder)
   // ============================================================
   function renderRosterSlots() {
     const container = document.getElementById('roster-slots');
     if (!container) return;
 
-    const myPlayers = state.rosters[userSlot] || [];
+    const myPlayers = state.rosters[viewedSlot] || [];
     const filled = assignToSlots(myPlayers);
     const bench = myPlayers.filter(p => !Object.values(filled).some(fp => fp && fp.id === p.id));
     const totalProj = myPlayers.reduce((s, p) => s + p.projected_points, 0);
@@ -411,11 +479,12 @@ const DraftBoard = (() => {
     const needsText = needs.length > 0
       ? needs.map(s => SLOT_POSITIONS[s] === 'FLEX' ? 'FLEX' : SLOT_POSITIONS[s]).join(', ')
       : 'Lineup complete!';
+    const needsLabel = viewedSlot === userSlot ? 'Need: ' : 'Open: ';
 
     let html = `<div class="flex items-center justify-between mb-3">
       <div>
         <p class="text-sm font-bold text-slate-200">${myPlayers.length} players</p>
-        <p class="text-[10px] text-slate-500">${needs.length > 0 ? 'Need: ' + needsText : '✓ ' + needsText}</p>
+        <p class="text-[10px] text-slate-500">${needs.length > 0 ? needsLabel + needsText : '✓ ' + needsText}</p>
       </div>
       <div class="text-right">
         <p class="text-lg font-black text-pigskin-400">${totalProj.toFixed(1)}</p>
@@ -608,7 +677,7 @@ const DraftBoard = (() => {
 
     // Value assessment
     if (p.adp_rank != null) {
-      const delta = p.adp_rank - currentPick;
+      const delta = currentPick - p.adp_rank;
       if (delta >= 15) items.push({ type: 'steal', text: `🔥 Steal! ${p.name} (ADP ${p.adp_rank.toFixed(0)}) falls ${delta.toFixed(0)} spots` });
       else if (delta <= -15) items.push({ type: 'reach', text: `⚠️ Reach — ${p.name} drafted ${Math.abs(delta).toFixed(0)} picks above ADP` });
     }
@@ -974,5 +1043,6 @@ const DraftBoard = (() => {
     playCountdown,
     addCommentary,
     advanceAiPicksStaggered,
+    switchTeamView,
   };
 })();

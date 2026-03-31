@@ -57,6 +57,8 @@ class PlayerGameSimulationService:
         if not player:
             raise ValueError(f"Player with id={player_db_id} not found")
 
+        player_headshot_url = getattr(player, "headshot_url", None) or ""
+
         pbp = self.nfl_data_service.get_play_by_play(
             player_db_id=player_db_id,
             year=year,
@@ -111,6 +113,9 @@ class PlayerGameSimulationService:
                     "passer_gsis_id": play.get("passer_player_id"),
                     "receiver_name": play.get("receiver_player_name"),
                     "receiver_gsis_id": play.get("receiver_player_id"),
+                    "player_headshot_url": player_headshot_url,
+                    "player_name": player.name,
+                    "player_color": self._position_color(player.position),
                     "badges": {
                         "touchdown": touchdown,
                         "first_down": first_down,
@@ -126,6 +131,7 @@ class PlayerGameSimulationService:
             "player_id": player_db_id,
             "player_name": player.name,
             "player_position": player.position,
+            "player_headshot_url": player_headshot_url,
             "year": year,
             "week": week,
             "total_events": len(events),
@@ -466,6 +472,24 @@ class PlayerGameSimulationService:
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    # ------------------------------------------------------------------
+    # Position → colour mapping (matches team simulation palette)
+    # ------------------------------------------------------------------
+
+    _POSITION_COLORS = {
+        "QB": "#ef4444",
+        "RB": "#22c55e",
+        "WR": "#3b82f6",
+        "TE": "#f59e0b",
+        "K": "#8b5cf6",
+        "DEF": "#64748b",
+        "DST": "#64748b",
+    }
+
+    @classmethod
+    def _position_color(cls, position: Optional[str]) -> str:
+        return cls._POSITION_COLORS.get(position or "", "#94a3b8")
 
     @staticmethod
     def _clamp(value: float, min_val: float, max_val: float) -> float:

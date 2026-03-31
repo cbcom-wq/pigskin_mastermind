@@ -324,7 +324,7 @@ class MockDraftEngine:
         self,
         num_teams: int = 10,
         num_rounds: int = 15,
-        user_pick_position: int = 1,
+        user_pick_position: Optional[int] = 1,
         ai_strategies: Optional[Dict[str, str]] = None,
         player_pool: Optional[List[Dict[str, Any]]] = None,
         position_by_round: Optional[Dict[int, str]] = None,
@@ -338,6 +338,7 @@ class MockDraftEngine:
             num_teams: Total number of teams in the draft (2–20).
             num_rounds: Number of draft rounds (1–20).
             user_pick_position: The pick slot (1-indexed) assigned to the human user.
+                                When ``None``, a random slot is assigned.
             ai_strategies: Mapping of pick-slot string → strategy name for AI teams.
                            Defaults to BEST_AVAILABLE for all AI teams.
             player_pool: Optional list of player dicts with keys
@@ -361,6 +362,8 @@ class MockDraftEngine:
             raise ValueError("num_teams must be between 2 and 20")
         if not (1 <= num_rounds <= 20):
             raise ValueError("num_rounds must be between 1 and 20")
+        if user_pick_position is None:
+            user_pick_position = random.randint(1, num_teams)
         if not (1 <= user_pick_position <= num_teams):
             raise ValueError("user_pick_position must be between 1 and num_teams")
 
@@ -722,7 +725,12 @@ class MockDraftEngine:
         def _adp_score(p: Dict[str, Any]) -> float:
             """Primary score based on how well player ADP aligns with pick.
 
-            Returns 0-1 where 1.0 = perfect value, declining for reaches.
+            Returns a float where 1.0 = player at their ADP (baseline).
+            Players who fell past their ADP receive a *bonus* above 1.0 that
+            rises with diminishing returns — a player available 20 picks past
+            ADP is a clear steal.  For very large falls (80+ picks) the bonus
+            gently tapers to avoid blindly chasing extreme outliers.
+            Reaches (drafting before ADP) receive a moderate penalty.
             Players with no ADP fall back to projected-points ordering.
             """
             adp = p.get("adp_rank")
@@ -731,23 +739,27 @@ class MockDraftEngine:
                 max_proj = max(q["projected_points"] for q in available) or 1.0
                 return p["projected_points"] / max_proj
 
-            # How far the player's ADP is from the current pick.
-            # Negative delta = player ADP is before our pick (reach).
-            # Positive delta = player ADP is after our pick (steal/value).
-            delta = adp - overall_pick
+            # How far the current pick is from the player's ADP.
+            # Positive delta = player fell past ADP (steal/value).
+            # Negative delta = drafting before ADP (reach).
+            delta = overall_pick - adp
 
             if delta >= 0:
-                # Player's ADP is at or after current pick — value pick.
-                # Diminish slightly as the gap grows (tier 30 players when
-                # we're at pick 1 shouldn't score as high as a pick-1 player).
-                value = 1.0 - (delta / total_picks) * 0.5
-                return max(value, 0.1)
+                # Steal / value — player fell past their ADP.
+                # Bonus rises quickly with diminishing returns (Michaelis-
+                # Menten curve), capped at ~0.4.  For extreme falls (80+
+                # picks) the bonus gently softens — the pool may have
+                # passed on the player for a reason.
+                steal_bonus = 0.4 * delta / (delta + 12.0)
+                if delta > 80:
+                    steal_bonus *= max(0.4, 1.0 - (delta - 80) / 200)
+                return max(1.0 + steal_bonus, 0.15)
             else:
-                # Reaching for a player drafted before their ADP.
-                # Mild reward for short reaches (still a good player),
-                # but penalise significant reaches.
+                # Reach — drafting a player before their ADP.
+                # Moderate penalty; strategy bonuses can still justify
+                # small-to-medium reaches.
                 reach = abs(delta)
-                return max(1.0 - (reach / total_picks) * 1.5, 0.05)
+                return max(1.0 - (reach / total_picks) * 0.5, 0.05)
 
         # ---- helper: projected-points tiebreaker ----
         max_proj = max(p["projected_points"] for p in available) or 1.0
@@ -845,7 +857,7 @@ class MockDraftEngine:
             need = _need_score(p) * W_NEED * prof.roster_balance
             strat_bonus = _strategy_score(p) * W_STRAT * (0.5 + 0.5 * prof.aggressiveness)
             kdef = _kdef_penalty(p) * W_KDEF
-            noise = random.gauss(0, prof.variance * 0.12) if prof.variance > 0 else 0.0
+            noise = random.gauss(0, prof.variance * 0.20) if prof.variance > 0 else 0.0
 
             total = adp + proj + need + strat_bonus + kdef + noise
             scored.append((total, p))
@@ -966,7 +978,7 @@ class MockDraftEngine:
             p = pick["player"]
             adp = p.get("adp_rank")
             pick_num = pick["pick_number"]
-            delta = (adp - pick_num) if adp is not None else 0
+            delta = (pick_num - adp) if adp is not None else 0
             total_value += delta
 
             if delta >= 10:
@@ -1107,7 +1119,7 @@ class MockDraftEngine:
 
         # Value assessment
         if adp is not None:
-            delta = adp - pick_num
+            delta = pick_num - adp
             if delta >= 15:
                 items.append({"type": "steal", "text": f"🔥 Steal! {p['name']} (ADP {adp:.0f}) falls {delta:.0f} spots past ADP"})
             elif delta >= 5:

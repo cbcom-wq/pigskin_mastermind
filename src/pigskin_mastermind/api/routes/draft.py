@@ -1,5 +1,7 @@
 """Mock draft routes: setup, interactive picking, and simulation."""
 
+import random
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -37,13 +39,15 @@ router = APIRouter(prefix="/draft", tags=["draft"])
 class StartDraftRequest(BaseModel):
     num_teams: int = Field(10, ge=2, le=20)
     num_rounds: int = Field(15, ge=1, le=20)
-    user_pick_position: int = Field(1, ge=1, le=20)
+    user_pick_position: Optional[int] = Field(1, ge=1, le=20)
+    randomize_user_pick_position: bool = False
     ai_strategies: Optional[Dict[str, str]] = None
     ai_profiles: Optional[Dict[str, Dict[str, float]]] = None
     ai_aggressiveness: float = Field(0.5, ge=0.0, le=1.0)
     use_espn_adp: bool = False
     use_ffc_adp: bool = False
     espn_adp_year: int = Field(2025, ge=2019, le=2030)
+    ffc_scoring: str = Field("half-ppr", description="FFC scoring format slug (standard, half-ppr, ppr)")
     position_by_round: Optional[Dict[str, str]] = None
     player_pool: Optional[List[Dict[str, Any]]] = None
     lineup_slots: Optional[Dict[str, int]] = None
@@ -51,7 +55,7 @@ class StartDraftRequest(BaseModel):
 
 class RandomizeRequest(BaseModel):
     num_teams: int = Field(10, ge=2, le=20)
-    user_pick_position: int = Field(1, ge=1, le=20)
+    user_pick_position: Optional[int] = Field(1, ge=1, le=20)
     overall_aggressiveness: float = Field(0.5, ge=0.0, le=1.0)
 
 
@@ -206,6 +210,24 @@ def _derive_roster_slots_from_imported_roster(
     return None
 
 
+def _derive_scoring_format(scoring_settings: Optional[Dict[str, Any]]) -> str:
+    """Derive an FFC-compatible scoring format slug from league scoring settings.
+
+    Maps the ``rec`` (reception points) value to the corresponding ADP format:
+    - 0  → ``standard``
+    - 0 < rec < 1 → ``half-ppr``
+    - ≥ 1 → ``ppr``
+    """
+    if not scoring_settings:
+        return "half-ppr"
+    rec = float(scoring_settings.get("rec", 0.5))
+    if rec >= 1.0:
+        return "ppr"
+    if rec > 0:
+        return "half-ppr"
+    return "standard"
+
+
 def _build_league_presets(db: Session) -> List[Dict[str, Any]]:
     """Build league preset payloads using saved slots or inferred local data."""
     leagues = db.query(DBLeague).order_by(DBLeague.created_at.desc()).all()
@@ -228,6 +250,7 @@ def _build_league_presets(db: Session) -> List[Dict[str, Any]]:
                 "year": league.year,
                 "roster_slots": resolved_slots,
                 "has_custom_slots": bool(league.roster_slots or inferred_slots),
+                "scoring_format": _derive_scoring_format(league.scoring_settings),
             }
         )
 
@@ -302,12 +325,16 @@ async def simulation_page(request: Request, db: Session = Depends(get_db)):
 @router.post("/start")
 async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
     """Create a new interactive mock draft and return its initial state."""
+    resolved_user_pick_position = req.user_pick_position
+    if req.randomize_user_pick_position or resolved_user_pick_position is None:
+        resolved_user_pick_position = random.randint(1, req.num_teams)
+
     player_pool: Optional[List[dict]] = None
     if req.use_ffc_adp:
         adp_svc = ADPService(db)
         player_pool = adp_svc.get_adp_for_draft_pool(year=req.espn_adp_year)
         if not player_pool:
-            import_result = adp_svc.import_from_ffc(year=req.espn_adp_year)
+            import_result = adp_svc.import_from_ffc(year=req.espn_adp_year, scoring=req.ffc_scoring)
             if import_result.get("error"):
                 raise HTTPException(
                     status_code=503,
@@ -350,7 +377,7 @@ async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
         # Generate per-slot profiles based on overall aggressiveness
         random_result = randomize_ai_profiles(
             num_teams=req.num_teams,
-            user_pick_position=req.user_pick_position,
+            user_pick_position=resolved_user_pick_position,
             overall_aggressiveness=req.ai_aggressiveness,
         )
         profiles = {
@@ -361,7 +388,7 @@ async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
         state = draft_engine.create_draft(
             num_teams=req.num_teams,
             num_rounds=req.num_rounds,
-            user_pick_position=req.user_pick_position,
+            user_pick_position=resolved_user_pick_position,
             ai_strategies=req.ai_strategies,
             player_pool=player_pool,
             position_by_round=pbr,
@@ -381,9 +408,13 @@ async def randomize_strategies(req: RandomizeRequest):
 
     Returns a dict mapping slot string → {strategy, profile}.
     """
+    user_pick_position = req.user_pick_position
+    if user_pick_position is None:
+        user_pick_position = random.randint(1, req.num_teams)
+
     return randomize_ai_profiles(
         num_teams=req.num_teams,
-        user_pick_position=req.user_pick_position,
+        user_pick_position=user_pick_position,
         overall_aggressiveness=req.overall_aggressiveness,
     )
 
@@ -393,6 +424,7 @@ async def get_draft_adp(
     year: int = 2025,
     limit: int = 300,
     source: str = "ffc",
+    scoring: str = "half-ppr",
     db: Session = Depends(get_db),
 ):
     """Return ADP-ordered player rankings for the draft page.
@@ -405,6 +437,8 @@ async def get_draft_adp(
         year: Fantasy football season year (default 2025).
         limit: Maximum players to return (default 300, max 500).
         source: ADP data source (``ffc`` or ``espn``).
+        scoring: Scoring format slug for FFC source (``standard``, ``half-ppr``,
+            ``ppr``). Ignored for ESPN source.
 
     Returns:
         JSON with ``players`` list ordered by ADP and ``source`` label.
@@ -415,7 +449,7 @@ async def get_draft_adp(
         adp_svc = ADPService(db)
         all_players = adp_svc.get_adp_for_draft_pool(year=year)
         if not all_players:
-            import_result = adp_svc.import_from_ffc(year=year)
+            import_result = adp_svc.import_from_ffc(year=year, scoring=scoring)
             if import_result.get("error"):
                 raise HTTPException(
                     status_code=503,
@@ -438,6 +472,7 @@ async def get_draft_adp(
         return {
             "source": "fantasyfootballcalculator",
             "year": year,
+            "scoring": scoring,
             "count": len(players),
             "players": players,
         }

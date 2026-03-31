@@ -69,8 +69,12 @@
     <div class="xl:col-span-3 flex flex-col gap-3" style="max-height: calc(100vh - 240px);">
       <!-- Roster Slots -->
       <div class="draft-card flex flex-col flex-1" style="min-height: 0;">
-        <div class="px-4 py-3 draft-card-header">
-          <h3 class="text-sm font-bold text-slate-300">My Team <span class="text-slate-500 font-normal">(Slot {{ state.user_pick_position }})</span></h3>
+        <div id="roster-panel-header" class="px-4 py-3 draft-card-header flex items-center justify-between gap-2">
+          <h3 id="roster-panel-title" class="text-sm font-bold text-slate-300 whitespace-nowrap">My Team <span class="text-slate-500 font-normal">(Slot {{ state.user_pick_position }})</span></h3>
+          <select id="team-view-select" onchange="DraftBoard.switchTeamView(this.value)"
+                  class="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-pigskin-500 max-w-[120px]">
+            <!-- populated by JS -->
+          </select>
         </div>
         <div id="roster-slots" class="overflow-y-auto flex-1 p-3">
           <!-- rendered by JS -->
@@ -116,7 +120,7 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="/static/js/draft-board.js"></script>
+<script src="/static/js/draft-board.js?v={{ range(100000) | random }}"></script>
 <script>
   // Apply dark theme to body
   document.body.classList.add('draft-dark');

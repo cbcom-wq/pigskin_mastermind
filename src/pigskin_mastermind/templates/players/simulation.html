@@ -16,10 +16,15 @@
     <!-- Header -->
     <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
         <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
-            <div>
-                <p class="text-xs font-semibold uppercase tracking-wider text-slate-400">Entertainment Simulation</p>
-                <h2 class="text-2xl font-bold text-slate-800 mt-1">{{ player.name }}</h2>
-                <p class="text-sm text-slate-500">{{ player.position }} · {{ player.nfl_team }}</p>
+            <div class="flex items-center gap-4">
+                {% if player.headshot_url %}
+                <img src="{{ player.headshot_url }}" alt="" class="w-14 h-14 rounded-full object-cover bg-slate-200 flex-shrink-0 ring-2 ring-slate-200">
+                {% endif %}
+                <div>
+                    <p class="text-xs font-semibold uppercase tracking-wider text-slate-400">Entertainment Simulation</p>
+                    <h2 class="text-2xl font-bold text-slate-800 mt-1">{{ player.name }}</h2>
+                    <p class="text-sm text-slate-500">{{ player.position }} · {{ player.nfl_team }}</p>
+                </div>
             </div>
             <div class="flex flex-wrap items-end gap-3">
                 <div class="flex flex-col gap-1">
@@ -384,7 +389,18 @@ async function loadSimulation() {
         }
         const data = await resp.json();
 
-        SimField.setEvents(data.events || []);
+        /* Inject the player headshot URL into every event so the field
+           renderer can show profile icons on the route chart. */
+        const rawEvents = data.events || [];
+        if (PLAYER_HEADSHOT_URL) {
+            rawEvents.forEach(function(evt) {
+                if (!evt.player_headshot_url) {
+                    evt.player_headshot_url = PLAYER_HEADSHOT_URL;
+                }
+            });
+        }
+
+        SimField.setEvents(rawEvents);
         simScoringSettings = data.scoring_settings || null;
 
         const game = data.game_summary || {};
