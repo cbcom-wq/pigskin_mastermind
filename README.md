@@ -2,6 +2,17 @@
 
 A comprehensive fantasy football research, entertainment, and management application with a full web UI, REST API, and CLI.
 
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | Current state, feature status, test results, known issues — **start here** |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, data flow, and per-subsystem deep dives |
+| [CLAUDE.md](CLAUDE.md) | Commands, conventions, and gotchas (written for Claude Code, useful to humans) |
+| [docs/TUTORIAL.md](docs/TUTORIAL.md) | Python API walkthrough |
+| [docs/IMPORT_ALL_PLAYERS.md](docs/IMPORT_ALL_PLAYERS.md) | Free-agent / full-player ESPN import |
+| [docs/SEASON_ANIMATION.md](docs/SEASON_ANIMATION.md) | Season animation feature |
+
 ## Features
 
 ### Web Interface
@@ -12,7 +23,9 @@ A comprehensive fantasy football research, entertainment, and management applica
 - **Lineup Optimization**: Interactive lineup editing with projected-point optimization
 - **Trade Analyzer**: Evaluate trade fairness with visual breakdowns
 - **Draft Simulator**: Mock draft engine using ESPN ADP or custom player pools with configurable AI opponents and strategies
+- **Projection Tuner**: Interactive sliders over every projection coefficient, with per-criteria contribution breakdowns, backtesting, and automated per-position coefficient sweeps
 - **Season Animation**: Animated week-by-week cumulative points chart with weekly MVP highlights
+- **Game Animations**: Play-by-play field animations for a player, a fantasy roster, or a full NFL game
 - **Visualizations**: Static and animated season performance charts
 
 ### Data & Statistics
@@ -28,6 +41,8 @@ A comprehensive fantasy football research, entertainment, and management applica
 - **Lineup Optimizer**: Automatically fill optimal starting lineup by projected points (including FLEX)
 - **Trade Analyzer**: Evaluate trade net value and receive Accept/Reject/Consider recommendations
 - **Player Projections**: Weekly and yearly projections based on skill level, opponent defense, weather, momentum, and more
+- **Monte Carlo Simulation**: 10,000-iteration outcome distributions per player — expected points, floor, ceiling, boom/bust probabilities, and a histogram
+- **Sportsbook Projections**: Fantasy points derived from live player-prop betting lines (The Odds API)
 - **Lineup Change Suggestions**: Identify bench players who should start over current starters
 
 ### Entertainment Features
@@ -49,7 +64,17 @@ pip install -r requirements.txt
 
 # Install the package in development mode
 pip install -e .
+
+# ESPN integration needs the espn_api client, which is NOT bundled with this repo
+pip install espn_api
 ```
+
+Optional environment variables:
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `DATABASE_URL` | SQLAlchemy connection URL | `sqlite:///./pigskin_mastermind.db` |
+| `ODDS_API_KEY` | The Odds API key for sportsbook lines and props | unset |
 
 ## Launching the Web Interface
 
@@ -263,6 +288,8 @@ pigskin_mastermind/
 ├── alembic.ini              # Alembic configuration
 ├── tests/                   # Test suite
 ├── docs/                    # Additional documentation
+│   ├── ARCHITECTURE.md      # System design and subsystem deep dives
+│   ├── PROJECT_STATUS.md    # Current state, test results, known issues
 │   ├── TUTORIAL.md
 │   ├── IMPORT_ALL_PLAYERS.md
 │   └── SEASON_ANIMATION.md
@@ -281,12 +308,16 @@ pigskin_mastermind/
 # Install development dependencies
 pip install -r requirements-dev.txt
 
-# Run tests
-pytest
+# Run tests — always scope to tests/
+pytest tests/
 
 # Run tests with coverage
-pytest --cov=pigskin_mastermind --cov-report=html
+pytest tests/ --cov=pigskin_mastermind --cov-report=html
 ```
+
+> Bare `pytest` fails at collection: the vendored ESPN client under
+> `src/pigskin_mastermind/lib/espn-api/` ships its own test tree that imports `espn_api` as an
+> installed package. Always pass `tests/`.
 
 ### Code Quality
 
@@ -307,6 +338,9 @@ flake8 src/ tests/
 - [x] Mock draft simulator with ESPN ADP
 - [x] Season animation visualization
 - [x] NFL play-by-play stats import
+- [x] Monte Carlo outcome distributions
+- [x] Sportsbook odds and prop-derived projections
+- [x] Automated projection-coefficient tuning (per position)
 - [ ] Real-time API integrations with Yahoo Fantasy
 - [ ] Machine learning-based projections
 - [ ] Mobile app

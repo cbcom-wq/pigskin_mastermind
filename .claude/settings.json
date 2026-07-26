@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(pytest tests/:*)",
+      "Bash(python -m pytest tests/:*)",
+      "Bash(.venv/Scripts/python -m pytest tests/:*)",
+      "Bash(black src/ tests/)",
+      "Bash(flake8 src/ tests/)",
+      "Bash(alembic current:*)",
+      "Bash(alembic heads:*)",
+      "Bash(alembic history:*)",
+      "Bash(alembic upgrade:*)",
+      "Bash(alembic revision:*)",
+      "Bash(pip show:*)",
+      "Bash(pip list:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)"
+    ]
+  }
+}

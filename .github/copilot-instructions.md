@@ -1,13 +1,17 @@
 # Copilot Instructions
 
+Fuller context lives in [`docs/PROJECT_STATUS.md`](../docs/PROJECT_STATUS.md) (current state, known
+issues) and [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) (system design).
+
 ## Build, Test, and Lint
 
 ```bash
 # Install in development mode
 pip install -e .
 
-# Run all tests
-pytest
+# Run all tests — ALWAYS scope to tests/; bare `pytest` fails at collection
+# because the vendored espn-api ships its own test tree.
+pytest tests/
 
 # Run a single test file
 pytest tests/test_player.py
@@ -16,7 +20,7 @@ pytest tests/test_player.py
 pytest tests/test_player.py::test_player_creation -v
 
 # Run tests with coverage
-pytest --cov=pigskin_mastermind --cov-report=html
+pytest tests/ --cov=pigskin_mastermind --cov-report=html
 
 # Format code
 black src/ tests/
@@ -49,8 +53,11 @@ Services in `services/` contain all business logic:
 - `team_manager.py` — Team CRUD (in-memory dict, used by CLI)
 - `decision_tools.py` — `LineupOptimizer` and `TradeAnalyzer`
 - `projection_service.py` — Abstract base with `YearlyProjectionService` and `WeeklyProjectionService` implementations
-- `espn_sync.py` — ESPN Fantasy API integration (uses `lib/espn-api/` git submodule, added to `sys.path` at runtime)
-- `mock_draft.py` — Draft simulator using ESPN ADP
+- `espn_sync.py` — ESPN Fantasy API integration (adds `lib/espn-api/` to `sys.path` at import time)
+- `mock_draft.py` — Draft simulator using ESPN ADP; holds draft state in a module-level in-memory singleton
+- `monte_carlo_service.py` — Distribution-based simulation (`FantasySimulationEngine`)
+- `projection_tuner.py` / `projection_algorithm_tuner.py` — Single-run breakdown+backtest vs. multi-variation coefficient sweep
+- `sportsbook_service.py` / `sportsbook_projection_service.py` — Betting lines and prop-derived projections
 
 ### Web layer
 
@@ -62,14 +69,14 @@ Services in `services/` contain all business logic:
 
 ### ESPN API integration
 
-The `lib/espn-api/` directory is a git submodule containing the `espn_api` package. It's added to `sys.path` dynamically in `espn_sync.py`. ESPN integration requires SWID and ESPN_S2 browser cookies for private league access.
+The `lib/espn-api/` directory holds a vendored copy of the `espn_api` package, added to `sys.path` dynamically in `espn_sync.py`. It is **git-ignored** (blanket `lib/` rule) and is *not* a submodule — a fresh clone will not have it, so `pip install espn_api` first. ESPN integration requires SWID and ESPN_S2 browser cookies for private league access.
 
 ## Key Conventions
 
 ### Fantasy football domain rules
 
 - **FLEX eligibility**: Only RB, WR, TE can fill FLEX slots (never QB, K, or DEF)
-- **Default scoring**: PPR (Point Per Reception). Pass yards = 0.04 pts/yd, rush/rec yards = 0.1 pts/yd, pass TD = 4, rush/rec TD = 6
+- **Default scoring**: 0.5 PPR — `DEFAULT_SCORING_SETTINGS` in `models/database.py` (`rec: 0.5`). Pass yards = 0.04 pts/yd, rush/rec yards = 0.1 pts/yd, pass TD = 4, rush/rec TD = 6. Resolve per-league overrides through `get_scoring_settings(league)`
 - **Default lineup**: `{'QB': 1, 'RB': 2, 'WR': 2, 'TE': 1, 'FLEX': 1, 'K': 1, 'DEF': 1}`
 - **Lineup optimization**: Fill required positions first, then FLEX with highest-projected eligible player
 

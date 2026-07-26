@@ -2,181 +2,195 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+## Orientation
 
-Pigskin Mastermind is a fantasy football management application providing team management, decision-making tools, and entertainment features. The codebase is structured as a Python package with both a programmatic API and CLI interface.
+Start with [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) for current state and known issues,
+and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the layers fit together.
 
-## Development Commands
+Pigskin Mastermind is a fantasy football research/management app with three front doors over one
+shared service layer: a **FastAPI web UI** (server-rendered Jinja2 + HTMX), a **REST API** in the
+same app, and a **Click CLI** (`pigskin`). Data lives in SQLite via SQLAlchemy, migrated with
+Alembic.
 
-### Setup and Installation
+## Commands
+
+Run from the repo root. On Windows the venv interpreter is `.venv/Scripts/python`.
+
 ```bash
-# Install in development mode
+# Install
+pip install -r requirements-dev.txt   # includes requirements.txt
 pip install -e .
 
-# Install dependencies
-pip install -r requirements.txt
+# Database
+alembic upgrade head
 
-# Install development dependencies
-pip install -r requirements-dev.txt
+# Run the web app  (http://127.0.0.1:8000, Swagger at /docs)
+uvicorn pigskin_mastermind.api.main:app --reload
 ```
 
 ### Testing
+
 ```bash
-# Run all tests
-pytest
+# ALWAYS scope pytest to tests/ — see gotcha below
+pytest tests/
 
-# Run tests with coverage report
-pytest --cov=pigskin_mastermind --cov-report=html
-
-# Run a single test file
+# Single file / single test
 pytest tests/test_player.py
+pytest tests/test_player.py::test_player_creation -v
 
-# Run a specific test
-pytest tests/test_player.py::test_function_name -v
+# Coverage
+pytest tests/ --cov=pigskin_mastermind --cov-report=html
 ```
 
-### Code Quality
-```bash
-# Format code with Black
-black src/ tests/
+**Gotcha:** bare `pytest` fails during collection. The vendored ESPN library at
+`src/pigskin_mastermind/lib/espn-api/` ships its own `tests/` tree that imports `espn_api` as an
+installed package (it is not installed). Always pass `tests/`.
 
-# Lint code with flake8
+There is no `pytest.ini` / `pyproject.toml` — pytest runs on defaults.
+
+### Code quality
+
+```bash
+black src/ tests/
 flake8 src/ tests/
 ```
 
-### CLI Usage
-The package provides a `pigskin` CLI command (defined in cli.py entry point):
-```bash
-# Team management
-pigskin team create --id t1 --name "Team Name" --owner "Owner"
-pigskin team add-player --team-id t1 --player-id p1 --name "Player" --position QB --nfl-team KC
-pigskin team analyze --team-id t1
+## Environment
 
-# Lineup optimization
-pigskin lineup optimize --team-id t1
+| Variable | Purpose | Default |
+|---|---|---|
+| `DATABASE_URL` | SQLAlchemy URL | `sqlite:///./pigskin_mastermind.db` |
+| `ODDS_API_KEY` | The Odds API key for sportsbook lines/props | unset — odds import fails |
 
-# Entertainment features
-pigskin entertainment generate-name --count 5
-pigskin entertainment player-names --player "Patrick Mahomes"
+ESPN private-league access needs `swid` + `espn_s2` browser cookies. They are stored per league on
+the `leagues` table (`DBLeague.swid`, `DBLeague.espn_s2`), entered via **Settings → ESPN**.
 
-# Importing from services
-pigskin import-cmd espn --team-id ID --swid COOKIE --espn-s2 COOKIE --league-id LEAGUE
+Tuned projection coefficients are **not** in the database — they live at
+`~/.pigskin_mastermind/master_coefficients.json` (`services/master_coefficients.py`).
+
+## Architecture essentials
+
+### The vendored ESPN client is untracked
+
+`src/pigskin_mastermind/lib/espn-api/` holds the `espn_api` package and is **git-ignored**
+(`.gitignore` has a blanket `lib/` rule). It is not a submodule — there is no `.gitmodules`. A
+fresh clone will not have it, and importing `services/espn_sync.py` then fails with
+`ModuleNotFoundError: No module named 'espn_api'`. `espn_sync.py` inserts that directory into
+`sys.path` at import time. To recover: `pip install espn_api`, or restore the source tree at that
+path.
+
+### Two parallel model layers, deliberately not synchronized
+
+- **Dataclasses** — `models/player.py`, `models/team.py`. In-memory; used by the CLI,
+  `TeamManager`, `LineupOptimizer`, `TradeAnalyzer`, `ProjectionService`. `Player` validates
+  position against `['QB','RB','WR','TE','K','DEF']`; `Player.stats` is a free-form dict.
+- **SQLAlchemy ORM** — `models/database.py`: `DBPlayer`, `DBTeam`, `DBLeague`,
+  `DBWeeklyTeamStats`, `DBWeeklyPlayerStats`, `DBPlayerSeasonStats`, `DBPlayerGameLog`,
+  `DBNFLTeamStats`, `DBSportsbookOdds`. Everything web-facing uses these.
+
+Routes convert between them at the boundary. A change on one side does not propagate to the other.
+
+### Scoring is 0.5 PPR, resolved per league
+
+`DEFAULT_SCORING_SETTINGS` in `models/database.py` is **half PPR** (`rec: 0.5`), and it is the
+fallback for both `get_scoring_settings(league)` and the dataclass `Player.calculate_points()`.
+Always resolve through `get_scoring_settings()` rather than hardcoding, so a league's JSON
+`scoring_settings` overrides apply.
+
+### Projection pipeline
+
+```
+DB stats ──► ProjectionCriteriaBuilder ──► {Weekly,Yearly}ProjectionCriteria
+                                                  │
+       AlgorithmCoefficients ─────────────────────┤
+       (per-position via PositionCoefficients)    ▼
+                                          ProjectionService ──► projected points
 ```
 
-## Architecture
+- `models/projection_criteria.py` — criteria dataclasses (base → weekly / yearly).
+- `models/algorithm_coefficients.py` — every tunable multiplier. `PositionCoefficients` wraps a
+  `default` set plus per-position overrides for QB/RB/WR/TE/K/DEF, falling back to `default`.
+  `from_dict` accepts both the legacy flat `{key: float}` shape and the nested position-keyed shape.
+- `services/projection_criteria_builder.py` (~1.4k lines) — derives skill, touch share, momentum,
+  opponent defense level, etc. from game logs and season stats. It lazily populates missing
+  team/defense stat rows as a side effect.
+- `services/projection_service.py` — the formula itself (`_apply_base_criteria` plus weekly/yearly
+  layers). Passing `coefficients=None` keeps the hard-coded defaults.
 
-### Core Models (models/)
-- **Player** (`models/player.py`): Dataclass representing fantasy players
-  - Validates position against `['QB', 'RB', 'WR', 'TE', 'K', 'DEF']`
-  - Calculates fantasy points using customizable scoring settings (default PPR)
-  - Tracks both projected and actual points
-  - Stats stored as dictionary for flexibility
+**Two tuners, different jobs — don't confuse them:**
 
-- **Team** (`models/team.py`): Dataclass representing fantasy teams
-  - Manages player roster with add/remove/get operations
-  - Tracks record (wins/losses/ties) and total points
-  - `get_players_by_position()` filters roster by position
-  - `get_starting_lineup()` uses lineup rules to optimize starters
+- `services/projection_tuner.py` → `ProjectionTunerService`: runs a *single* projection with a
+  given coefficient set and returns a per-criteria contribution breakdown; also backtests weekly
+  and yearly against actuals. Backs the interactive `/projection-tuner` page.
+- `services/projection_algorithm_tuner.py` → `ProjectionAlgorithmTuner`: sweeps *many* coefficient
+  variations (globally or per position), scores each against actuals, and persists run results to
+  disk. Winners are promoted through `master_coefficients.save_master_coefficients()`.
 
-### Services (services/)
-- **TeamManager** (`services/team_manager.py`): Central service for team CRUD operations
-  - Maintains in-memory dict of teams (not persisted)
-  - Provides team analysis with position breakdown
-  - Supports JSON import/export of team data
+`get_effective_coefficients()` is the single call production code should use for the active set.
 
-- **LineupOptimizer** (`services/decision_tools.py`): Optimizes fantasy lineups
-  - Default lineup rules: `{'QB': 1, 'RB': 2, 'WR': 2, 'TE': 1, 'FLEX': 1, 'K': 1, 'DEF': 1}`
-  - FLEX position can be filled by RB/WR/TE (best remaining player by projected points)
-  - Returns lineup dict with starters by position, bench list, and total projected points
-  - `suggest_lineup_changes()` identifies better bench players
+### Monte Carlo simulation
 
-- **TradeAnalyzer** (`services/decision_tools.py`): Evaluates trade fairness
-  - Calculates net value based on projected points
-  - Fairness score threshold: < 5.0 points difference
-  - Tracks positional needs (positions gained/lost)
-  - Provides recommendations: "Accept", "Reject", or "Consider"
+`src/pigskin_mastermind/.claude/monte_carlo_model.md` is the original design spec for this engine —
+read it before changing the math.
 
-- **Importers** (`services/importer.py`): Abstract base class pattern for fantasy platforms
-  - `ImporterFactory.create_importer('espn')` or `'yahoo'` returns platform-specific importer
-  - ESPN importer requires SWID and ESPN_S2 cookies for authentication
-  - Yahoo importer requires OAuth access token
-  - **Note**: Current implementations are stubs; real API integration needed
+`FantasyPlayerInput` (`models/monte_carlo.py`; all inputs normalized 0–1 except the 1–32 defense
+rank) → `FantasySimulationEngine.simulate()` (`services/monte_carlo_service.py`) →
+`MonteCarloResult` (mean / median / floor p10 / ceiling p90 / boom >25 / bust <8, plus the raw
+array). `MonteCarloInputBuilder` adapts DB-derived `WeeklyProjectionCriteria` into
+`FantasyPlayerInput` — that is where 0–100 and −100..100 criteria get normalized. Seed the engine
+for deterministic output.
 
-### Entertainment Features (entertainment/)
-- **TeamNameGenerator**: Random and player-based team name generation
-  - Combines prefixes + nouns or returns football puns
-  - `generate_player_based_name()` creates variations on player's last name
+### Game / play visualizations
 
-- **MatchupPredictor**: Predicts game outcomes
-  - Win probability calculation based on projected point differential
-  - Confidence levels: High (>15 pts), Medium (>5 pts), Low (≤5 pts)
+Three sibling services build animated field views from `nfl_data_py` play-by-play, sharing the same
+route-path and deterministic-jitter idiom: `player_game_simulation_service.py` (one player),
+`team_game_simulation_service.py` (merges a fantasy roster's events), and
+`nfl_game_simulation_service.py` (a real NFL game). Front end is `static/js/simulation-field.js`
+plus `static/css/simulation.css`.
 
-- **LeagueEntertainment**: League-wide features
-  - Power rankings: composite score (60% win%, 40% points)
-  - Weekly awards: highest/lowest scorer, best record, "luckiest team"
-  - Trash talk generator for matchup results
+### Mock draft engine
 
-### CLI (cli.py)
-- Built with Click framework
-- Command groups: `team`, `lineup`, `import-cmd`, `entertainment`
-- TeamManager instances are created per-command (no persistence between CLI calls)
+`services/mock_draft.py` exposes a **module-level singleton** `draft_engine` holding in-memory draft
+state keyed by `draft_id`. It does not survive a server restart and is not shared across processes —
+do not run uvicorn with `--workers > 1` and expect drafts to work. Snake order, the `DraftStrategy`
+enum, `AIProfile` weights, ADP-driven pools (ESPN, or FantasyFootballCalculator via `ADPService`),
+draft grading, and commentary all live in this module.
 
-## Important Implementation Notes
+### Web layer conventions
 
-### Fantasy Football Domain Logic
-1. **Position Eligibility for FLEX**: Only RB, WR, TE can fill FLEX spots (not QB, K, or DEF)
-2. **Scoring Settings**: Default is PPR (Point Per Reception). When modifying scoring:
-   - Pass yards: typically 0.04 (1 point per 25 yards)
-   - Rush/Rec yards: typically 0.1 (1 point per 10 yards)
-   - TDs: Pass TD = 4, Rush/Rec TD = 6
-3. **Lineup Optimization**: Always fills required positions first, then FLEX with highest-scoring eligible player
+- `api/main.py` mounts `/static`, configures Jinja2, calls `Base.metadata.create_all()` at import,
+  then includes every router. A new router must be both imported *and* `include_router`-ed there.
+- Route modules mix HTML and JSON: HTML pages sit at the resource prefix (`/teams`, `/draft`), JSON
+  under `/api/...`. `stats.py`, `players.py`, and `projection_tuner.py` each serve both.
+- `get_db()` in `api/database.py` is the session dependency.
+- Templates load **Tailwind and HTMX from CDN** in `templates/base.html` — no build step, no
+  `package.json`. Templates prefixed `_` (e.g. `lineups/_lineup_result.html`) are HTMX fragment
+  responses.
+- The dashboard and team list filter on `DBTeam.is_user_team == True`. A team created without that
+  flag will not appear in the UI.
 
-### ESPN API Integration
-- The `lib/espn-api/` subdirectory contains the ESPN Fantasy API client library
-- Located at: `src/pigskin_mastermind/lib/espn-api/`
-- This is a git submodule tracking the espn_api Python package
-- For real ESPN integration, use `espn_api.football.League` from this library
-- Requires private league access via SWID and ESPN_S2 cookies from browser
+## Domain rules
 
-### Data Persistence
-- **Current state**: TeamManager stores teams in memory only (lost on restart)
-- For persistence, consider adding save/load methods using JSON files or database
+- **FLEX eligibility**: RB, WR, TE only — never QB, K, or DEF.
+- **Default lineup**: `{'QB': 1, 'RB': 2, 'WR': 2, 'TE': 1, 'FLEX': 1, 'K': 1, 'DEF': 1}`.
+- **Lineup optimization**: fill required slots first, then FLEX with the best remaining eligible
+  player by projected points.
+- **Trade fairness**: `fairness_score` is the absolute difference in net projected points; under
+  5.0 is "fair". Recommendations are Accept / Reject / Consider.
+- **Positional defense ranks**: 1 = best defense, 32 = worst — a *high* rank means a good matchup.
 
-### Testing Patterns
-- Models use dataclasses, so test validation and methods
-- Services should be tested with mock data (no real API calls)
-- CLI tests would use Click's `CliRunner` for command testing
+## Adding things
 
-## Project Structure
-```
-src/pigskin_mastermind/
-├── models/          # Data models (Player, Team)
-├── services/        # Business logic (TeamManager, Importers, DecisionTools)
-├── entertainment/   # Entertainment features
-├── utils/           # Utility functions (currently minimal)
-├── lib/espn-api/    # ESPN API client library (git submodule)
-└── cli.py           # Click-based CLI interface
-
-tests/               # Pytest test suite
-docs/                # Documentation (TUTORIAL.md)
-examples/            # Example usage (demo.py)
-```
-
-## Common Development Workflows
-
-### Adding a New Player Stat
-1. Stats are stored in `Player.stats` dict (flexible schema)
-2. Update `Player.calculate_points()` to include new stat in scoring
-3. Add to default `scoring_settings` dict if standard stat
-4. Update tests to verify scoring calculation
-
-### Adding a New Fantasy Service Importer
-1. Create new class inheriting from `FantasyServiceImporter` in `services/importer.py`
-2. Implement `authenticate()`, `import_team()`, and `get_player_data()` methods
-3. Add to `ImporterFactory.create_importer()` switch statement
-4. Add CLI command in `cli.py` under `import_cmd` group
-
-### Extending Lineup Rules
-1. Modify `LineupOptimizer.__init__()` default lineup_rules or pass custom rules
-2. Update `optimize_lineup()` to handle new position types
-3. For new FLEX-like positions, add to flex_positions list in optimization logic
+- **New API route module**: create it in `api/routes/`, then import and `include_router` in
+  `api/main.py`.
+- **New DB column**: edit `models/database.py`, then `alembic revision --autogenerate -m "..."` and
+  `alembic upgrade head`. Because `create_all()` runs at startup, a missing migration can pass
+  locally on a fresh DB and still break an existing one.
+- **New tunable coefficient**: add the field to `AlgorithmCoefficients`, consume it in
+  `projection_service.py`, add an entry to `COEFFICIENT_DEFS` in `projection_tuner.py` (single
+  source of truth for defaults, slider ranges, and UI docs), and add it to the sweep in
+  `projection_algorithm_tuner.generate_variations()`.
+- **New importer**: subclass `FantasyServiceImporter` in `services/importer.py`, implement
+  `authenticate()` / `import_team()` / `get_player_data()`, and register it in
+  `ImporterFactory.create_importer()`. The ESPN/Yahoo classes there are stubs — real ESPN work goes
+  through `services/espn_sync.py`.
