@@ -22,10 +22,10 @@
   </div>
 
   <!-- Main 3-column layout -->
-  <div class="grid grid-cols-1 xl:grid-cols-12 gap-3" style="max-height: calc(100vh - 240px);">
+  <div class="grid grid-cols-1 xl:grid-cols-12 gap-3" style="max-height: calc(100vh - 160px);">
 
     <!-- Left: Available Players -->
-    <div class="xl:col-span-4 draft-card flex flex-col" style="max-height: calc(100vh - 240px);">
+    <div class="xl:col-span-3 draft-card flex flex-col" style="max-height: calc(100vh - 160px);">
       <div class="px-4 py-3 draft-card-header flex items-center justify-between">
         <h3 class="text-sm font-bold text-slate-300">Available Players</h3>
         <div class="flex gap-2 items-center">
@@ -54,7 +54,7 @@
     </div>
 
     <!-- Center: Draft Board Grid -->
-    <div class="xl:col-span-5 draft-card flex flex-col" style="max-height: calc(100vh - 240px);">
+    <div class="xl:col-span-6 draft-card flex flex-col" style="max-height: calc(100vh - 160px);">
       <div class="px-4 py-3 draft-card-header">
         <h3 class="text-sm font-bold text-slate-300">Draft Board</h3>
       </div>
@@ -66,7 +66,7 @@
     </div>
 
     <!-- Right: My Team + Picks + Commentary -->
-    <div class="xl:col-span-3 flex flex-col gap-3" style="max-height: calc(100vh - 240px);">
+    <div class="xl:col-span-3 flex flex-col gap-3" style="max-height: calc(100vh - 160px);">
       <!-- Roster Slots -->
       <div class="draft-card flex flex-col flex-1" style="min-height: 0;">
         <div id="roster-panel-header" class="px-4 py-3 draft-card-header flex items-center justify-between gap-2">
@@ -122,8 +122,12 @@
 {% block extra_js %}
 <script src="/static/js/draft-board.js?v={{ range(100000) | random }}"></script>
 <script>
-  // Apply dark theme to body
+  // Apply dark theme to body and collapse sidebar for full-width board
   document.body.classList.add('draft-dark');
+  (function() {
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar) sidebar.style.display = 'none';
+  })();
 
   // Play countdown then init
   const initialState = {{ state | tojson }};

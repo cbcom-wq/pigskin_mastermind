@@ -200,7 +200,7 @@ const DraftBoard = (() => {
     const pickMap = {};
     picks_log.forEach(p => { pickMap[`${p.round}-${p.slot}`] = p; });
 
-    container.style.gridTemplateColumns = `40px repeat(${num_teams}, minmax(70px, 1fr))`;
+    container.style.gridTemplateColumns = `40px repeat(${num_teams}, 1fr)`;
 
     let html = '<div class="draft-grid-header"></div>';
     for (let t = 1; t <= num_teams; t++) {

@@ -147,10 +147,21 @@ async def search_players(
     """Search players and return HTML fragments for HTMX.
 
     Used by both the global search modal and the trade analyzer receive-search.
+    Results are ordered by ADP (ascending) to match mock draft rankings.
     """
     from pigskin_mastermind.api.main import templates
+    from datetime import datetime
 
-    query = db.query(DBPlayer)
+    current_year = datetime.utcnow().year
+
+    query = (
+        db.query(DBPlayer, DBPlayerSeasonStats)
+        .outerjoin(
+            DBPlayerSeasonStats,
+            (DBPlayerSeasonStats.player_id == DBPlayer.id)
+            & (DBPlayerSeasonStats.year == current_year)
+        )
+    )
     if q:
         search = f"%{q}%"
         query = query.filter(
@@ -158,19 +169,21 @@ async def search_players(
             | (DBPlayer.position.ilike(search))
             | (DBPlayer.nfl_team.ilike(search))
         )
-    players = query.order_by(DBPlayer.projected_points.desc()).limit(20).all()
+    # Order by ADP ascending (NULLs last), then by projected_points descending
+    query = query.order_by(DBPlayerSeasonStats.adp.asc().nullslast(), DBPlayer.projected_points.desc())
+    results = query.limit(20).all()
 
     if context == "trade-receive":
-        return _render_trade_search_results(players)
+        return _render_trade_search_results([p for p, _ in results])
 
     # Default: global search modal results
-    if not players:
+    if not results:
         return HTMLResponse(
             '<div class="px-4 py-6 text-center text-sm text-slate-400">No players found</div>'
         )
 
     html_parts = []
-    for p in players:
+    for p, season in results:
         team_name = ""
         if p.team:
             team_name = p.team.name
@@ -179,6 +192,8 @@ async def search_players(
             img_html = f'<img src="{p.headshot_url}" alt="" class="w-8 h-8 rounded-full object-cover bg-slate-100" onerror="this.style.display=\'none\'" />'
         else:
             img_html = '<div class="w-8 h-8 rounded-full bg-slate-200"></div>'
+        adp_value = season.adp if season and season.adp is not None else None
+        adp_display = f'{adp_value:.1f}' if adp_value is not None else 'N/A'
         html_parts.append(
             f'<a href="/players/{p.id}" class="flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 transition-colors cursor-pointer">'
             f'  <div class="flex items-center gap-3">'
@@ -190,8 +205,8 @@ async def search_players(
             f'    </div>'
             f'  </div>'
             f'  <div class="text-right">'
-            f'    <p class="text-sm font-semibold text-slate-700">{p.projected_points:.1f}</p>'
-            f'    <p class="text-[10px] text-slate-400">projected</p>'
+            f'    <p class="text-sm font-semibold text-slate-700">{adp_display}</p>'
+            f'    <p class="text-[10px] text-slate-400">ADP</p>'
             f'  </div>'
             f'</a>'
         )
