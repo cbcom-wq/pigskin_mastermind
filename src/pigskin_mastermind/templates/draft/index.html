@@ -232,8 +232,8 @@
               <option>QB</option><option>RB</option><option>WR</option>
               <option>TE</option><option>K</option><option>DEF</option>
             </select>
-            <button id="load-adp-btn" onclick="loadAdpData()"
-                    class="hidden px-3 py-1 bg-pigskin-600 hover:bg-pigskin-500 text-white text-xs font-semibold rounded-lg transition-colors">
+            <button id="load-adp-btn" onclick="loadAdpData(true)"
+                    class="hidden px-3 py-1 bg-pigskin-600 hover:bg-pigskin-500 disabled:opacity-50 disabled:cursor-wait text-white text-xs font-semibold rounded-lg transition-colors">
               ↺ Refresh
             </button>
           </div>
@@ -418,16 +418,28 @@
     }
   }
 
-  async function loadAdpData() {
+  function describeFreshness(lastUpdated) {
+    // Returns {text, stale} for an ISO timestamp (UTC, no timezone suffix).
+    if (!lastUpdated) return { text: 'never refreshed', stale: true };
+    const updated = new Date(lastUpdated.endsWith('Z') ? lastUpdated : lastUpdated + 'Z');
+    const ageDays = Math.floor((Date.now() - updated.getTime()) / 86400000);
+    const dateLabel = updated.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    return { text: `updated ${dateLabel}`, stale: ageDays > 7, ageDays };
+  }
+
+  async function loadAdpData(forceRefresh = false) {
     const year = parseInt(document.getElementById('espn-adp-year').value) || CURRENT_SEASON;
     const source = currentAdpSource || 'ffc';
     const sourceLabel = source === 'ffc' ? 'FFC' : 'ESPN';
     const scoringEl = document.getElementById('ffc-scoring-format');
     const scoring = (source === 'ffc' && scoringEl) ? scoringEl.value : 'half-ppr';
+    const refreshBtn = document.getElementById('load-adp-btn');
+    const doRefresh = forceRefresh && source === 'ffc';
+    if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.textContent = doRefresh ? '↺ Refreshing…' : '↺ Refresh'; }
     showAdpState('loading');
-    setLobbyStatus(`Fetching ${sourceLabel} ADP data…`, 'bg-blue-400');
+    setLobbyStatus(doRefresh ? 'Refreshing ADP from Fantasy Football Calculator…' : `Fetching ${sourceLabel} ADP data…`, 'bg-blue-400');
     try {
-      const resp = await fetch(`/draft/adp?year=${year}&limit=300&source=${source}&scoring=${scoring}`);
+      const resp = await fetch(`/draft/adp?year=${year}&limit=300&source=${source}&scoring=${scoring}${doRefresh ? '&refresh=true' : ''}`);
       if (!resp.ok) {
         const err = await resp.json();
         document.getElementById('adp-error-msg').textContent = err.detail || `${sourceLabel} ADP unavailable.`;
@@ -438,8 +450,30 @@
       const data = await resp.json();
       adpPlayers = data.players;
       const scoringLabel = data.scoring ? ` · ${data.scoring.toUpperCase().replace('-PPR',' PPR')}` : '';
-      document.getElementById('rankings-subtitle').textContent = `${sourceLabel} ${data.year || year} ADP${scoringLabel} · ${adpPlayers.length} players`;
-      document.getElementById('adp-footer').textContent = `${adpPlayers.length} players ranked by ${sourceLabel} ADP for ${data.year || year}${scoringLabel}`;
+      const subtitleEl = document.getElementById('rankings-subtitle');
+      const footerEl = document.getElementById('adp-footer');
+      const baseSubtitle = `${sourceLabel} ${data.year || year} ADP${scoringLabel} · ${adpPlayers.length} players`;
+      if (source === 'ffc') {
+        const fresh = describeFreshness(data.last_updated);
+        subtitleEl.innerHTML = '';
+        subtitleEl.append(document.createTextNode(`${baseSubtitle} · ${fresh.text}`));
+        if (fresh.stale) {
+          const warn = document.createElement('span');
+          warn.className = 'text-amber-400 font-semibold';
+          warn.textContent = fresh.ageDays != null
+            ? ` — ${fresh.ageDays} days old, hit ↺ Refresh`
+            : ' — hit ↺ Refresh';
+          subtitleEl.append(warn);
+        }
+        footerEl.textContent = `${adpPlayers.length} players ranked by ${sourceLabel} ADP for ${data.year || year}${scoringLabel} · ${fresh.text}`;
+        if (doRefresh) {
+          const createdNote = data.created ? `, ${data.created} new players added` : '';
+          showToast(`ADP refreshed — ${data.imported ?? data.total_in_db} players imported${createdNote}`, 'success');
+        }
+      } else {
+        subtitleEl.textContent = `${baseSubtitle} · live`;
+        footerEl.textContent = `${adpPlayers.length} players ranked by ${sourceLabel} ADP for ${data.year || year} (fetched live)`;
+      }
       renderAdpList(adpPlayers);
       showAdpState('list');
       setLobbyStatus(`${sourceLabel} ADP loaded — ${adpPlayers.length} players`, 'bg-green-400');
@@ -447,6 +481,8 @@
       document.getElementById('adp-error-msg').textContent = 'Network error. Check connectivity.';
       showAdpState('error');
       setLobbyStatus('Network error', 'bg-red-400');
+    } finally {
+      if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.textContent = '↺ Refresh'; }
     }
   }
 

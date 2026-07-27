@@ -378,6 +378,40 @@ class TestGetAdp:
 
 
 # ---------------------------------------------------------------------------
+# get_adp_metadata
+# ---------------------------------------------------------------------------
+
+
+class TestGetAdpMetadata:
+    def test_returns_latest_timestamp_and_count(self, db):
+        from datetime import datetime
+
+        players = _seed_players(db)
+        older = datetime(2025, 7, 1, 8, 0, 0)
+        newer = datetime(2025, 7, 20, 9, 30, 0)
+        db.add(DBPlayerSeasonStats(player_id=players[0].id, year=2025, adp=1.6,
+                                   adp_source="fantasyfootballcalculator", updated_at=older))
+        db.add(DBPlayerSeasonStats(player_id=players[1].id, year=2025, adp=2.0,
+                                   adp_source="fantasyfootballcalculator", updated_at=newer))
+        # Different source and different year must be excluded
+        db.add(DBPlayerSeasonStats(player_id=players[2].id, year=2025, adp=3.0,
+                                   adp_source="csv"))
+        db.add(DBPlayerSeasonStats(player_id=players[3].id, year=2024, adp=4.0,
+                                   adp_source="fantasyfootballcalculator"))
+        db.commit()
+
+        meta = ADPService(db).get_adp_metadata(year=2025)
+        assert meta["year"] == 2025
+        assert meta["count"] == 2
+        assert meta["last_updated"] == newer.isoformat()
+
+    def test_returns_none_when_no_data(self, db):
+        meta = ADPService(db).get_adp_metadata(year=2025)
+        assert meta["last_updated"] is None
+        assert meta["count"] == 0
+
+
+# ---------------------------------------------------------------------------
 # get_all_adp
 # ---------------------------------------------------------------------------
 

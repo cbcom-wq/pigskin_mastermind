@@ -411,6 +411,38 @@ class ADPService:
             if player.position in ("QB", "RB", "WR", "TE", "K", "DEF")
         ]
 
+    def get_adp_metadata(self, year: Optional[int] = None) -> Dict[str, Any]:
+        """Return freshness info for locally stored FFC ADP data.
+
+        Parameters
+        ----------
+        year : int, optional
+            Season year. Defaults to the current fantasy season.
+
+        Returns
+        -------
+        dict
+            ``{"year": int, "last_updated": ISO string or None, "count": int}``.
+            ``last_updated`` is the most recent import time for the
+            source/year; ``None`` when no rows exist.
+        """
+        year = year or current_fantasy_season()
+        rows = (
+            self.db.query(DBPlayerSeasonStats.updated_at)
+            .filter(
+                DBPlayerSeasonStats.adp.isnot(None),
+                DBPlayerSeasonStats.adp_source == self.ADP_SOURCE_LABEL,
+                DBPlayerSeasonStats.year == year,
+            )
+            .all()
+        )
+        timestamps = [r.updated_at for r in rows if r.updated_at is not None]
+        return {
+            "year": year,
+            "last_updated": max(timestamps).isoformat() if timestamps else None,
+            "count": len(rows),
+        }
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

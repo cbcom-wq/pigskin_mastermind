@@ -429,6 +429,7 @@ async def get_draft_adp(
     limit: int = 300,
     source: str = "ffc",
     scoring: str = "half-ppr",
+    refresh: bool = False,
     db: Session = Depends(get_db),
 ):
     """Return ADP-ordered player rankings for the draft page.
@@ -443,17 +444,27 @@ async def get_draft_adp(
         source: ADP data source (``ffc`` or ``espn``).
         scoring: Scoring format slug for FFC source (``standard``, ``half-ppr``,
             ``ppr``). Ignored for ESPN source.
+        refresh: Force a re-import from FFC before reading (``ffc`` source only).
 
     Returns:
-        JSON with ``players`` list ordered by ADP and ``source`` label.
+        JSON with ``players`` list ordered by ADP, ``source`` label, and
+        (for FFC) ``last_updated`` / ``total_in_db`` freshness metadata.
     """
     year = year or current_fantasy_season()
     limit = max(1, min(limit, 500))
 
     if source == "ffc":
         adp_svc = ADPService(db)
+        import_result: Optional[dict] = None
+
+        if refresh:
+            import_result = adp_svc.import_from_ffc(year=year, scoring=scoring)
+            if import_result.get("error"):
+                raise HTTPException(status_code=503, detail=import_result["error"])
+
         all_players = adp_svc.get_adp_for_draft_pool(year=year)
-        if not all_players:
+        if not all_players and not refresh:
+            # Bootstrap: no local data for this season yet — import once.
             import_result = adp_svc.import_from_ffc(year=year, scoring=scoring)
             if import_result.get("error"):
                 raise HTTPException(
@@ -474,13 +485,20 @@ async def get_draft_adp(
                     "Import or sync players first."
                 ),
             )
-        return {
+        metadata = adp_svc.get_adp_metadata(year=year)
+        resp = {
             "source": "fantasyfootballcalculator",
             "year": year,
             "scoring": scoring,
             "count": len(players),
             "players": players,
+            "last_updated": metadata["last_updated"],
+            "total_in_db": metadata["count"],
         }
+        if import_result:
+            resp["imported"] = import_result.get("imported", 0)
+            resp["created"] = import_result.get("created", 0)
+        return resp
 
     # Legacy ESPN fallback
     players, actual_year = _fetch_espn_adp_with_fallback(year=year, limit=limit)

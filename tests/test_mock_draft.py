@@ -936,7 +936,10 @@ def test_get_adp_endpoint_ffc_auto_import_success(client):
     with patch("pigskin_mastermind.api.routes.draft.ADPService") as mock_svc_cls:
         mock_svc = mock_svc_cls.return_value
         mock_svc.get_adp_for_draft_pool.side_effect = [[], fake_ffc_players]
-        mock_svc.import_from_ffc.return_value = {"imported": 2, "skipped": 0, "total": 2}
+        mock_svc.import_from_ffc.return_value = {"imported": 2, "created": 0, "skipped": 0, "total": 2}
+        mock_svc.get_adp_metadata.return_value = {
+            "year": 2025, "last_updated": "2025-08-01T12:00:00", "count": 2,
+        }
 
         resp = client.get("/draft/adp?year=2025&source=ffc")
 
@@ -944,7 +947,59 @@ def test_get_adp_endpoint_ffc_auto_import_success(client):
     data = resp.json()
     assert data["source"] == "fantasyfootballcalculator"
     assert data["count"] == 2
-    mock_svc.import_from_ffc.assert_called_once_with(year=2025)
+    assert data["last_updated"] == "2025-08-01T12:00:00"
+    assert data["total_in_db"] == 2
+    mock_svc.import_from_ffc.assert_called_once_with(year=2025, scoring="half-ppr")
+
+
+def test_get_adp_endpoint_ffc_refresh_forces_import(client):
+    """GET /draft/adp?refresh=true should re-import even when local data exists."""
+    fake_ffc_players = [
+        {"id": "nfl_1", "name": "Top QB", "position": "QB", "nfl_team": "KC",
+         "projected_points": 25.0, "adp_rank": 1.0},
+    ]
+
+    with patch("pigskin_mastermind.api.routes.draft.ADPService") as mock_svc_cls:
+        mock_svc = mock_svc_cls.return_value
+        mock_svc.get_adp_for_draft_pool.return_value = fake_ffc_players
+        mock_svc.import_from_ffc.return_value = {
+            "imported": 1, "created": 1, "skipped": 0, "total": 1,
+            "last_updated": "2025-08-02T09:00:00",
+        }
+        mock_svc.get_adp_metadata.return_value = {
+            "year": 2025, "last_updated": "2025-08-02T09:00:00", "count": 1,
+        }
+
+        resp = client.get("/draft/adp?year=2025&source=ffc&refresh=true")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["imported"] == 1
+    assert data["created"] == 1
+    assert data["last_updated"] == "2025-08-02T09:00:00"
+    mock_svc.import_from_ffc.assert_called_once_with(year=2025, scoring="half-ppr")
+
+
+def test_get_adp_endpoint_defaults_to_current_season(client):
+    """GET /draft/adp without a year should use the current fantasy season."""
+    fake_ffc_players = [
+        {"id": "nfl_1", "name": "Top QB", "position": "QB", "nfl_team": "KC",
+         "projected_points": 25.0, "adp_rank": 1.0},
+    ]
+
+    with patch("pigskin_mastermind.api.routes.draft.ADPService") as mock_svc_cls, \
+         patch("pigskin_mastermind.api.routes.draft.current_fantasy_season", return_value=2031):
+        mock_svc = mock_svc_cls.return_value
+        mock_svc.get_adp_for_draft_pool.return_value = fake_ffc_players
+        mock_svc.get_adp_metadata.return_value = {
+            "year": 2031, "last_updated": "2031-08-01T12:00:00", "count": 1,
+        }
+
+        resp = client.get("/draft/adp?source=ffc")
+
+    assert resp.status_code == 200
+    assert resp.json()["year"] == 2031
+    mock_svc.get_adp_for_draft_pool.assert_called_once_with(year=2031)
 
 
 def test_get_adp_endpoint_ffc_auto_import_failure(client):
