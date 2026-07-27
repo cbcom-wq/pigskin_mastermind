@@ -139,6 +139,10 @@ class DBPlayerSeasonStats(Base):
     # ADP (Average Draft Position)
     adp = Column(Float, nullable=True)
     adp_source = Column(String, nullable=True)  # e.g. 'csv', 'espn', 'yahoo'
+    adp_stdev = Column(Float, nullable=True)  # pick-position spread across real drafts
+    adp_high = Column(Float, nullable=True)  # earliest pick observed
+    adp_low = Column(Float, nullable=True)  # latest pick observed
+    adp_times_drafted = Column(Integer, nullable=True)  # sample size behind the ADP
 
     # Meta
     source = Column(String, default='espn')  # 'espn', 'nfl_data_py', 'combined'

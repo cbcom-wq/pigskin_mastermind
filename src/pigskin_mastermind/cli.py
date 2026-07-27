@@ -447,6 +447,7 @@ def stats_import_ffc_adp(year, scoring, teams):
             return
         click.echo(
             f"FFC ADP import complete: {result['imported']} imported, "
+            f"{result.get('created', 0)} players created, "
             f"{result['skipped']} skipped, {result['total']} total from FFC."
         )
     finally:

@@ -153,10 +153,110 @@ class TestImportFromFFC:
         with patch("pigskin_mastermind.services.adp_service.urlopen", return_value=mock_resp):
             result = svc.import_from_ffc(year=2025, scoring="ppr", num_teams=12)
 
-        assert result["imported"] == 6  # 6 matched, 1 unknown skipped
-        assert result["skipped"] == 1
+        assert result["imported"] == 7  # 6 matched + 1 unknown created
+        assert result["created"] == 1
+        assert result["skipped"] == 0
         assert result["total"] == 7
         assert result["source"] == "fantasyfootballcalculator"
+        assert result["last_updated"] is not None
+
+    def test_import_skips_unmatched_when_create_missing_disabled(self, db):
+        _seed_players(db)
+        svc = ADPService(db)
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _ffc_response()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("pigskin_mastermind.services.adp_service.urlopen", return_value=mock_resp):
+            result = svc.import_from_ffc(year=2025, create_missing=False)
+
+        assert result["imported"] == 6
+        assert result["created"] == 0
+        assert result["skipped"] == 1
+        assert db.query(DBPlayer).filter_by(name="Unknown Guy").first() is None
+
+    def test_import_creates_minimal_player_with_ffc_id(self, db):
+        _seed_players(db)
+        svc = ADPService(db)
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _ffc_response()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("pigskin_mastermind.services.adp_service.urlopen", return_value=mock_resp):
+            svc.import_from_ffc(year=2025)
+
+        created = db.query(DBPlayer).filter_by(name="Unknown Guy").first()
+        assert created is not None
+        assert created.player_id == "ffc_9999"
+        assert created.position == "WR"
+        assert created.nfl_team == "FA"
+        season = db.query(DBPlayerSeasonStats).filter_by(player_id=created.id, year=2025).first()
+        assert season.adp == pytest.approx(200.0)
+
+    def test_import_persists_variance_fields(self, db):
+        _seed_players(db)
+        svc = ADPService(db)
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _ffc_response()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("pigskin_mastermind.services.adp_service.urlopen", return_value=mock_resp):
+            svc.import_from_ffc(year=2025, num_teams=12)
+
+        rb = db.query(DBPlayer).filter_by(name="Saquon Barkley").first()
+        season = db.query(DBPlayerSeasonStats).filter_by(player_id=rb.id, year=2025).first()
+        assert season.adp_stdev == pytest.approx(0.8)
+        assert season.adp_high == pytest.approx(1.0)
+        assert season.adp_low == pytest.approx(3.0)
+        assert season.adp_times_drafted == 19
+
+    def test_import_converts_round_pick_high_low(self, db):
+        """FFC formats high/low as round.pick strings in some payloads."""
+        _seed_players(db)
+        svc = ADPService(db)
+        payload = [
+            {"player_id": 2462, "name": "Patrick Mahomes", "position": "QB", "team": "KC",
+             "adp": 49.5, "adp_formatted": "5.02", "times_drafted": 12,
+             "high": "4.02", "low": "5.09", "stdev": 6.1, "bye": 10},
+        ]
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _ffc_response(payload)
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("pigskin_mastermind.services.adp_service.urlopen", return_value=mock_resp):
+            svc.import_from_ffc(year=2025, num_teams=12)
+
+        qb = db.query(DBPlayer).filter_by(name="Patrick Mahomes").first()
+        season = db.query(DBPlayerSeasonStats).filter_by(player_id=qb.id, year=2025).first()
+        assert season.adp_high == pytest.approx(38.0)  # (4-1)*12 + 2
+        assert season.adp_low == pytest.approx(57.0)  # (5-1)*12 + 9
+
+    def test_normalized_name_matching_avoids_duplicates(self, db):
+        db.add(DBPlayer(player_id="espn_201", name="A.J. Brown", position="WR", nfl_team="PHI"))
+        db.commit()
+        svc = ADPService(db)
+        payload = [
+            {"player_id": 4321, "name": "AJ Brown", "position": "WR", "team": "PHI",
+             "adp": 10.0, "adp_formatted": "1.10", "times_drafted": 40,
+             "high": 5, "low": 15, "stdev": 2.0, "bye": 9},
+        ]
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _ffc_response(payload)
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("pigskin_mastermind.services.adp_service.urlopen", return_value=mock_resp):
+            result = svc.import_from_ffc(year=2025)
+
+        assert result["created"] == 0
+        assert db.query(DBPlayer).filter(DBPlayer.position == "WR").count() == 1
+        matched = db.query(DBPlayer).filter_by(name="A.J. Brown").first()
+        season = db.query(DBPlayerSeasonStats).filter_by(player_id=matched.id, year=2025).first()
+        assert season.adp == pytest.approx(10.0)
 
     def test_import_creates_season_stats_rows(self, db):
         _seed_players(db)

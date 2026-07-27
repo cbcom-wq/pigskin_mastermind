@@ -15,6 +15,7 @@ Usage
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.error import URLError
@@ -43,6 +44,41 @@ _FFC_POSITION_MAP: Dict[str, str] = {
 
 # Allowed scoring format slugs for FFC API
 _FFC_SCORING_FORMATS = {"standard", "ppr", "half-ppr", "2qb", "dynasty"}
+
+# Generational suffixes ignored when matching player names
+_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+
+
+def _pick_to_overall(value: Any, num_teams: int) -> Optional[float]:
+    """Convert an FFC pick value to an overall pick number.
+
+    FFC formats ``high``/``low`` as round.pick strings (e.g. "2.05" =
+    round 2, pick 5). Numeric values are returned as-is.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    match = re.fullmatch(r"(\d+)\.(\d+)", str(value).strip())
+    if match:
+        rnd, pick = int(match.group(1)), int(match.group(2))
+        return float((rnd - 1) * num_teams + pick)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_name(name: str) -> str:
+    """Normalize a player name for fuzzy matching.
+
+    Lowercases, strips punctuation, collapses whitespace, and drops
+    generational suffixes so e.g. "A.J. Brown" == "AJ Brown" and
+    "Aaron Jones Sr." == "Aaron Jones".
+    """
+    cleaned = re.sub(r"[.'’-]", "", name.lower())
+    parts = [w for w in cleaned.split() if w not in _NAME_SUFFIXES]
+    return " ".join(parts)
 
 
 class ADPService:
@@ -142,6 +178,7 @@ class ADPService:
                 "low": entry.get("low"),
                 "stdev": entry.get("stdev"),
                 "bye": entry.get("bye"),
+                "ffc_id": entry.get("player_id"),
             })
 
         return players if players else None
@@ -151,45 +188,61 @@ class ADPService:
         year: Optional[int] = None,
         scoring: str = "ppr",
         num_teams: int = 12,
+        create_missing: bool = True,
     ) -> Dict[str, Any]:
         """Fetch FFC ADP and persist into the local database.
 
         Matches players by ``name + position`` against existing
-        ``DBPlayer`` rows.  Creates ``DBPlayerSeasonStats`` rows as
-        needed.
+        ``DBPlayer`` rows (exact then normalized name).  Creates
+        ``DBPlayerSeasonStats`` rows as needed.
 
         Parameters
         ----------
-        year : int
-            Season year.
+        year : int, optional
+            Season year. Defaults to the current fantasy season.
         scoring : str
             FFC scoring format slug.
         num_teams : int
             League size.
+        create_missing : bool
+            When True (default), FFC players with no matching ``DBPlayer``
+            get a minimal player row created (with an ``ffc_``-prefixed
+            ``player_id``) so the draft pool mirrors the full FFC board.
 
         Returns
         -------
         dict
-            Summary with ``imported``, ``skipped``, ``total``, and
-            ``source`` keys.
+            Summary with ``imported``, ``created``, ``skipped``,
+            ``total``, ``source``, and ``last_updated`` keys.
         """
         year = year or current_fantasy_season()
         players = self.fetch_ffc_adp(year=year, scoring=scoring, num_teams=num_teams)
         if players is None:
-            return {"imported": 0, "skipped": 0, "total": 0, "source": self.ADP_SOURCE_LABEL, "error": "Failed to fetch data from Fantasy Football Calculator"}
+            return {
+                "imported": 0,
+                "created": 0,
+                "skipped": 0,
+                "total": 0,
+                "source": self.ADP_SOURCE_LABEL,
+                "error": "Failed to fetch data from Fantasy Football Calculator",
+            }
 
         imported = 0
+        created = 0
         skipped = 0
+        now = datetime.utcnow()
 
         for entry in players:
             name = entry["name"]
             position = entry["position"]
-            adp_value = entry["adp"]
 
             db_player = self._find_player(name, position)
             if db_player is None:
-                skipped += 1
-                continue
+                if not create_missing:
+                    skipped += 1
+                    continue
+                db_player = self._create_minimal_player(entry)
+                created += 1
 
             season = (
                 self.db.query(DBPlayerSeasonStats)
@@ -200,18 +253,24 @@ class ADPService:
                 season = DBPlayerSeasonStats(player_id=db_player.id, year=year)
                 self.db.add(season)
 
-            season.adp = adp_value
+            season.adp = entry["adp"]
             season.adp_source = self.ADP_SOURCE_LABEL
-            season.updated_at = datetime.utcnow()
+            season.adp_stdev = entry.get("stdev")
+            season.adp_high = _pick_to_overall(entry.get("high"), num_teams)
+            season.adp_low = _pick_to_overall(entry.get("low"), num_teams)
+            season.adp_times_drafted = entry.get("times_drafted")
+            season.updated_at = now
             imported += 1
 
         self.db.commit()
 
         return {
             "imported": imported,
+            "created": created,
             "skipped": skipped,
             "total": len(players),
             "source": self.ADP_SOURCE_LABEL,
+            "last_updated": now.isoformat(),
         }
 
     # ------------------------------------------------------------------
@@ -322,7 +381,7 @@ class ADPService:
         list[dict]
             Player dicts with ``id``, ``name``, ``position``,
             ``nfl_team``, ``projected_points``, ``adp_rank``,
-            ``headshot_url``, ordered by ADP ascending.
+            ``adp_stdev``, ``headshot_url``, ordered by ADP ascending.
         """
         query = (
             self.db.query(DBPlayer, DBPlayerSeasonStats)
@@ -345,6 +404,7 @@ class ADPService:
                 "nfl_team": player.nfl_team,
                 "projected_points": player.projected_points or 0.0,
                 "adp_rank": season.adp,
+                "adp_stdev": season.adp_stdev,
                 "headshot_url": player.headshot_url or "",
             }
             for player, season in rows
@@ -356,12 +416,49 @@ class ADPService:
     # ------------------------------------------------------------------
 
     def _find_player(self, name: str, position: str) -> Optional[DBPlayer]:
-        """Find a DBPlayer by name (case-insensitive) and position."""
-        return (
+        """Find a DBPlayer by name and position.
+
+        Tries an exact case-insensitive name match first, then a
+        normalized match (punctuation and Jr/Sr/III-style suffixes
+        stripped) so FFC spellings like "AJ Brown" still find
+        "A.J. Brown".
+        """
+        position = position.upper().strip()
+        exact = (
             self.db.query(DBPlayer)
             .filter(
                 DBPlayer.name.ilike(name.strip()),
-                DBPlayer.position == position.upper().strip(),
+                DBPlayer.position == position,
             )
             .first()
         )
+        if exact is not None:
+            return exact
+
+        target = _normalize_name(name)
+        candidates = (
+            self.db.query(DBPlayer).filter(DBPlayer.position == position).all()
+        )
+        for player in candidates:
+            if _normalize_name(player.name) == target:
+                return player
+        return None
+
+    def _create_minimal_player(self, entry: Dict[str, Any]) -> DBPlayer:
+        """Create a minimal DBPlayer row for an unmatched FFC entry.
+
+        The ``ffc_`` prefix on ``player_id`` keeps FFC-created rows
+        identifiable (and cleanable) later.
+        """
+        ffc_id = entry.get("ffc_id")
+        slug = re.sub(r"[^a-z0-9]+", "-", entry["name"].lower()).strip("-")
+        player = DBPlayer(
+            player_id=f"ffc_{ffc_id or slug}",
+            name=entry["name"],
+            position=entry["position"],
+            nfl_team=entry.get("team") or "FA",
+            projected_points=0.0,
+        )
+        self.db.add(player)
+        self.db.flush()  # assign player.id for the season-stats FK
+        return player
