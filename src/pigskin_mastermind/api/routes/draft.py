@@ -377,7 +377,7 @@ async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
     profiles: Optional[Dict[str, Dict[str, Any]]] = None
     if req.ai_profiles:
         profiles = {k: v for k, v in req.ai_profiles.items()}
-    elif req.ai_aggressiveness != 0.5:
+    else:
         # Generate per-slot profiles based on overall aggressiveness
         random_result = randomize_ai_profiles(
             num_teams=req.num_teams,

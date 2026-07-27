@@ -154,7 +154,6 @@ _STARTER_NEEDS = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DEF": 1}
 _DEPTH_CAPS = {"QB": 2, "RB": 5, "WR": 5, "TE": 2, "K": 1, "DEF": 1}
 # Positions that should only be drafted in later rounds
 _LATE_ROUND_POSITIONS = {"K", "DEF"}
-_LATE_ROUND_THRESHOLD_FRAC = 0.7  # don't draft K/DEF before 70% of rounds done
 
 # ---------------------------------------------------------------------------
 # Common lineup format presets
@@ -693,13 +692,13 @@ class MockDraftEngine:
         depth_caps: Optional[Dict[str, int]] = None,
     ) -> Optional[str]:
         """
-        Choose the best available player for an AI team using a score-based
-        evaluation that considers ADP, projected points, strategy, roster needs,
-        positional scarcity, and bounded randomness.
+        Choose the best available player for an AI team.
 
-        The scoring is anchored on **ADP** (the primary signal) so the AI drafts
-        players roughly in consensus order, with strategy / needs creating
-        sensible deviations.
+        Realism model: only a bounded window of players near the top of the
+        ADP-sorted board is considered (tight in early rounds, wider late),
+        scored on ADP alignment plus smaller projection / roster-need /
+        strategy nudges, then sampled with softmax randomness so picks
+        cluster around consensus with occasional bounded surprises.
 
         Returns the player ``id`` string, or None if pool is empty.
         """
@@ -715,58 +714,73 @@ class MockDraftEngine:
             pos_counts[pos] = pos_counts.get(pos, 0) + 1
 
         round_frac = current_round / max(num_rounds, 1)  # 0..1
-        total_picks = max(len(available) + len(roster), 1)  # approximate pool size
 
-        # ---- helper: ADP-based primary score ----
-        # Players with ADP near the current pick get the highest score;
-        # players whose ADP is far above the current pick are penalised.
-        has_adp = any(p.get("adp_rank") is not None for p in available)
+        # ---- candidate window ----
+        # The front of the ADP-sorted board holds both on-schedule players
+        # and anyone who has fallen past ADP. Restricting scoring to this
+        # window is what keeps picks realistic: no term below can promote a
+        # player from 80 spots down the board. (Players without ADP sort to
+        # the back.)
+        board = sorted(
+            available,
+            key=lambda p: (p.get("adp_rank") is None, p.get("adp_rank") or 0.0),
+        )
+        window = int(6 + 2 * current_round + 8 * prof.aggressiveness + 6 * prof.variance)
+        window = max(8, min(window, 30))
+        candidates = board[:window]
 
-        def _adp_score(p: Dict[str, Any]) -> float:
-            """Primary score based on how well player ADP aligns with pick.
+        # Keep unfilled starter positions draftable once the draft is nearly
+        # out of rounds (K/DEF, late TE, 2-QB formats).
+        rounds_left = max(num_rounds - current_round + 1, 1)
+        unmet_positions = [
+            pos for pos, need in _eff_starter_needs.items()
+            if pos_counts.get(pos, 0) < need
+        ]
+        unmet_slots = sum(
+            _eff_starter_needs[pos] - pos_counts.get(pos, 0) for pos in unmet_positions
+        )
+        if rounds_left <= unmet_slots + 1:
+            candidate_positions = {p["position"] for p in candidates}
+            for pos in unmet_positions:
+                if pos in candidate_positions:
+                    continue
+                best_at_pos = next((p for p in board if p["position"] == pos), None)
+                if best_at_pos is not None:
+                    candidates.append(best_at_pos)
 
-            Returns a float where 1.0 = player at their ADP (baseline).
-            Players who fell past their ADP receive a *bonus* above 1.0 that
-            rises with diminishing returns — a player available 20 picks past
-            ADP is a clear steal.  For very large falls (80+ picks) the bonus
-            gently tapers to avoid blindly chasing extreme outliers.
-            Reaches (drafting before ADP) receive a moderate penalty.
-            Players with no ADP fall back to projected-points ordering.
-            """
-            adp = p.get("adp_rank")
-            if adp is None or not has_adp:
-                # Fallback: use projected points as proxy for rank
-                max_proj = max(q["projected_points"] for q in available) or 1.0
-                return p["projected_points"] / max_proj
+        has_adp = any(p.get("adp_rank") is not None for p in candidates)
 
-            # How far the current pick is from the player's ADP.
-            # Positive delta = player fell past ADP (steal/value).
-            # Negative delta = drafting before ADP (reach).
-            delta = overall_pick - adp
-
-            if delta >= 0:
-                # Steal / value — player fell past their ADP.
-                # Bonus rises quickly with diminishing returns (Michaelis-
-                # Menten curve), capped at ~0.4.  For extreme falls (80+
-                # picks) the bonus gently softens — the pool may have
-                # passed on the player for a reason.
-                steal_bonus = 0.4 * delta / (delta + 12.0)
-                if delta > 80:
-                    steal_bonus *= max(0.4, 1.0 - (delta - 80) / 200)
-                return max(1.0 + steal_bonus, 0.15)
-            else:
-                # Reach — drafting a player before their ADP.
-                # Moderate penalty; strategy bonuses can still justify
-                # small-to-medium reaches.
-                reach = abs(delta)
-                return max(1.0 - (reach / total_picks) * 0.5, 0.05)
-
-        # ---- helper: projected-points tiebreaker ----
-        max_proj = max(p["projected_points"] for p in available) or 1.0
+        # ---- helper: projection nudge, normalised within position ----
+        # Cross-position raw points would hand QBs a permanent head start.
+        pos_max_proj: Dict[str, float] = {}
+        for p in available:
+            pts = p.get("projected_points") or 0.0
+            if pts > pos_max_proj.get(p["position"], 0.0):
+                pos_max_proj[p["position"]] = pts
 
         def _proj_score(p: Dict[str, Any]) -> float:
-            """Normalised projected points (0-1), used as tiebreaker."""
-            return p["projected_points"] / max_proj if max_proj else 0.0
+            top = pos_max_proj.get(p["position"], 0.0)
+            return (p.get("projected_points") or 0.0) / top if top else 0.0
+
+        # ---- helper: ADP-based primary score ----
+        # 1.0 = player exactly at ADP. The reach cost is on an absolute
+        # per-pick scale (denominator in picks, not pool size) and loosens
+        # as the draft progresses; the steal bonus stays monotone so an
+        # elite faller keeps getting more attractive until someone takes him.
+        reach_denom = 12.0 + 24.0 * round_frac + 10.0 * prof.aggressiveness
+
+        def _adp_score(p: Dict[str, Any]) -> float:
+            adp = p.get("adp_rank")
+            if adp is None or not has_adp:
+                # No consensus data — rank below on-schedule players, ordered
+                # by positional projection.
+                return 0.5 + 0.4 * _proj_score(p)
+
+            delta = overall_pick - adp
+            if delta >= 0:
+                # Fallen past ADP — half-max bonus at 25 picks, asymptote 0.6.
+                return 1.0 + 0.6 * delta / (delta + 25.0)
+            return max(1.0 - abs(delta) / reach_denom, 0.05)
 
         # ---- helper: roster-need bonus ----
         def _need_score(p: Dict[str, Any]) -> float:
@@ -791,11 +805,13 @@ class MockDraftEngine:
                 return 0.0
             if pos_counts.get(p["position"], 0) >= _eff_starter_needs.get(p["position"], 1):
                 return -0.8  # already have one — hard avoid
-            if round_frac < _LATE_ROUND_THRESHOLD_FRAC:
-                return -0.6  # too early for K/DEF
-            # Late round, still need starter — ramp up urgency toward final rounds
-            late_progress = (round_frac - _LATE_ROUND_THRESHOLD_FRAC) / (1 - _LATE_ROUND_THRESHOLD_FRAC + 0.01)
-            return 0.1 + 0.8 * late_progress
+            # Smooth ramp from "too early" to "grab your starter now" —
+            # no cliff at a single round boundary.
+            ramp_start, ramp_end = 0.55, 0.95
+            if round_frac < ramp_start:
+                return -0.6
+            progress = min((round_frac - ramp_start) / (ramp_end - ramp_start), 1.0)
+            return -0.6 + 1.5 * progress
 
         # ---- helper: strategy bias ----
         def _strategy_score(p: Dict[str, Any]) -> float:
@@ -842,28 +858,42 @@ class MockDraftEngine:
             return 0.0
 
         # ---- composite score ----
-        # Weights: ADP is the primary signal; projections are a meaningful
-        # secondary factor; roster needs and strategy provide targeted boosts.
-        W_ADP = 1.0        # Primary: follow consensus ADP
-        W_PROJ = 0.3       # Secondary: reward higher projected points
-        W_NEED = 0.5       # Roster construction
-        W_STRAT = 0.6      # Strategy emphasis
+        # ADP dominates: the candidate window bounds how far any preference
+        # can deviate from consensus, and the terms below are sized so a
+        # full-strength strategy bonus buys roughly a 5-8 pick reach in
+        # round 1 (more later, as the reach denominator loosens).
+        W_PROJ = 0.10      # Positional projection nudge
+        W_NEED = 0.4       # Roster construction
+        W_STRAT = 0.9      # Strategy emphasis (flavors return 0.5-0.6)
         W_KDEF = 1.0       # K/DEF timing gate
 
         scored: List[tuple] = []
-        for p in available:
-            adp = _adp_score(p) * W_ADP
-            proj = _proj_score(p) * W_PROJ
-            need = _need_score(p) * W_NEED * prof.roster_balance
-            strat_bonus = _strategy_score(p) * W_STRAT * (0.5 + 0.5 * prof.aggressiveness)
-            kdef = _kdef_penalty(p) * W_KDEF
-            noise = random.gauss(0, prof.variance * 0.20) if prof.variance > 0 else 0.0
-
-            total = adp + proj + need + strat_bonus + kdef + noise
+        for p in candidates:
+            total = (
+                _adp_score(p)
+                + _proj_score(p) * W_PROJ
+                + _need_score(p) * W_NEED * prof.roster_balance
+                + _strategy_score(p) * W_STRAT * (0.5 + 0.5 * prof.aggressiveness)
+                + _kdef_penalty(p) * W_KDEF
+            )
+            # Real drafter disagreement (FFC stdev) makes a player slightly
+            # more likely to move around his consensus slot.
+            stdev = p.get("adp_stdev")
+            if stdev:
+                total += 0.05 * min(float(stdev), 15.0) / 15.0
             scored.append((total, p))
 
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return scored[0][1]["id"]
+        if prof.variance <= 0:
+            # Deterministic: highest score, ties broken by ADP order.
+            return max(scored, key=lambda x: x[0])[1]["id"]
+
+        # Softmax sampling: bounded, tunable randomness. A candidate scoring
+        # `temperature` below the leader is ~e^-1 (~37%) as likely.
+        temperature = 0.03 + 0.12 * prof.variance
+        best = max(s for s, _ in scored)
+        weights = [math.exp((s - best) / temperature) for s, _ in scored]
+        chosen = random.choices([p for _, p in scored], weights=weights, k=1)[0]
+        return chosen["id"]
 
     @staticmethod
     def _count_positions(players: List[Dict[str, Any]]) -> Dict[str, int]:
