@@ -423,7 +423,7 @@ def stats_import_adp(csv_file, year, source):
 
 
 @stats.command('import-ffc-adp')
-@click.option('--year', type=int, required=True, help='Season year (e.g. 2025)')
+@click.option('--year', type=int, default=None, help='Season year (default: current season)')
 @click.option('--scoring', default='ppr', show_default=True,
               type=click.Choice(['standard', 'ppr', 'half-ppr', '2qb', 'dynasty'],
                                 case_sensitive=False),

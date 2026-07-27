@@ -11,6 +11,7 @@ from typing import Optional
 
 from pigskin_mastermind.api.database import get_db
 from pigskin_mastermind.services.adp_service import ADPService
+from pigskin_mastermind.utils.season import current_fantasy_season
 
 router = APIRouter(prefix="/adp", tags=["adp"])
 
@@ -21,7 +22,7 @@ router = APIRouter(prefix="/adp", tags=["adp"])
 
 
 class ImportFFCRequest(BaseModel):
-    year: int = Field(2025, ge=2018, le=2030)
+    year: Optional[int] = Field(None, ge=2018, le=2035)
     scoring: str = Field("ppr")
     num_teams: int = Field(12, ge=4, le=20)
 
@@ -45,13 +46,15 @@ async def import_ffc_adp(req: ImportFFCRequest, db: Session = Depends(get_db)):
     local database, matched by player name + position.
     """
     service = ADPService(db)
+    year = req.year or current_fantasy_season()
     result = service.import_from_ffc(
-        year=req.year,
+        year=year,
         scoring=req.scoring,
         num_teams=req.num_teams,
     )
     if result.get("error"):
         raise HTTPException(status_code=503, detail=result["error"])
+    result["year"] = year
     return result
 
 

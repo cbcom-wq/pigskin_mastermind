@@ -27,6 +27,7 @@ from pigskin_mastermind.services.mock_draft import (
     fetch_espn_adp,
     randomize_ai_profiles,
 )
+from pigskin_mastermind.utils.season import current_fantasy_season
 
 router = APIRouter(prefix="/draft", tags=["draft"])
 
@@ -46,7 +47,7 @@ class StartDraftRequest(BaseModel):
     ai_aggressiveness: float = Field(0.5, ge=0.0, le=1.0)
     use_espn_adp: bool = False
     use_ffc_adp: bool = False
-    espn_adp_year: int = Field(2025, ge=2019, le=2030)
+    espn_adp_year: Optional[int] = Field(None, ge=2019, le=2035)
     ffc_scoring: str = Field("half-ppr", description="FFC scoring format slug (standard, half-ppr, ppr)")
     position_by_round: Optional[Dict[str, str]] = None
     player_pool: Optional[List[Dict[str, Any]]] = None
@@ -279,6 +280,7 @@ async def draft_home(request: Request, db: Session = Depends(get_db)):
             "strategies": strategies,
             "lineup_presets": list(LINEUP_PRESETS.values()),
             "league_presets": league_presets,
+            "current_season": current_fantasy_season(),
         },
     )
 
@@ -313,6 +315,7 @@ async def simulation_page(request: Request, db: Session = Depends(get_db)):
             "strategies": strategies,
             "lineup_presets": list(LINEUP_PRESETS.values()),
             "league_presets": league_presets,
+            "current_season": current_fantasy_season(),
         },
     )
 
@@ -329,12 +332,13 @@ async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
     if req.randomize_user_pick_position or resolved_user_pick_position is None:
         resolved_user_pick_position = random.randint(1, req.num_teams)
 
+    adp_year = req.espn_adp_year or current_fantasy_season()
     player_pool: Optional[List[dict]] = None
     if req.use_ffc_adp:
         adp_svc = ADPService(db)
-        player_pool = adp_svc.get_adp_for_draft_pool(year=req.espn_adp_year)
+        player_pool = adp_svc.get_adp_for_draft_pool(year=adp_year)
         if not player_pool:
-            import_result = adp_svc.import_from_ffc(year=req.espn_adp_year, scoring=req.ffc_scoring)
+            import_result = adp_svc.import_from_ffc(year=adp_year, scoring=req.ffc_scoring)
             if import_result.get("error"):
                 raise HTTPException(
                     status_code=503,
@@ -344,7 +348,7 @@ async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
                     ),
                 )
 
-            player_pool = adp_svc.get_adp_for_draft_pool(year=req.espn_adp_year)
+            player_pool = adp_svc.get_adp_for_draft_pool(year=adp_year)
             if not player_pool:
                 raise HTTPException(
                     status_code=404,
@@ -354,7 +358,7 @@ async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
                     ),
                 )
     elif req.use_espn_adp:
-        player_pool, _ = _fetch_espn_adp_with_fallback(year=req.espn_adp_year)
+        player_pool, _ = _fetch_espn_adp_with_fallback(year=adp_year)
         if player_pool is None:
             raise HTTPException(
                 status_code=503,
@@ -421,7 +425,7 @@ async def randomize_strategies(req: RandomizeRequest):
 
 @router.get("/adp")
 async def get_draft_adp(
-    year: int = 2025,
+    year: Optional[int] = None,
     limit: int = 300,
     source: str = "ffc",
     scoring: str = "half-ppr",
@@ -434,7 +438,7 @@ async def get_draft_adp(
     - ``espn``: Live fetch from ESPN public API (legacy fallback).
 
     Args:
-        year: Fantasy football season year (default 2025).
+        year: Fantasy football season year (default: current season).
         limit: Maximum players to return (default 300, max 500).
         source: ADP data source (``ffc`` or ``espn``).
         scoring: Scoring format slug for FFC source (``standard``, ``half-ppr``,
@@ -443,6 +447,7 @@ async def get_draft_adp(
     Returns:
         JSON with ``players`` list ordered by ADP and ``source`` label.
     """
+    year = year or current_fantasy_season()
     limit = max(1, min(limit, 500))
 
     if source == "ffc":

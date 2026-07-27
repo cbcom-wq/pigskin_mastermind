@@ -9,7 +9,7 @@ Usage
 -----
 >>> from pigskin_mastermind.services.adp_service import ADPService
 >>> svc = ADPService(db_session)
->>> svc.import_from_ffc(year=2025, scoring="ppr", num_teams=12)
+>>> svc.import_from_ffc(scoring="ppr", num_teams=12)  # defaults to current season
 >>> adp = svc.get_adp("Saquon Barkley", "RB")
 """
 
@@ -23,6 +23,7 @@ from urllib.request import Request, urlopen
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.models.database import DBPlayer, DBPlayerSeasonStats
+from pigskin_mastermind.utils.season import current_fantasy_season
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class ADPService:
 
     def fetch_ffc_adp(
         self,
-        year: int = 2025,
+        year: Optional[int] = None,
         scoring: str = "ppr",
         num_teams: int = 12,
     ) -> Optional[List[Dict[str, Any]]]:
@@ -76,8 +77,8 @@ class ADPService:
 
         Parameters
         ----------
-        year : int
-            Season year (e.g. 2025).
+        year : int, optional
+            Season year (e.g. 2026). Defaults to the current fantasy season.
         scoring : str
             Scoring format slug: ``standard``, ``ppr``, ``half-ppr``,
             ``2qb``, or ``dynasty``.
@@ -98,6 +99,7 @@ class ADPService:
                 f"Must be one of: {', '.join(sorted(_FFC_SCORING_FORMATS))}"
             )
 
+        year = year or current_fantasy_season()
         url = f"{_FFC_API_BASE}/{scoring}?teams={num_teams}&year={year}"
         req = Request(
             url,
@@ -146,7 +148,7 @@ class ADPService:
 
     def import_from_ffc(
         self,
-        year: int = 2025,
+        year: Optional[int] = None,
         scoring: str = "ppr",
         num_teams: int = 12,
     ) -> Dict[str, Any]:
@@ -171,6 +173,7 @@ class ADPService:
             Summary with ``imported``, ``skipped``, ``total``, and
             ``source`` keys.
         """
+        year = year or current_fantasy_season()
         players = self.fetch_ffc_adp(year=year, scoring=scoring, num_teams=num_teams)
         if players is None:
             return {"imported": 0, "skipped": 0, "total": 0, "source": self.ADP_SOURCE_LABEL, "error": "Failed to fetch data from Fantasy Football Calculator"}

@@ -92,7 +92,7 @@
 
           <div id="espn-year-row" class="hidden flex items-center gap-3 pl-6 flex-wrap">
             <label class="text-xs font-semibold text-slate-500 w-20 flex-shrink-0">Season year</label>
-            <input type="number" id="espn-adp-year" min="2019" max="2030" value="2025"
+            <input type="number" id="espn-adp-year" min="2019" max="2035" value="{{ current_season }}"
                    class="w-28 bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-pigskin-500">
             <span id="ffc-scoring-format-group" class="hidden flex items-center gap-2">
               <label class="text-xs font-semibold text-slate-500 flex-shrink-0 ml-1">Scoring</label>
@@ -306,6 +306,7 @@
   const POS_COLORS = {QB:'badge-qb',RB:'badge-rb',WR:'badge-wr',TE:'badge-te',K:'badge-k',DEF:'badge-def'};
   const ADP_TIER1_MAX = 36;
   const ADP_TIER2_MAX = 72;
+  const CURRENT_SEASON = {{ current_season }};
 
   let adpPlayers = [];
 
@@ -418,7 +419,7 @@
   }
 
   async function loadAdpData() {
-    const year = parseInt(document.getElementById('espn-adp-year').value) || 2025;
+    const year = parseInt(document.getElementById('espn-adp-year').value) || CURRENT_SEASON;
     const source = currentAdpSource || 'ffc';
     const sourceLabel = source === 'ffc' ? 'FFC' : 'ESPN';
     const scoringEl = document.getElementById('ffc-scoring-format');
@@ -692,7 +693,7 @@
     const poolSource = document.querySelector('input[name="pool-source"]:checked').value;
     const useEspnAdp = poolSource === 'espn_adp';
     const useFfcAdp  = poolSource === 'ffc_adp';
-    const espnYear   = parseInt(document.getElementById('espn-adp-year').value) || 2025;
+    const espnYear   = parseInt(document.getElementById('espn-adp-year').value) || CURRENT_SEASON;
     const ffcScoringEl = document.getElementById('ffc-scoring-format');
     const ffcScoring = ffcScoringEl ? ffcScoringEl.value : 'half-ppr';
 
