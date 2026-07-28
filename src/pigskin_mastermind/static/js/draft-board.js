@@ -25,6 +25,78 @@ const DraftBoard = (() => {
 
   function posClass(pos) { return POS_COLORS[pos] || 'bg-slate-600 text-slate-200'; }
 
+  // --- Name display -------------------------------------------------
+  // Generational suffixes are part of the identity, not the surname:
+  // "Kenneth Walker III" must never collapse to "III".
+  const NAME_SUFFIXES = new Set(['jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv', 'v']);
+  // Surname particles that belong with the word after them
+  // ("Amon-Ra St. Brown" -> "St. Brown").
+  const NAME_PARTICLES = new Set(['st', 'st.', 'van', 'von', 'de', 'del', 'della',
+                                  'di', 'da', 'dos', 'la', 'le', 'den', 'der', 'ter']);
+
+  /** Compact board label for a player: surname plus any suffix. */
+  function displaySurname(fullName) {
+    if (!fullName) return '';
+    const name = String(fullName).trim();
+
+    // Team defenses read as "Denver Defense" — the city is the identity.
+    const def = name.match(/^(.*?)\s+(defense|d\/st|dst)$/i);
+    if (def) return def[1];
+
+    const tokens = name.split(/\s+/);
+    if (tokens.length === 1) return tokens[0];
+
+    const suffixes = [];
+    while (tokens.length > 1 && NAME_SUFFIXES.has(tokens[tokens.length - 1].toLowerCase())) {
+      suffixes.unshift(tokens.pop());
+    }
+
+    // Merge a particle into the surname, but never when it *is* the first
+    // name ("Van Jefferson" -> "Jefferson").
+    let start = tokens.length - 1;
+    if (start > 1 && NAME_PARTICLES.has(tokens[start - 1].toLowerCase())) start -= 1;
+
+    return [tokens.slice(start).join(' '), ...suffixes].join(' ');
+  }
+
+  // --- AI strategies ------------------------------------------------
+  const STRATEGY_LABELS = {
+    best_available: 'Best Available',
+    rb_heavy: 'RB Heavy',
+    wr_heavy: 'WR Heavy',
+    qb_early: 'QB Early',
+    te_early: 'TE Early',
+    hero_rb: 'Hero RB',
+    position_by_round: 'Position by Round',
+  };
+  const STRATEGY_SHORT = {
+    best_available: 'BPA',
+    rb_heavy: 'RB',
+    wr_heavy: 'WR',
+    qb_early: 'QB',
+    te_early: 'TE',
+    hero_rb: 'HERO',
+    position_by_round: 'PBR',
+  };
+
+  function strategyFor(slot) {
+    return (state.strategies || {})[String(slot)] || '';
+  }
+
+  /** Full strategy label for a slot; '' for the user's own team. */
+  function strategyLabel(slot) {
+    const strat = strategyFor(slot);
+    if (!strat || strat === 'user') return '';
+    return STRATEGY_LABELS[strat] || strat.replace(/_/g, ' ');
+  }
+
+  /** Abbreviated strategy for tight spaces like grid headers. */
+  function strategyShort(slot) {
+    const strat = strategyFor(slot);
+    if (!strat || strat === 'user') return '';
+    return STRATEGY_SHORT[strat] || strat.slice(0, 4).toUpperCase();
+  }
+
   // --- Init ---
   function init(initialState) {
     state = initialState;
@@ -125,7 +197,10 @@ const DraftBoard = (() => {
                 <span class="ai-dot-2 text-slate-400">.</span>
                 <span class="ai-dot-3 text-slate-400">.</span>
               </p>
-              <p class="text-xs text-slate-500">${state.current_pick_index + 1} of ${state.total_picks} total picks</p>
+              <p class="text-xs text-slate-500">
+                ${strategyLabel(state.current_slot)
+                  ? `<span class="font-semibold text-pigskin-400/80">${strategyLabel(state.current_slot)}</span> · `
+                  : ''}${state.current_pick_index + 1} of ${state.total_picks} total picks</p>
             </div>
           </div>
         </div>`;
@@ -205,7 +280,12 @@ const DraftBoard = (() => {
     let html = '<div class="draft-grid-header"></div>';
     for (let t = 1; t <= num_teams; t++) {
       const isUser = String(t) === userSlot;
-      html += `<div class="draft-grid-header ${isUser ? 'text-pigskin-400' : ''}">${isUser ? '★ You' : 'Tm ' + t}</div>`;
+      const strat = isUser ? '' : strategyShort(t);
+      const stratLine = strat
+        ? `<span class="draft-grid-header-strategy" title="${strategyLabel(t)}">${strat}</span>`
+        : '';
+      html += `<div class="draft-grid-header ${isUser ? 'text-pigskin-400' : ''}">`
+            + `<span>${isUser ? '★ You' : 'Tm ' + t}</span>${stratLine}</div>`;
     }
 
     for (let r = 1; r <= num_rounds; r++) {
@@ -230,7 +310,7 @@ const DraftBoard = (() => {
           const p = pick.player;
           cellContent = `
             <span class="inline-flex items-center justify-center w-6 h-4 rounded text-[8px] font-bold flex-shrink-0 ${posClass(p.position)}">${p.position}</span>
-            <span class="truncate text-slate-300 text-[11px]" title="${p.name}">${p.name.split(' ').pop()}</span>`;
+            <span class="truncate text-slate-300 text-[11px]" title="${p.name}">${displaySurname(p.name)}</span>`;
         } else if (isCurrent) {
           cellContent = `<span class="text-pigskin-400 text-[10px] font-bold">●</span>`;
         }
@@ -413,7 +493,7 @@ const DraftBoard = (() => {
         ${isUserTurn ? `
         <button onclick="DraftBoard.makePick('${player.id}')"
                 class="w-full py-3 rounded-xl font-bold text-white btn-enter-draft text-sm">
-          🏈 Draft ${player.name.split(' ').pop()}
+          🏈 Draft ${displaySurname(player.name)}
         </button>` : `
         <p class="text-center text-xs text-slate-500 py-2">Wait for your pick to draft this player</p>`}
       </div>`;
@@ -442,7 +522,10 @@ const DraftBoard = (() => {
     if (!sel || !state) return;
     const slots = Object.keys(state.rosters || {}).sort((a, b) => Number(a) - Number(b));
     sel.innerHTML = slots.map(slot => {
-      const label = slot === userSlot ? `Slot ${slot} (You)` : `Slot ${slot}`;
+      const strat = strategyLabel(slot);
+      const label = slot === userSlot
+        ? `Slot ${slot} (You)`
+        : `Slot ${slot}${strat ? ' · ' + strat : ''}`;
       const selected = slot === viewedSlot ? ' selected' : '';
       return `<option value="${slot}"${selected}>${label}</option>`;
     }).join('');
@@ -457,7 +540,9 @@ const DraftBoard = (() => {
       if (viewedSlot === userSlot) {
         title.innerHTML = `My Team <span class="text-slate-500 font-normal">(Slot ${userSlot})</span>`;
       } else {
-        title.innerHTML = `Team <span class="text-slate-500 font-normal">(Slot ${viewedSlot})</span>`;
+        const strat = strategyLabel(viewedSlot);
+        title.innerHTML = `Team <span class="text-slate-500 font-normal">(Slot ${viewedSlot})</span>`
+          + (strat ? ` <span class="text-[10px] font-semibold text-pigskin-400/80 uppercase tracking-wide">${strat}</span>` : '');
       }
     }
   }
