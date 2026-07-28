@@ -193,6 +193,51 @@ def test_variance_widens_deviation():
     assert mean_dev(0.9) > mean_dev(0.0)
 
 
+@pytest.mark.parametrize("fmt_name,slots", [
+    ("standard", {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1}),
+    ("2qb_2flex", {"QB": 2, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1, "DEF": 1}),
+    ("superflex", {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "SUPERFLEX": 1,
+                   "K": 1, "DEF": 1}),
+    ("3wr_2te", {"QB": 1, "RB": 2, "WR": 3, "TE": 2, "FLEX": 1, "K": 1, "DEF": 1}),
+])
+def test_every_team_can_field_the_imported_lineup(fmt_name, slots):
+    """AI teams must satisfy the league's positional starting slots.
+
+    Regression: in a 2-QB league a team finished with zero QBs, because a
+    deeply fallen value pick out-scored the unmet-starter urgency.
+    """
+    for seed in range(4):
+        random.seed(seed)
+        result = MockDraftEngine().run_simulations(
+            num_teams=10, num_rounds=16, num_simulations=1,
+            player_pool=_large_pool(), lineup_slots=slots,
+        )
+        for team_slot, roster in result["simulations"][0]["rosters"].items():
+            counts = roster["position_counts"]
+            for pos, need in slots.items():
+                if pos in ("FLEX", "SUPERFLEX"):
+                    continue  # any of several positions can fill these
+                assert counts.get(pos, 0) >= need, (
+                    f"{fmt_name} seed {seed} team {team_slot}: "
+                    f"{counts.get(pos, 0)} {pos} but format needs {need}"
+                )
+
+
+def test_flex_slots_do_not_force_extra_rbs_over_starters():
+    """FLEX inflation must not outrank filling a real positional slot."""
+    slots = {"QB": 2, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1, "DEF": 1}
+    random.seed(3)
+    result = MockDraftEngine().run_simulations(
+        num_teams=10, num_rounds=16, num_simulations=1,
+        player_pool=_large_pool(), lineup_slots=slots,
+    )
+    for roster in result["simulations"][0]["rosters"].values():
+        counts = roster["position_counts"]
+        # Enough bodies for the two flex slots on top of the hard starters.
+        flex_eligible = sum(counts.get(p, 0) for p in ("RB", "WR", "TE"))
+        assert flex_eligible >= 2 + 2 + 1 + 2
+
+
 def test_strategy_biases_stay_bounded():
     """A positionally biased drafter still cannot blow past the window."""
     random.seed(42)

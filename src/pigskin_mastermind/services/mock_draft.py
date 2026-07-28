@@ -221,6 +221,17 @@ def _derive_starter_needs(lineup_slots: Dict[str, int]) -> Dict[str, int]:
     return needs
 
 
+def _derive_hard_starter_needs(lineup_slots: Dict[str, int]) -> Dict[str, int]:
+    """Positional starting slots that *only* that position can fill.
+
+    Unlike :func:`_derive_starter_needs`, FLEX/SUPERFLEX slots are excluded:
+    those accept several positions, so a team is never locked out of
+    fielding a legal lineup by leaving them for last.  Used to decide when
+    filling a starting slot must outrank taking the best value on the board.
+    """
+    return {pos: lineup_slots.get(pos, 0) for pos in DRAFT_POSITIONS}
+
+
 def _derive_depth_caps(starter_needs: Dict[str, int]) -> Dict[str, int]:
     """Compute comfortable roster depth caps derived from starter requirements."""
     return {
@@ -494,6 +505,7 @@ class MockDraftEngine:
 
         resolved_lineup = dict(lineup_slots) if lineup_slots else dict(DEFAULT_LINEUP_SLOTS)
         sim_starter_needs = _derive_starter_needs(resolved_lineup)
+        sim_hard_needs = _derive_hard_starter_needs(resolved_lineup)
         sim_depth_caps = _derive_depth_caps(sim_starter_needs)
 
         results = []
@@ -563,6 +575,7 @@ class MockDraftEngine:
                     overall_pick=overall_pick,
                     starter_needs=sim_starter_needs,
                     depth_caps=sim_depth_caps,
+                    hard_starter_needs=sim_hard_needs,
                 )
                 if player_id:
                     self._apply_pick(state, player_id)
@@ -649,6 +662,7 @@ class MockDraftEngine:
         user_slot = str(state.get("user_pick_position", ""))
         s_needs = _derive_starter_needs(state.get("lineup_slots") or DEFAULT_LINEUP_SLOTS)
         d_caps = _derive_depth_caps(s_needs)
+        h_needs = _derive_hard_starter_needs(state.get("lineup_slots") or DEFAULT_LINEUP_SLOTS)
         while state["status"] == "in_progress":
             current_slot = self._current_slot(state)
             if current_slot is None:
@@ -671,6 +685,7 @@ class MockDraftEngine:
                 overall_pick=overall_pick,
                 starter_needs=s_needs,
                 depth_caps=d_caps,
+                hard_starter_needs=h_needs,
             )
             if player_id:
                 self._apply_pick(state, player_id)
@@ -690,6 +705,7 @@ class MockDraftEngine:
         overall_pick: int = 1,
         starter_needs: Optional[Dict[str, int]] = None,
         depth_caps: Optional[Dict[str, int]] = None,
+        hard_starter_needs: Optional[Dict[str, int]] = None,
     ) -> Optional[str]:
         """
         Choose the best available player for an AI team.
@@ -729,17 +745,25 @@ class MockDraftEngine:
         window = max(8, min(window, 30))
         candidates = board[:window]
 
-        # Keep unfilled starter positions draftable once the draft is nearly
-        # out of rounds (K/DEF, late TE, 2-QB formats).
+        # Roster-legality guard. Measured against *hard* positional slots
+        # (FLEX/SUPERFLEX accept several positions, so they can never lock a
+        # team out), this is what makes imported formats like 2-QB actually
+        # bind: slack is how many picks remain beyond the ones still needed
+        # to field a legal starting lineup.
+        _eff_hard_needs = (
+            hard_starter_needs if hard_starter_needs is not None else _eff_starter_needs
+        )
         rounds_left = max(num_rounds - current_round + 1, 1)
         unmet_positions = [
-            pos for pos, need in _eff_starter_needs.items()
+            pos for pos, need in _eff_hard_needs.items()
             if pos_counts.get(pos, 0) < need
         ]
         unmet_slots = sum(
-            _eff_starter_needs[pos] - pos_counts.get(pos, 0) for pos in unmet_positions
+            _eff_hard_needs[pos] - pos_counts.get(pos, 0) for pos in unmet_positions
         )
-        if rounds_left <= unmet_slots + 1:
+        slack = rounds_left - unmet_slots
+
+        if slack <= 3:
             candidate_positions = {p["position"] for p in candidates}
             for pos in unmet_positions:
                 if pos in candidate_positions:
@@ -747,6 +771,20 @@ class MockDraftEngine:
                 best_at_pos = next((p for p in board if p["position"] == pos), None)
                 if best_at_pos is not None:
                     candidates.append(best_at_pos)
+
+        def _starter_lockout(p: Dict[str, Any]) -> float:
+            """Force unfilled starting slots when picks are running out.
+
+            Without this a team finishes a 2-QB league with zero QBs: a
+            deeply fallen value pick out-scores the modest unmet-starter
+            urgency in ``_need_score``.  Ramps in over the last few picks
+            and dominates outright at zero slack.
+            """
+            if slack > 2:
+                return 0.0
+            if pos_counts.get(p["position"], 0) >= _eff_hard_needs.get(p["position"], 0):
+                return 0.0
+            return 1.2 * (3 - max(slack, 0)) / 3
 
         has_adp = any(p.get("adp_rank") is not None for p in candidates)
 
@@ -875,6 +913,7 @@ class MockDraftEngine:
                 + _need_score(p) * W_NEED * prof.roster_balance
                 + _strategy_score(p) * W_STRAT * (0.5 + 0.5 * prof.aggressiveness)
                 + _kdef_penalty(p) * W_KDEF
+                + _starter_lockout(p)
             )
             # Real drafter disagreement (FFC stdev) makes a player slightly
             # more likely to move around his consensus slot.
@@ -967,6 +1006,7 @@ class MockDraftEngine:
         profile = AIProfile.from_dict(state.get("ai_profiles", {}).get(slot_str, {}))
         s_needs = _derive_starter_needs(state.get("lineup_slots") or DEFAULT_LINEUP_SLOTS)
         d_caps = _derive_depth_caps(s_needs)
+        h_needs = _derive_hard_starter_needs(state.get("lineup_slots") or DEFAULT_LINEUP_SLOTS)
         player_id = self._ai_choose_player(
             state["available_players"],
             state["rosters"][slot_str],
@@ -978,6 +1018,7 @@ class MockDraftEngine:
             overall_pick=overall_pick,
             starter_needs=s_needs,
             depth_caps=d_caps,
+            hard_starter_needs=h_needs,
         )
         if player_id:
             self._apply_pick(state, player_id)

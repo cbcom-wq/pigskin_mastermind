@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pigskin-web",
+      "runtimeExecutable": ".venv/Scripts/python",
+      "runtimeArgs": ["-m", "uvicorn", "pigskin_mastermind.api.main:app", "--port", "8010", "--reload"],
+      "port": 8010
+    }
+  ]
+}

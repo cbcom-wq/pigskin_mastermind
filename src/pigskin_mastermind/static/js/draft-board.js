@@ -19,9 +19,32 @@ const DraftBoard = (() => {
 
   const POS_COLORS = {QB:'badge-qb',RB:'badge-rb',WR:'badge-wr',TE:'badge-te',K:'badge-k',DEF:'badge-def'};
   const POS_EMOJI = {QB:'🎯',RB:'🏃',WR:'🖐️',TE:'🤝',K:'🦵',DEF:'🛡️'};
-  const LINEUP_SLOTS = ['QB','RB1','RB2','WR1','WR2','TE','FLEX','K','DEF'];
-  const SLOT_POSITIONS = {QB:'QB',RB1:'RB',RB2:'RB',WR1:'WR',WR2:'WR',TE:'TE',FLEX:'FLEX',K:'K',DEF:'DEF'};
+  // Display order for starting slots; actual counts come from the draft's
+  // lineup_slots (imported league format), not from a fixed list.
+  const SLOT_ORDER = ['QB','RB','WR','TE','FLEX','SUPERFLEX','K','DEF'];
+  const DEFAULT_LINEUP_SLOTS = {QB:1, RB:2, WR:2, TE:1, FLEX:1, K:1, DEF:1};
   const FLEX_ELIGIBLE = ['RB','WR','TE'];
+  const SUPERFLEX_ELIGIBLE = ['QB','RB','WR','TE'];
+
+  /**
+   * Expand the draft's lineup_slots counts into individual starting slots.
+   * A 2-QB / 2-FLEX league yields QB1, QB2, …, FLEX1, FLEX2.
+   */
+  function lineupSlots() {
+    const counts = (state && state.lineup_slots) || DEFAULT_LINEUP_SLOTS;
+    const slots = [];
+    SLOT_ORDER.forEach(pos => {
+      const n = counts[pos] || 0;
+      for (let i = 1; i <= n; i++) slots.push({ key: `${pos}${i}`, label: pos, pos });
+    });
+    return slots;
+  }
+
+  function slotEligible(pos) {
+    if (pos === 'FLEX') return FLEX_ELIGIBLE;
+    if (pos === 'SUPERFLEX') return SUPERFLEX_ELIGIBLE;
+    return [pos];
+  }
 
   function posClass(pos) { return POS_COLORS[pos] || 'bg-slate-600 text-slate-200'; }
 
@@ -559,10 +582,13 @@ const DraftBoard = (() => {
     const bench = myPlayers.filter(p => !Object.values(filled).some(fp => fp && fp.id === p.id));
     const totalProj = myPlayers.reduce((s, p) => s + p.projected_points, 0);
 
-    // Needs summary
-    const needs = LINEUP_SLOTS.filter(s => !filled[s]);
+    // Needs summary — aggregated so a 2-QB league reads "2 QB", not "QB, QB"
+    const slots = lineupSlots();
+    const needs = slots.filter(s => !filled[s.key]);
+    const needCounts = {};
+    needs.forEach(s => { needCounts[s.label] = (needCounts[s.label] || 0) + 1; });
     const needsText = needs.length > 0
-      ? needs.map(s => SLOT_POSITIONS[s] === 'FLEX' ? 'FLEX' : SLOT_POSITIONS[s]).join(', ')
+      ? Object.entries(needCounts).map(([lbl, n]) => (n > 1 ? `${n} ${lbl}` : lbl)).join(', ')
       : 'Lineup complete!';
     const needsLabel = viewedSlot === userSlot ? 'Need: ' : 'Open: ';
 
@@ -579,9 +605,9 @@ const DraftBoard = (() => {
 
     // Starters
     html += '<div class="space-y-1.5 mb-3">';
-    LINEUP_SLOTS.forEach(slot => {
-      const player = filled[slot];
-      const label = slot.replace(/\d/,'');
+    slots.forEach(slot => {
+      const player = filled[slot.key];
+      const label = slot.label;
       if (player) {
         html += `<div class="slot-filled rounded-lg px-3 py-2 flex items-center gap-2">
           <span class="w-8 text-[10px] font-bold text-green-400 flex-shrink-0">${label}</span>
@@ -623,26 +649,24 @@ const DraftBoard = (() => {
   function assignToSlots(players) {
     const filled = {};
     const used = new Set();
+    const slots = lineupSlots();
 
-    // Fill required positions first
-    LINEUP_SLOTS.forEach(slot => {
-      if (slot === 'FLEX') return;
-      const targetPos = SLOT_POSITIONS[slot];
-      const candidate = players.find(p => p.position === targetPos && !used.has(p.id));
+    const bestFor = (slot) => {
+      const eligible = slotEligible(slot.pos);
+      return players
+        .filter(p => eligible.includes(p.position) && !used.has(p.id))
+        .sort((a, b) => b.projected_points - a.projected_points)[0];
+    };
+
+    // Required positions first, then FLEX/SUPERFLEX from what remains.
+    const isFlex = (s) => s.pos === 'FLEX' || s.pos === 'SUPERFLEX';
+    [...slots.filter(s => !isFlex(s)), ...slots.filter(isFlex)].forEach(slot => {
+      const candidate = bestFor(slot);
       if (candidate) {
-        filled[slot] = candidate;
+        filled[slot.key] = candidate;
         used.add(candidate.id);
       }
     });
-
-    // Fill FLEX with best remaining eligible
-    const flexCandidate = players
-      .filter(p => FLEX_ELIGIBLE.includes(p.position) && !used.has(p.id))
-      .sort((a, b) => b.projected_points - a.projected_points)[0];
-    if (flexCandidate) {
-      filled['FLEX'] = flexCandidate;
-      used.add(flexCandidate.id);
-    }
 
     return filled;
   }
