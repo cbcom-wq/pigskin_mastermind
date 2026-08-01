@@ -331,7 +331,11 @@ class TestTouchShare:
         assert share == pytest.approx(60.0, rel=0.01)
 
     def test_fallback_to_snap_pct(self, db):
-        """Falls back to snap_pct when no team data available."""
+        """Falls back to snap_pct when no team data available.
+
+        ``snap_pct`` is stored 0-100 (the importer scales nflverse's 0-1
+        ``offense_pct``), so 85% snaps is 85.0, not 0.85.
+        """
         team = DBTeam(team_id="t4", name="Team4", owner="Owner4")
         db.add(team)
         db.flush()
@@ -343,7 +347,7 @@ class TestTouchShare:
 
         db.add(DBPlayerSeasonStats(
             player_id=player.id, year=2024, games_played=16,
-            snap_pct=0.85,
+            snap_pct=85.0,
         ))
         db.commit()
 

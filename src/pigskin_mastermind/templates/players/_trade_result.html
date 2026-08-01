@@ -1,0 +1,26 @@
+{# Trade analyzer player list (HTMX fragment).
+
+   Serves both columns: `side` is "receive" (search results) or "give" (the
+   selected team's roster). It drives the toggle function and the data
+   attribute the analyzer's updateButtonStates() looks for.
+#}
+{% from "components/_player.html" import player_chip %}
+{% set side = side | default("receive", true) %}
+{% if not players %}
+<p class="text-sm text-slate-400 text-center py-4">{{ empty_message | default("No players found", true) }}</p>
+{% else %}
+{% for p in players %}
+<div class="flex items-center justify-between gap-2 p-2 rounded-lg hover:bg-slate-50 transition-colors">
+    {{ player_chip(p, size="xs", show_bye=True,
+                   subtitle=p.nfl_team ~ " · " ~ "%.1f" | format(p.projected_points or 0.0) ~ " pts") }}
+    {# The onclick attribute is single-quoted because tojson emits double quotes;
+       tojson also escapes any apostrophe, so O'Neal survives intact. #}
+    <button type="button"
+        onclick='toggle{{ side | capitalize }}Player({{ p.id }}, {{ p.name | tojson }}, {{ p.position | tojson }}, {{ "%.1f" | format(p.projected_points or 0.0) }})'
+        data-player-{{ side }}="{{ p.id }}"
+        class="px-2 py-1 text-xs font-medium rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors flex-shrink-0">
+        Select
+    </button>
+</div>
+{% endfor %}
+{% endif %}

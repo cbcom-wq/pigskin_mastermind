@@ -18,6 +18,32 @@ class DBPlayer(Base):
     stats = Column(JSON, default=dict)
     team_id = Column(Integer, ForeignKey("teams.id"), nullable=True)
     headshot_url = Column(String, nullable=True)
+
+    # Cross-source identity. ``player_id`` is whichever importer created the
+    # row first; these are the stable per-source keys used to recognize the
+    # same human across ESPN, nfl_data_py, and FantasyFootballCalculator.
+    espn_id = Column(String, nullable=True, index=True)
+    gsis_id = Column(String, nullable=True, index=True)
+    pfr_id = Column(String, nullable=True, index=True)
+
+    # Profile / bio. Deliberately real columns rather than keys in ``stats``:
+    # ``stats`` holds ESPN's raw scoring-period payload and is replaced
+    # wholesale on every sync, so anything stored there does not survive.
+    bye_week = Column(Integer, nullable=True)
+    injury_status = Column(String, nullable=True)  # ACTIVE, QUESTIONABLE, OUT, ...
+    injured = Column(Boolean, default=False)
+    jersey = Column(String, nullable=True)
+    age = Column(Integer, nullable=True)
+    height = Column(String, nullable=True)
+    weight = Column(Integer, nullable=True)
+    college = Column(String, nullable=True)
+    years_exp = Column(Integer, nullable=True)
+    draft_number = Column(Integer, nullable=True)
+    pos_rank = Column(Integer, nullable=True)  # ESPN positional ranking
+    percent_owned = Column(Float, nullable=True)
+    percent_started = Column(Float, nullable=True)
+    profile_updated_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

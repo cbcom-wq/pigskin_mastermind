@@ -68,7 +68,21 @@ class StatsService:
                 "fantasy_points_total": s.fantasy_points_total,
                 "fantasy_points_avg": round(s.fantasy_points_avg, 2),
                 "fantasy_points_per_touch": round(s.fantasy_points_per_touch, 2),
+                # Advanced metrics. Kept as None rather than 0 when unset so the
+                # UI can distinguish "not imported" from "genuinely zero".
                 "snap_pct": s.snap_pct,
+                "snap_count": s.snap_count,
+                "air_yards": s.air_yards,
+                "yac": s.yac,
+                "wopr": s.wopr,
+                "adp": s.adp,
+                "adp_source": s.adp_source,
+                "adp_stdev": s.adp_stdev,
+                "adp_high": s.adp_high,
+                "adp_low": s.adp_low,
+                "adp_times_drafted": s.adp_times_drafted,
+                "source": s.source,
+                "updated_at": s.updated_at.isoformat() if s.updated_at else None,
             }
             for s in seasons
         ]

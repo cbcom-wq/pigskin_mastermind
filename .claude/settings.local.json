@@ -5,7 +5,8 @@
       "Bash(.venv/Scripts/python -m pytest tests/test_nfl_data_service.py -v)",
       "Bash(.venv/Scripts/python -m pytest tests/ -v)",
       "Bash(cd:*)",
-      "Bash(python -m pytest:*)"
+      "Bash(python -m pytest:*)",
+      "Bash(find / -maxdepth 6 -iname \"*.claude*\" -type d 2>/dev/null | grep -v node_modules | head -50)"
     ]
   }
 }

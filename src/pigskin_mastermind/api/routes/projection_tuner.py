@@ -1001,11 +1001,17 @@ async def import_nfl_data_for_tuner(
         service = NFLDataService(db)
         seasonal_rows = service.import_seasonal_stats([year])
         defense_rows = service.import_team_defense_rankings([year])
+        # Snap share feeds the touch-percentage criteria, so import it here too
+        # rather than leaving snap_pct NULL for the whole tuner grid.
+        snap_rows = service.import_snap_counts([year])
+        roster_rows = service.import_roster_metadata([year])
         return {
             "status": "ok",
             "year": year,
             "seasonal_rows": seasonal_rows,
             "defense_rows": defense_rows,
+            "snap_rows": snap_rows,
+            "roster_rows": roster_rows,
             "message": (
                 f"Imported {seasonal_rows} player season records "
                 f"and {defense_rows} team/defense stats for {year}."

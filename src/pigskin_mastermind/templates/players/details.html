@@ -1,7 +1,26 @@
 {% extends "base.html" %}
+{% from "components/_player.html" import injury_badge, position_class %}
 
 {% block title %}{{ player.name }} — Pigskin Mastermind{% endblock %}
 {% block page_title %}Player Details{% endblock %}
+
+{# One metadata cell in the bio strip; renders nothing when the value is missing
+   so an unimported profile shows a short row rather than a row of dashes. #}
+{% macro bio_item(label, value, suffix="") %}
+{%- if value %}
+<div>
+    <p class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">{{ label }}</p>
+    <p class="text-sm font-medium text-slate-200">{{ value }}{{ suffix }}</p>
+</div>
+{% endif -%}
+{% endmacro %}
+
+{# Advanced-metric cell. A dash distinguishes "never imported" from a real zero. #}
+{% macro adv(value, fmt="%.2f", suffix="") -%}
+{%- if value is not none and value != 0 -%}
+<span class="text-slate-600">{{ fmt | format(value) }}{{ suffix }}</span>
+{%- else -%}<span class="text-slate-300">&mdash;</span>{%- endif -%}
+{%- endmacro %}
 
 {% block content %}
 <div class="max-w-5xl mx-auto">
@@ -20,28 +39,131 @@
                  class="w-20 h-20 rounded-full object-cover bg-slate-600 border-2 border-slate-500 shadow-lg flex-shrink-0"
                  onerror="this.style.display='none'" />
             {% endif %}
-            <span class="inline-flex items-center justify-center w-16 h-10 rounded-lg text-sm font-extrabold badge-{{ player.position | lower }} shadow-sm flex-shrink-0">
+            <span class="inline-flex items-center justify-center w-16 h-10 rounded-lg text-sm font-extrabold {{ position_class(player.position) }} shadow-sm flex-shrink-0">
                 {{ player.position }}
             </span>
-            <div class="flex-1">
-                <h2 class="text-2xl font-bold text-white">{{ player.name }}</h2>
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <h2 class="text-2xl font-bold text-white">{{ player.name }}</h2>
+                    {% if player.jersey %}<span class="text-lg font-semibold text-slate-400">#{{ player.jersey }}</span>{% endif %}
+                    {{ injury_badge(player.injury_status) }}
+                </div>
                 <p class="text-sm text-slate-300 mt-0.5">
                     {{ player.nfl_team }}
+                    {% if player.pos_rank %} &middot; <span class="text-slate-400">{{ player.position }}{{ player.pos_rank }}</span>{% endif %}
                     {% if fantasy_team %} &middot; <span class="text-pigskin-300 font-medium">{{ fantasy_team }}</span>{% endif %}
                 </p>
             </div>
             <div class="flex gap-6 text-center">
                 <div class="bg-white/10 rounded-lg px-4 py-2">
-                    <p class="text-2xl font-bold text-white">{{ "%.1f" | format(player.projected_points) }}</p>
+                    <p class="text-2xl font-bold text-white">{{ "%.1f" | format(player.projected_points or 0.0) }}</p>
                     <p class="text-[10px] uppercase tracking-wider text-slate-300 font-semibold">Projected</p>
                 </div>
                 <div class="bg-white/10 rounded-lg px-4 py-2">
-                    <p class="text-2xl font-bold text-white">{{ "%.1f" | format(player.actual_points) }}</p>
+                    <p class="text-2xl font-bold text-white">{{ "%.1f" | format(player.actual_points or 0.0) }}</p>
                     <p class="text-[10px] uppercase tracking-wider text-slate-300 font-semibold">Actual</p>
                 </div>
             </div>
         </div>
+
+        <!-- Bio / status strip -->
+        {% set has_bio = player.age or player.height or player.weight or player.college
+                         or player.years_exp is not none or player.bye_week
+                         or player.percent_owned is not none %}
+        <div class="mt-5 pt-4 border-t border-white/10">
+            {% if has_bio %}
+            <div class="flex flex-wrap gap-x-8 gap-y-3">
+                {{ bio_item("Age", player.age) }}
+                {{ bio_item("Height", player.height) }}
+                {{ bio_item("Weight", player.weight, " lb") }}
+                {{ bio_item("College", player.college) }}
+                {% if player.years_exp is not none %}
+                {{ bio_item("Experience", "Rookie" if player.years_exp == 0 else (player.years_exp ~ " yr")) }}
+                {% endif %}
+                {{ bio_item("Draft Pick", player.draft_number, " overall") }}
+                {% if player.bye_week %}
+                <div>
+                    <p class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Bye</p>
+                    <p class="text-sm font-medium text-slate-200">Week {{ player.bye_week }}</p>
+                </div>
+                {% endif %}
+                {% if adp_season and adp_season.adp is not none %}
+                <div>
+                    <p class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">ADP ({{ adp_season.year }})</p>
+                    <p class="text-sm font-medium text-slate-200">
+                        {{ "%.1f" | format(adp_season.adp) }}
+                        {%- if adp_season.adp_high and adp_season.adp_low %}
+                        <span class="text-xs text-slate-400">({{ adp_season.adp_high | round | int }}–{{ adp_season.adp_low | round | int }})</span>
+                        {%- endif %}
+                    </p>
+                </div>
+                {% endif %}
+                {% if player.percent_owned is not none %}
+                {{ bio_item("Rostered", "%.0f" | format(player.percent_owned), "%") }}
+                {% endif %}
+                {% if player.percent_started is not none %}
+                {{ bio_item("Started", "%.0f" | format(player.percent_started), "%") }}
+                {% endif %}
+            </div>
+            {% else %}
+            <div class="flex items-center gap-2 text-xs text-slate-400">
+                <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                No bio data yet — run <code class="px-1 py-0.5 rounded bg-white/10 text-slate-300">pigskin stats import-nfl</code> to pull age, college, and experience.
+            </div>
+            {% endif %}
+            {% if player.profile_updated_at %}
+            <p class="text-[10px] text-slate-500 mt-3">Profile updated {{ player.profile_updated_at.strftime('%b %d, %Y') }}</p>
+            {% endif %}
+        </div>
     </div>
+
+    <!-- Season at a glance -->
+    {% if latest_season %}
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 mb-6">
+        <div class="flex flex-col sm:flex-row items-center gap-4 sm:gap-8">
+            <h3 class="text-sm font-semibold text-slate-600 uppercase tracking-wider whitespace-nowrap">
+                {{ latest_season.year }} at a Glance
+            </h3>
+            <div class="flex flex-wrap gap-6">
+                <div class="text-center">
+                    <p class="text-lg font-bold text-slate-800">{{ latest_season.fantasy_points_avg }}</p>
+                    <p class="text-[10px] uppercase text-slate-400 font-semibold">Pts / Game</p>
+                </div>
+                <div class="text-center">
+                    <p class="text-lg font-bold text-slate-800">{{ latest_season.games_played }}</p>
+                    <p class="text-[10px] uppercase text-slate-400 font-semibold">Games</p>
+                </div>
+                <div class="text-center">
+                    <p class="text-lg font-bold {{ 'text-slate-800' if latest_season.snap_pct is not none else 'text-slate-300' }}">
+                        {% if latest_season.snap_pct is not none %}{{ "%.0f" | format(latest_season.snap_pct) }}%{% else %}—{% endif %}
+                    </p>
+                    <p class="text-[10px] uppercase text-slate-400 font-semibold">Snap Share</p>
+                </div>
+                {% if player.position == 'QB' %}
+                <div class="text-center">
+                    <p class="text-lg font-bold {{ 'text-slate-800' if latest_season.pass_rating else 'text-slate-300' }}">
+                        {% if latest_season.pass_rating %}{{ latest_season.pass_rating }}{% else %}—{% endif %}
+                    </p>
+                    <p class="text-[10px] uppercase text-slate-400 font-semibold">Passer Rtg</p>
+                </div>
+                {% else %}
+                <div class="text-center">
+                    <p class="text-lg font-bold {{ 'text-slate-800' if latest_season.wopr is not none else 'text-slate-300' }}">
+                        {% if latest_season.wopr is not none %}{{ "%.2f" | format(latest_season.wopr) }}{% else %}—{% endif %}
+                    </p>
+                    <p class="text-[10px] uppercase text-slate-400 font-semibold">WOPR</p>
+                </div>
+                {% endif %}
+                <div class="text-center">
+                    <p class="text-lg font-bold text-slate-800">{{ latest_season.fantasy_points_per_touch }}</p>
+                    <p class="text-[10px] uppercase text-slate-400 font-semibold">Pts / Touch</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 
     <!-- Recent Trend Banner -->
     {% if trend %}
@@ -157,7 +279,11 @@
                             <td class="px-4 py-2.5 text-right font-semibold text-slate-700">{{ s.fantasy_points_total }}</td>
                             <td class="px-4 py-2.5 text-right font-semibold text-slate-700">{{ s.fantasy_points_avg }}</td>
                             {% if player.position not in ('K', 'DEF') %}
-                            <td class="px-4 py-2.5 text-right text-slate-600">{{ "%.0f" | format(s.snap_pct or 0) }}%</td>
+                            {# NULL means snap data was never imported for this season — say so
+                               rather than printing a 0% that reads as "never played". #}
+                            <td class="px-4 py-2.5 text-right {{ 'text-slate-600' if s.snap_pct is not none else 'text-slate-300' }}">
+                                {% if s.snap_pct is not none %}{{ "%.0f" | format(s.snap_pct) }}%{% else %}—{% endif %}
+                            </td>
                             {% endif %}
                         </tr>
                         {% endfor %}
@@ -165,6 +291,60 @@
                 </table>
             </div>
         </div>
+
+        <!-- Advanced metrics: collected by the nfl_data_py import but not part
+             of the box score above. -->
+        {% if player.position not in ('K', 'DEF') %}
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mt-4">
+            <div class="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
+                <h4 class="text-xs uppercase tracking-wider font-semibold text-slate-500">Advanced</h4>
+                <span class="text-[10px] text-slate-400">source: nflverse</span>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="bg-slate-50 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                            <th class="px-4 py-3">Year</th>
+                            <th class="px-4 py-3 text-right" title="Offensive snaps played">Snaps</th>
+                            <th class="px-4 py-3 text-right" title="Share of team snaps">Snap %</th>
+                            {% if player.position in ('WR', 'TE', 'RB') %}
+                            <th class="px-4 py-3 text-right" title="Air yards, as reported by nflverse">Air Yards</th>
+                            <th class="px-4 py-3 text-right" title="Receiving yards after catch">YAC</th>
+                            <th class="px-4 py-3 text-right" title="Weighted Opportunity Rating — target share and air yards combined">WOPR</th>
+                            {% endif %}
+                            {% if player.position == 'QB' %}
+                            <th class="px-4 py-3 text-right" title="Passer rating">Passer Rtg</th>
+                            {% endif %}
+                            <th class="px-4 py-3 text-right" title="Fantasy points per touch">Pts / Touch</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        {% for s in seasons %}
+                        <tr class="hover:bg-slate-50 transition-colors">
+                            <td class="px-4 py-2.5 font-semibold text-slate-800">{{ s.year }}</td>
+                            <td class="px-4 py-2.5 text-right">{{ adv(s.snap_count, "%d") }}</td>
+                            <td class="px-4 py-2.5 text-right">{{ adv(s.snap_pct, "%.0f", "%") }}</td>
+                            {% if player.position in ('WR', 'TE', 'RB') %}
+                            <td class="px-4 py-2.5 text-right">{{ adv(s.air_yards) }}</td>
+                            <td class="px-4 py-2.5 text-right">{{ adv(s.yac, "%.0f") }}</td>
+                            <td class="px-4 py-2.5 text-right">{{ adv(s.wopr) }}</td>
+                            {% endif %}
+                            {% if player.position == 'QB' %}
+                            <td class="px-4 py-2.5 text-right">{{ adv(s.pass_rating, "%.1f") }}</td>
+                            {% endif %}
+                            <td class="px-4 py-2.5 text-right">{{ adv(s.fantasy_points_per_touch) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <p class="px-5 py-2.5 text-[11px] text-slate-400 border-t border-slate-100">
+                A dash means the metric was not imported for that season — run
+                <code class="px-1 py-0.5 rounded bg-slate-100">pigskin stats import-nfl --years {{ seasons[0].year }}</code>
+                to fill it in.
+            </p>
+        </div>
+        {% endif %}
         {% else %}
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center">
             <svg class="w-10 h-10 mx-auto mb-2 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">

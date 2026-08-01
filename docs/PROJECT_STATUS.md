@@ -80,13 +80,13 @@ Optional: set `ODDS_API_KEY` for live sportsbook data, or call the odds `/seed` 
 Verified by running it, not assumed.
 
 ```
-pytest tests/            →  506 passed, 18 failed
+pytest tests/            →  631 passed, 17 failed
 ```
 
 **Never run bare `pytest`** — it tries to collect the vendored `espn-api/tests/` tree and dies with
 12 collection errors before running anything.
 
-The 18 failures split into three groups:
+The 17 failures split into three groups:
 
 ### 1. Order-dependent (4) — a real test-infrastructure bug
 
@@ -108,7 +108,7 @@ override with a fixture that undoes itself.
 - `tests/unit/test_espn_sync.py::test_import_team_from_espn` — `TypeError: 'Mock' object is not
   subscriptable`; the mock no longer matches how `import_team()` accesses the ESPN league object.
 
-### 3. Assertion drift in integration tests (5+1)
+### 3. Assertion drift in integration tests (5)
 
 - `test_api_teams.py::test_get_teams_with_data` — seeds a team without `is_user_team=True`, so the
   filtered team list correctly omits it.
@@ -116,8 +116,9 @@ override with a fixture that undoes itself.
   route shapes have moved.
 - `test_api_projection_tuner.py` (2) — assert on literal strings that are no longer in the rendered
   template.
-- `test_mock_draft.py::test_get_adp_endpoint_ffc_auto_import_success` — fails in isolation too;
-  genuine, unrelated to the ordering bug above.
+
+`test_mock_draft.py::test_get_adp_endpoint_ffc_auto_import_success` used to be a sixth, genuine
+failure here; routing FFC name matching through `PlayerIdentityService` fixed it.
 
 None of these indicate broken production behavior that was verified here — but none have been
 investigated beyond the diagnosis above either. Treat group 1 as the highest-value fix: it makes the
@@ -169,7 +170,7 @@ src/pigskin_mastermind/
 ├── lib/espn-api/          # vendored, git-ignored
 └── cli.py                 # Click groups: team, lineup, import-cmd, entertainment, stats, odds
 
-alembic/versions/          # 12 migrations; single head e1f2a3b4c5d6
+alembic/versions/          # 15 migrations; single head c9f4a2b7d3e5
 docs/                      # this file, ARCHITECTURE.md, TUTORIAL.md, feature docs, plans/
 ```
 

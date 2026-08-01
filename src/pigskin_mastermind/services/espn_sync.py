@@ -19,6 +19,45 @@ from pigskin_mastermind.models.database import (
     DBPlayerGameLog, DBPlayerSeasonStats
 )
 from pigskin_mastermind.services.espn_stats_mapper import map_espn_breakdown_to_stats
+from pigskin_mastermind.services.player_identity import PlayerIdentityService
+from pigskin_mastermind.utils.positions import normalize_position
+
+# Regular-season weeks used when deriving a bye from a team's schedule.
+REGULAR_SEASON_WEEKS = range(1, 19)
+
+
+def _as_text(value: Any) -> Optional[str]:
+    """Coerce an ESPN attribute to a non-empty string, or None.
+
+    ESPN objects are loosely typed and a missing field can come back as
+    anything; profile data is never important enough to fail an import over.
+    """
+    if value is None or isinstance(value, (dict, list)):
+        return None
+    if not isinstance(value, (str, int, float)):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _as_int(value: Any) -> Optional[int]:
+    """Coerce an ESPN attribute to an int, or None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(value: Any) -> Optional[float]:
+    """Coerce an ESPN attribute to a float, or None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 # ESPN stat ID → internal scoring key mapping
 ESPN_STAT_ID_TO_SCORING_KEY = {
@@ -54,6 +93,70 @@ class ESPNSyncService:
 
     def __init__(self, db: Session):
         self.db = db
+        self.identity = PlayerIdentityService(db)
+
+    def _apply_espn_profile(self, db_player: DBPlayer, espn_player: Any) -> None:
+        """Copy ESPN's profile fields onto a player row.
+
+        ESPN hands us injury status, jersey, positional ranking, ownership, and
+        (for full ``Player`` objects) the pro-team schedule on every fetch —
+        none of it used to be stored. These live in dedicated columns because
+        ``db_player.stats`` is ESPN's raw scoring-period payload and gets
+        replaced on every sync.
+        """
+        injury_status = _as_text(getattr(espn_player, 'injuryStatus', None))
+        if injury_status:
+            db_player.injury_status = injury_status.upper()
+        db_player.injured = getattr(espn_player, 'injured', False) is True
+
+        jersey = _as_text(getattr(espn_player, 'jersey', None))
+        if jersey:
+            db_player.jersey = jersey
+
+        pos_rank = _as_int(getattr(espn_player, 'posRank', None))
+        if pos_rank:
+            db_player.pos_rank = pos_rank
+
+        # ESPN reports -1 when it has no ownership data for a player, which is
+        # not the same as 0% — leave the column NULL in that case.
+        for attr in ('percent_owned', 'percent_started'):
+            value = _as_float(getattr(espn_player, attr, None))
+            if value is not None and value >= 0:
+                setattr(db_player, attr, value)
+
+        bye_week = self._derive_bye_week(espn_player)
+        if bye_week:
+            db_player.bye_week = bye_week
+
+        self.identity.stamp_ids(db_player, espn_id=getattr(espn_player, 'playerId', None))
+        db_player.profile_updated_at = datetime.utcnow()
+
+    @staticmethod
+    def _derive_bye_week(espn_player: Any) -> Optional[int]:
+        """Infer the bye week from a player's pro-team schedule.
+
+        ``Player.schedule`` maps week → opponent for every week the team plays,
+        so the one regular-season week missing from it is the bye. Returns
+        ``None`` for ``BoxPlayer`` objects, whose ``schedule`` is empty because
+        ``BoxPlayer.__init__`` does not pass a pro-team schedule to ``Player``.
+        """
+        schedule = getattr(espn_player, 'schedule', None)
+        if not isinstance(schedule, dict) or not schedule:
+            return None
+
+        played = set()
+        for key in schedule:
+            try:
+                played.add(int(key))
+            except (TypeError, ValueError):
+                continue
+        if not played:
+            return None
+
+        missing = [week for week in REGULAR_SEASON_WEEKS if week not in played]
+        # Exactly one gap means a bye; several means a partial schedule we
+        # should not guess from.
+        return missing[0] if len(missing) == 1 else None
 
     @staticmethod
     def extract_scoring_settings(espn_league) -> dict:
@@ -76,7 +179,8 @@ class ESPNSyncService:
         return settings
 
     # Maps ESPN position_slot_counts keys → our internal lineup slot names.
-    # Keys not listed here (TQB, RB/WR, WR/TE, BE, IR, …) are ignored.
+    # Keys not listed here (TQB, RB/WR, WR/TE, IR, …) are ignored.  IR stays
+    # out on purpose: it is not a slot anybody drafts for.
     _ESPN_SLOT_NAME_MAP: Dict[str, str] = {
         "QB": "QB",
         "RB": "RB",
@@ -86,17 +190,20 @@ class ESPNSyncService:
         "K": "K",
         "RB/WR/TE": "FLEX",
         "OP": "SUPERFLEX",  # Offensive Player / QB-eligible flex
+        "BE": "BENCH",
     }
 
     @staticmethod
     def extract_roster_slots(espn_league) -> dict:
-        """Extract starting lineup slot counts from an ESPN League object.
+        """Extract roster slot counts from an ESPN League object.
 
         Reads ``espn_league.settings.position_slot_counts`` (populated by the
         espn_api library from ``rosterSettings.lineupSlotCounts``) and maps
         ESPN position names to our internal names (QB, RB, WR, TE, FLEX,
-        SUPERFLEX, K, DEF).  Bench/IR slots and unrecognised positions are
-        excluded.  Returns an empty dict if the data is unavailable.
+        SUPERFLEX, K, DEF, BENCH).  Bench is included because roster size —
+        starters plus bench — is what determines how many rounds a draft runs.
+        IR slots and unrecognised positions are excluded.  Returns an empty
+        dict if the data is unavailable.
         """
         position_slot_counts = getattr(
             getattr(espn_league, "settings", None), "position_slot_counts", None
@@ -180,12 +287,14 @@ class ESPNSyncService:
             self.db.add(db_player)
 
         db_player.name = espn_player.name
-        db_player.position = espn_player.position
+        db_player.position = normalize_position(espn_player.position) or espn_player.position
         db_player.nfl_team = espn_player.proTeam
         db_player.projected_points = getattr(espn_player, 'projected_points', 0.0)
         db_player.actual_points = getattr(espn_player, 'points', 0.0)
         db_player.stats = getattr(espn_player, 'stats', {})
         db_player.team_id = team_db_id
+
+        self._apply_espn_profile(db_player, espn_player)
 
         # Set headshot URL from ESPN CDN (only if not already set by nfl_data_py)
         if not db_player.headshot_url:
@@ -1172,10 +1281,12 @@ class ESPNSyncService:
             self.db.add(db_player)
 
         db_player.name = espn_player.name
-        db_player.position = espn_player.position
+        db_player.position = normalize_position(espn_player.position) or espn_player.position
         db_player.nfl_team = espn_player.proTeam
         db_player.projected_points = getattr(espn_player, 'projected_points', 0.0)
         db_player.actual_points = getattr(espn_player, 'points', 0.0)
+
+        self._apply_espn_profile(db_player, espn_player)
 
         # Merge new stats into existing JSON (preserve per-week data from
         # previous imports rather than overwriting with single-week data).

@@ -24,6 +24,8 @@ from urllib.request import Request, urlopen
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.models.database import DBPlayer, DBPlayerSeasonStats
+from pigskin_mastermind.services.player_identity import PlayerIdentityService
+from pigskin_mastermind.utils.positions import FANTASY_POSITIONS, normalize_position
 from pigskin_mastermind.utils.season import current_fantasy_season
 
 logger = logging.getLogger(__name__)
@@ -45,8 +47,8 @@ _FFC_POSITION_MAP: Dict[str, str] = {
 # Allowed scoring format slugs for FFC API
 _FFC_SCORING_FORMATS = {"standard", "ppr", "half-ppr", "2qb", "dynasty"}
 
-# Generational suffixes ignored when matching player names
-_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+# Minimum games before a season's per-game average is trusted as a projection.
+_MIN_GAMES_FOR_AVERAGE = 4
 
 
 def _pick_to_overall(value: Any, num_teams: int) -> Optional[float]:
@@ -69,18 +71,6 @@ def _pick_to_overall(value: Any, num_teams: int) -> Optional[float]:
         return None
 
 
-def _normalize_name(name: str) -> str:
-    """Normalize a player name for fuzzy matching.
-
-    Lowercases, strips punctuation, collapses whitespace, and drops
-    generational suffixes so e.g. "A.J. Brown" == "AJ Brown" and
-    "Aaron Jones Sr." == "Aaron Jones".
-    """
-    cleaned = re.sub(r"[.'’-]", "", name.lower())
-    parts = [w for w in cleaned.split() if w not in _NAME_SUFFIXES]
-    return " ".join(parts)
-
-
 class ADPService:
     """Single source of truth for player ADP data.
 
@@ -98,6 +88,7 @@ class ADPService:
 
     def __init__(self, db: Session) -> None:
         self.db = db
+        self.identity = PlayerIdentityService(db)
 
     # ------------------------------------------------------------------
     # Import
@@ -244,6 +235,16 @@ class ADPService:
                 db_player = self._create_minimal_player(entry)
                 created += 1
 
+            # FFC ships the bye week alongside ADP — the only free source we
+            # have for players who were never on an ESPN roster.
+            bye = entry.get("bye")
+            if bye:
+                try:
+                    db_player.bye_week = int(bye)
+                    db_player.profile_updated_at = now
+                except (TypeError, ValueError):
+                    pass
+
             season = (
                 self.db.query(DBPlayerSeasonStats)
                 .filter_by(player_id=db_player.id, year=year)
@@ -379,9 +380,11 @@ class ADPService:
         Returns
         -------
         list[dict]
-            Player dicts with ``id``, ``name``, ``position``,
-            ``nfl_team``, ``projected_points``, ``adp_rank``,
-            ``adp_stdev``, ``headshot_url``, ordered by ADP ascending.
+            Player dicts with ``id``, ``db_id``, ``name``, ``position``,
+            ``nfl_team``, ``projected_points``, ``adp_rank``, ``adp_stdev``,
+            ``headshot_url``, ``bye_week``, and ``injury_status``, ordered by
+            ADP ascending.  ``db_id`` is the primary key, used by the draft
+            board to link into the player profile.
         """
         query = (
             self.db.query(DBPlayer, DBPlayerSeasonStats)
@@ -399,17 +402,50 @@ class ADPService:
         return [
             {
                 "id": player.player_id,
+                "db_id": player.id,
                 "name": player.name,
                 "position": player.position,
                 "nfl_team": player.nfl_team,
-                "projected_points": player.projected_points or 0.0,
+                "projected_points": self._pool_projection(player),
                 "adp_rank": season.adp,
                 "adp_stdev": season.adp_stdev,
                 "headshot_url": player.headshot_url or "",
+                "bye_week": player.bye_week,
+                "injury_status": player.injury_status,
             }
             for player, season in rows
-            if player.position in ("QB", "RB", "WR", "TE", "K", "DEF")
+            if player.position in FANTASY_POSITIONS
         ]
+
+    def _pool_projection(self, player: DBPlayer) -> float:
+        """Projected points for the draft pool, with a last-season fallback.
+
+        Players the FFC board created have ``projected_points == 0``, and a
+        pool of zeros flattens the AI drafter's projection nudge and makes the
+        post-draft grade meaningless.
+
+        The fallback must match the unit of ``DBPlayer.projected_points``,
+        which ESPN populates per game — so this uses the season *average*, not
+        the total. Mixing the two would hand players with a season total a
+        ~17x advantage in the drafter's within-position normalization.
+        """
+        if player.projected_points:
+            return player.projected_points
+
+        latest = (
+            self.db.query(DBPlayerSeasonStats)
+            .filter(
+                DBPlayerSeasonStats.player_id == player.id,
+                DBPlayerSeasonStats.fantasy_points_avg > 0,
+                # Some ESPN-sourced season rows record a full-season total
+                # against games_played=1, which makes avg == total. Requiring a
+                # real sample keeps those out of the pool.
+                DBPlayerSeasonStats.games_played >= _MIN_GAMES_FOR_AVERAGE,
+            )
+            .order_by(DBPlayerSeasonStats.year.desc())
+            .first()
+        )
+        return round(latest.fantasy_points_avg, 1) if latest else 0.0
 
     def get_adp_metadata(self, year: Optional[int] = None) -> Dict[str, Any]:
         """Return freshness info for locally stored FFC ADP data.
@@ -450,31 +486,12 @@ class ADPService:
     def _find_player(self, name: str, position: str) -> Optional[DBPlayer]:
         """Find a DBPlayer by name and position.
 
-        Tries an exact case-insensitive name match first, then a
-        normalized match (punctuation and Jr/Sr/III-style suffixes
-        stripped) so FFC spellings like "AJ Brown" still find
-        "A.J. Brown".
+        Delegates to :class:`PlayerIdentityService` so FFC shares one matcher
+        with the ESPN and nfl_data_py importers — exact name first, then a
+        normalized match with punctuation and Jr/Sr/III-style suffixes stripped,
+        so "AJ Brown" still finds "A.J. Brown".
         """
-        position = position.upper().strip()
-        exact = (
-            self.db.query(DBPlayer)
-            .filter(
-                DBPlayer.name.ilike(name.strip()),
-                DBPlayer.position == position,
-            )
-            .first()
-        )
-        if exact is not None:
-            return exact
-
-        target = _normalize_name(name)
-        candidates = (
-            self.db.query(DBPlayer).filter(DBPlayer.position == position).all()
-        )
-        for player in candidates:
-            if _normalize_name(player.name) == target:
-                return player
-        return None
+        return self.identity.find_by_name(name, position)
 
     def _create_minimal_player(self, entry: Dict[str, Any]) -> DBPlayer:
         """Create a minimal DBPlayer row for an unmatched FFC entry.
@@ -487,10 +504,13 @@ class ADPService:
         player = DBPlayer(
             player_id=f"ffc_{ffc_id or slug}",
             name=entry["name"],
-            position=entry["position"],
+            position=normalize_position(entry["position"]) or entry["position"],
             nfl_team=entry.get("team") or "FA",
             projected_points=0.0,
         )
         self.db.add(player)
         self.db.flush()  # assign player.id for the season-stats FK
+        # Stamp whatever cross-source IDs nflverse knows, so the next ESPN or
+        # nfl_data_py import recognizes this row instead of making another one.
+        self.identity.stamp_ids(player)
         return player

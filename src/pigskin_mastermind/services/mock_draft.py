@@ -143,10 +143,14 @@ class DraftStrategy(str, Enum):
         }
 
 
-# Default lineup requirements for a standard 9-starter roster
-DEFAULT_LINEUP_SLOTS = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1}
+# Default lineup requirements for a standard 9-starter roster plus a 6-man bench
+DEFAULT_LINEUP_SLOTS = {
+    "QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1, "BENCH": 6,
+}
 FLEX_ELIGIBLE = {"RB", "WR", "TE"}
 DRAFT_POSITIONS = ["QB", "RB", "WR", "TE", "K", "DEF"]
+# Roster slot that holds no starter — it only sizes the roster (and the draft).
+BENCH_SLOT = "BENCH"
 
 # Minimum roster targets for a well-constructed team
 _STARTER_NEEDS = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DEF": 1}
@@ -159,46 +163,60 @@ _LATE_ROUND_POSITIONS = {"K", "DEF"}
 # Common lineup format presets
 # ---------------------------------------------------------------------------
 #
-# Each preset is a dict of position → number of starting slots.
-# FLEX = RB/WR/TE eligible slot.  SUPERFLEX = QB/RB/WR/TE eligible slot.
+# Each preset is a dict of position → number of slots.  FLEX = RB/WR/TE
+# eligible; SUPERFLEX = QB/RB/WR/TE eligible; BENCH holds no starter and exists
+# purely to size the roster (and therefore the number of draft rounds).
 # ---------------------------------------------------------------------------
 LINEUP_PRESETS: Dict[str, Dict[str, Any]] = {
     "standard": {
         "label": "Standard (9-man)",
-        "description": "Classic 9-starter format: 1QB 2RB 2WR 1TE 1FLEX 1K 1DST",
-        "slots": {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1},
+        "description": "Classic 9-starter format: 1QB 2RB 2WR 1TE 1FLEX 1K 1DST + 6 bench",
+        "slots": {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1, "BENCH": 6},
     },
     "ppr_10": {
         "label": "PPR (10-man)",
-        "description": "10-starter PPR: 1QB 2RB 3WR 1TE 1FLEX 1K 1DST",
-        "slots": {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1},
+        "description": "10-starter PPR: 1QB 2RB 3WR 1TE 1FLEX 1K 1DST + 6 bench",
+        "slots": {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1, "BENCH": 6},
     },
     "superflex": {
         "label": "Superflex",
         "description": "10-starter with a QB-eligible SUPERFLEX slot; QBs have huge value",
-        "slots": {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "SUPERFLEX": 1, "K": 1, "DEF": 1},
+        "slots": {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "SUPERFLEX": 1,
+                  "K": 1, "DEF": 1, "BENCH": 6},
     },
     "two_qb": {
         "label": "2-QB",
         "description": "Requires two starting QBs — draft a QB early AND late",
-        "slots": {"QB": 2, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1},
+        "slots": {"QB": 2, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1, "BENCH": 6},
     },
     "te_premium": {
         "label": "TE Premium",
         "description": "Two TE starter slots — elite TEs are must-have targets",
-        "slots": {"QB": 1, "RB": 2, "WR": 2, "TE": 2, "FLEX": 1, "K": 1, "DEF": 1},
+        "slots": {"QB": 1, "RB": 2, "WR": 2, "TE": 2, "FLEX": 1, "K": 1, "DEF": 1, "BENCH": 6},
     },
     "deep_flex": {
         "label": "Deep Flex (3 FLEX)",
         "description": "Three FLEX slots on top of 1QB 2RB 2WR 1TE — great for depth",
-        "slots": {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 3, "K": 1, "DEF": 1},
+        "slots": {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 3, "K": 1, "DEF": 1, "BENCH": 6},
     },
     "no_k_def": {
         "label": "No K/DST",
         "description": "Skip kickers and defenses entirely — 1QB 3RB 4WR 2TE 2FLEX",
-        "slots": {"QB": 1, "RB": 3, "WR": 4, "TE": 2, "FLEX": 2, "K": 0, "DEF": 0},
+        "slots": {"QB": 1, "RB": 3, "WR": 4, "TE": 2, "FLEX": 2, "K": 0, "DEF": 0, "BENCH": 6},
     },
 }
+
+# A draft cannot run more rounds than this (matches the API's num_rounds cap).
+MAX_DRAFT_ROUNDS = 20
+
+
+def roster_size(lineup_slots: Dict[str, int]) -> int:
+    """Total roster spots in a format — starters plus bench.
+
+    This is the number of picks each team makes, so it is what the draft's
+    round count should follow.
+    """
+    return sum(int(count or 0) for count in lineup_slots.values())
 
 
 def _derive_starter_needs(lineup_slots: Dict[str, int]) -> Dict[str, int]:

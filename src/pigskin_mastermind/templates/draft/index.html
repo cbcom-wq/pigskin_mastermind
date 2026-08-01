@@ -58,10 +58,14 @@
                    oninput="onSettingsChange()"
                    class="w-full bg-slate-800/80 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-pigskin-500 focus:border-transparent">
             <label class="mt-2 flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer select-none">
-              <input type="checkbox" id="random-user-slot" onchange="onSettingsChange()"
+              <input type="checkbox" id="random-user-slot" onchange="onRandomSlotToggle()"
                      class="text-pigskin-500 bg-slate-700 border-slate-600 rounded">
-              Randomize my slot at draft start
+              Pick my slot at random
             </label>
+            <button type="button" id="reroll-slot-btn" onclick="rollUserSlot()"
+                    class="hidden mt-1.5 text-[11px] text-pigskin-400 hover:text-pigskin-300 transition-colors">
+              🎲 Re-roll
+            </button>
           </div>
         </div>
 
@@ -161,7 +165,10 @@
 
             <!-- Manual slot counts -->
             <div>
-              <p class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Starting Slots</p>
+              <div class="flex items-baseline justify-between mb-2">
+                <p class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Roster Slots</p>
+                <p class="text-[10px] text-pigskin-400 font-semibold" id="roster-size-note"></p>
+              </div>
               <div class="grid grid-cols-2 sm:grid-cols-4 gap-2" id="slot-inputs">
                 <!-- rendered by JS -->
               </div>
@@ -169,7 +176,9 @@
 
             <p class="text-[11px] text-slate-600">
               FLEX = RB/WR/TE eligible · SUPERFLEX = QB/RB/WR/TE eligible.
-              AI drafting logic adapts to your roster format automatically.
+              BENCH holds no starter — it sizes the roster, so starters + bench
+              sets the number of draft rounds. AI drafting logic adapts to your
+              roster format automatically.
             </p>
           </div>
         </div>
@@ -302,7 +311,12 @@
   const LINEUP_PRESETS = {{ lineup_presets | tojson }};
   const LEAGUE_PRESETS = {{ league_presets | tojson }};
   const POSITIONS = ['QB','RB','WR','TE','K','DEF'];
-  const ALL_SLOT_POSITIONS = ['QB','RB','WR','TE','FLEX','SUPERFLEX','K','DEF'];
+  // Starting slots, then BENCH — bench fills no lineup spot, it just sizes the
+  // roster, and roster size is what sets the number of draft rounds.
+  const STARTING_SLOT_POSITIONS = ['QB','RB','WR','TE','FLEX','SUPERFLEX','K','DEF'];
+  const BENCH_SLOT = 'BENCH';
+  const ALL_SLOT_POSITIONS = [...STARTING_SLOT_POSITIONS, BENCH_SLOT];
+  const MAX_ROUNDS = 20;
   const POS_COLORS = {QB:'badge-qb',RB:'badge-rb',WR:'badge-wr',TE:'badge-te',K:'badge-k',DEF:'badge-def'};
   const ADP_TIER1_MAX = 36;
   const ADP_TIER2_MAX = 72;
@@ -310,8 +324,8 @@
 
   let adpPlayers = [];
 
-  // Current lineup slot configuration (position → count)
-  let currentLineupSlots = {QB:1, RB:2, WR:2, TE:1, FLEX:1, K:1, DEF:1};
+  // Current lineup slot configuration (position → count), bench included
+  let currentLineupSlots = {QB:1, RB:2, WR:2, TE:1, FLEX:1, K:1, DEF:1, BENCH:6};
 
   function posClass(pos) { return POS_COLORS[pos] || 'bg-slate-600 text-slate-200'; }
 
@@ -322,29 +336,41 @@
     label.textContent = text;
   }
 
+  /** Roll a fresh random pick slot into the field. */
+  function rollUserSlot() {
+    const teams = parseInt(document.getElementById('num-teams').value) || 10;
+    document.getElementById('user-pick-pos').value =
+      String(Math.floor(Math.random() * teams) + 1);
+    onSettingsChange();
+  }
+
+  function onRandomSlotToggle() {
+    if (document.getElementById('random-user-slot').checked) rollUserSlot();
+    else onSettingsChange();
+  }
+
   function onSettingsChange() {
     const teams = parseInt(document.getElementById('num-teams').value) || 10;
     const rounds = parseInt(document.getElementById('num-rounds').value) || 15;
     const randomUserSlot = document.getElementById('random-user-slot').checked;
     const slotInput = document.getElementById('user-pick-pos');
     slotInput.max = String(teams);
-    let slot;
-    if (randomUserSlot) {
-      slot = Math.floor(Math.random() * teams) + 1;
-      slotInput.value = String(slot);
-    } else {
-      slot = Math.max(1, Math.min(teams, parseInt(slotInput.value) || 1));
-      slotInput.value = String(slot);
-    }
+    // The slot in this field is the one the draft uses — random or typed.
+    // Re-rolling only happens on an explicit roll, never as a side effect of
+    // editing an unrelated setting.
+    const slot = Math.max(1, Math.min(teams, parseInt(slotInput.value) || 1));
+    slotInput.value = String(slot);
     slotInput.disabled = randomUserSlot;
+    document.getElementById('reroll-slot-btn').classList.toggle('hidden', !randomUserSlot);
     document.getElementById('preview-picks').textContent = teams * rounds;
     document.getElementById('preview-user-picks').textContent = rounds;
     document.getElementById('preview-snake-note').textContent =
-      randomUserSlot
-        ? `Snake draft · Random slot (1-${teams})`
-        : `Snake draft · Slot ${slot} of ${teams}`;
+      `Snake draft · Slot ${slot} of ${teams}${randomUserSlot ? ' (random)' : ''}`;
     setLobbyStatus('Draft configured — ready to start', 'bg-yellow-400');
     renderSnakeDiagram(teams, rounds, slot);
+    // Keep the per-slot AI panels aligned with the current settings.
+    if (!document.getElementById('ai-config').classList.contains('hidden')) buildAIRows();
+    if (!document.getElementById('pbr-config').classList.contains('hidden')) buildPBRRows();
     if (adpPlayers.length) filterAdpPlayers();
   }
 
@@ -542,9 +568,14 @@
 
   function buildAIRows() {
     const numTeams = parseInt(document.getElementById('num-teams').value) || 10;
-    const randomUserSlot = document.getElementById('random-user-slot').checked;
-    const userSlot = randomUserSlot ? null : (parseInt(document.getElementById('user-pick-pos').value) || 1);
+    const userSlot = parseInt(document.getElementById('user-pick-pos').value) || 1;
     const container = document.getElementById('ai-strategy-rows');
+    // Rebuilds happen whenever the slot or team count changes, so carry any
+    // hand-picked strategies across.
+    const chosen = {};
+    container.querySelectorAll('select[id^="ai-strat-"]').forEach(sel => {
+      chosen[sel.id.replace('ai-strat-', '')] = sel.value;
+    });
     container.innerHTML = '';
     const optHtml = STRATEGIES.map(s => `<option value="${s.value}">${s.label}</option>`).join('');
     for (let slot = 1; slot <= numTeams; slot++) {
@@ -562,18 +593,18 @@
         </select>
         <span id="ai-badge-${slot}">${badgeHtml}</span>`;
       container.appendChild(div);
-      // Restore selected strategy from profile data
-      if (profileInfo && profileInfo.strategy) {
+      // Restore the prior selection, falling back to randomised profile data
+      const restored = chosen[String(slot)] || (profileInfo && profileInfo.strategy);
+      if (restored) {
         const sel = document.getElementById(`ai-strat-${slot}`);
-        if (sel) sel.value = profileInfo.strategy;
+        if (sel) sel.value = restored;
       }
     }
   }
 
   async function randomizeAI() {
     const numTeams = parseInt(document.getElementById('num-teams').value) || 10;
-    const randomUserSlot = document.getElementById('random-user-slot').checked;
-    const userSlot = randomUserSlot ? null : (parseInt(document.getElementById('user-pick-pos').value) || 1);
+    const userSlot = parseInt(document.getElementById('user-pick-pos').value) || 1;
     const aggr = parseInt(document.getElementById('ai-aggressiveness').value) / 100;
     try {
       const resp = await fetch('/draft/randomize-strategies', {
@@ -602,6 +633,11 @@
   function buildPBRRows() {
     const numRounds = parseInt(document.getElementById('num-rounds').value) || 15;
     const container = document.getElementById('pbr-rows');
+    // Preserve picks across rebuilds triggered by a round-count change.
+    const chosen = {};
+    container.querySelectorAll('select[id^="pbr-"]').forEach(sel => {
+      chosen[sel.id.replace('pbr-', '')] = sel.value;
+    });
     container.innerHTML = '';
     for (let rnd = 1; rnd <= numRounds; rnd++) {
       const div = document.createElement('div');
@@ -613,6 +649,10 @@
           ${POSITIONS.map(p => `<option value="${p}">${p}</option>`).join('')}
         </select>`;
       container.appendChild(div);
+      if (chosen[String(rnd)]) {
+        const sel = document.getElementById(`pbr-${rnd}`);
+        if (sel) sel.value = chosen[String(rnd)];
+      }
     }
   }
 
@@ -641,6 +681,9 @@
     }
 
     // Build league dropdown
+    const rosterLabel = (lp) => lp.roster_size
+      ? ` · ${lp.roster_size}-man, ${lp.bench_slots} bench`
+      : '';
     const leagueRow = document.getElementById('league-preset-row');
     const leagueSel = document.getElementById('league-preset-select');
     if (LEAGUE_PRESETS.length > 0 && leagueSel.options.length <= 1) {
@@ -649,7 +692,7 @@
         opt.value = JSON.stringify({id: lp.id, slots: lp.roster_slots, has_custom: lp.has_custom_slots, scoring_format: lp.scoring_format});
         const formatLabel = lp.scoring_format ? lp.scoring_format.toUpperCase().replace('-PPR', ' PPR') : '';
         const suffix = lp.has_custom_slots ? '' : ' \u2014 default slots';
-        opt.textContent = `${lp.name} (${lp.year}) · ${formatLabel}${suffix}`;
+        opt.textContent = `${lp.name} (${lp.year}) · ${formatLabel}${rosterLabel(lp)}${suffix}`;
         leagueSel.appendChild(opt);
       });
       leagueRow.classList.remove('hidden');
@@ -663,19 +706,46 @@
     container.innerHTML = '';
     ALL_SLOT_POSITIONS.forEach(pos => {
       const val = currentLineupSlots[pos] ?? 0;
+      const isBench = pos === BENCH_SLOT;
       const div = document.createElement('div');
-      div.className = 'flex items-center gap-2 bg-slate-800/50 rounded-lg px-2 py-1.5 border border-slate-700/40';
+      div.className = 'flex items-center gap-2 rounded-lg px-2 py-1.5 border '
+        + (isBench ? 'bg-slate-800 border-pigskin-700/40' : 'bg-slate-800/50 border-slate-700/40');
       div.innerHTML = `
-        <span class="text-[10px] font-bold text-slate-400 w-16 flex-shrink-0">${pos}</span>
-        <input type="number" id="slot-${pos}" min="0" max="4" value="${val}"
+        <span class="text-[10px] font-bold ${isBench ? 'text-pigskin-400' : 'text-slate-400'} w-16 flex-shrink-0">${pos}</span>
+        <input type="number" id="slot-${pos}" min="0" max="${isBench ? 15 : 4}" value="${val}"
                oninput="onSlotChange('${pos}', this.value)"
                class="w-12 bg-slate-900 border border-slate-600 rounded px-1.5 py-0.5 text-xs text-slate-200 text-center focus:outline-none focus:ring-1 focus:ring-pigskin-500">`;
       container.appendChild(div);
     });
+    syncRoundsToRoster();
   }
 
   function onSlotChange(pos, value) {
     currentLineupSlots[pos] = parseInt(value) || 0;
+    syncRoundsToRoster();
+  }
+
+  /** Roster size (starters + bench) is how many picks each team makes. */
+  function rosterSize() {
+    return ALL_SLOT_POSITIONS.reduce((n, pos) => n + (currentLineupSlots[pos] ?? 0), 0);
+  }
+
+  /** Point the round count at the roster size, capped at the draft maximum. */
+  function syncRoundsToRoster() {
+    const size = rosterSize();
+    if (size < 1) return;
+    const rounds = Math.min(MAX_ROUNDS, size);
+    const roundsInput = document.getElementById('num-rounds');
+    if (parseInt(roundsInput.value) !== rounds) {
+      roundsInput.value = String(rounds);
+      onSettingsChange();
+    }
+    const note = document.getElementById('roster-size-note');
+    if (note) {
+      note.textContent = size > MAX_ROUNDS
+        ? `${size}-man roster — capped at ${MAX_ROUNDS} rounds`
+        : `${size} roster spots → ${rounds} rounds`;
+    }
   }
 
   function applyPreset(slots, activeBtn = null) {
@@ -711,7 +781,7 @@
   function getCurrentLineupSlots() {
     const result = {};
     let nonDefault = false;
-    const defaults = {QB:1, RB:2, WR:2, TE:1, FLEX:1, K:1, DEF:1};
+    const defaults = {QB:1, RB:2, WR:2, TE:1, FLEX:1, K:1, DEF:1, BENCH:6};
     ALL_SLOT_POSITIONS.forEach(pos => {
       const v = currentLineupSlots[pos] ?? 0;
       if (v > 0) result[pos] = v;
@@ -724,7 +794,8 @@
   async function startDraft() {
     const numTeams   = parseInt(document.getElementById('num-teams').value);
     const numRounds  = parseInt(document.getElementById('num-rounds').value);
-    const randomUserSlot = document.getElementById('random-user-slot').checked;
+    // The slot field always holds the real slot — random or typed — so the
+    // draft uses exactly what the setup screen showed.
     const userSlot   = parseInt(document.getElementById('user-pick-pos').value);
     const poolSource = document.querySelector('input[name="pool-source"]:checked').value;
     const useEspnAdp = poolSource === 'espn_adp';
@@ -769,8 +840,8 @@
         body: JSON.stringify({
           num_teams: numTeams,
           num_rounds: numRounds,
-          user_pick_position: randomUserSlot ? null : userSlot,
-          randomize_user_pick_position: randomUserSlot,
+          user_pick_position: userSlot,
+          randomize_user_pick_position: false,
           ai_strategies: aiStrategies,
           ai_profiles: Object.keys(aiProfiles).length ? aiProfiles : null,
           ai_aggressiveness: aggrSlider,

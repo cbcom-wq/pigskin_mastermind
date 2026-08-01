@@ -9,25 +9,39 @@ from pigskin_mastermind.models.database import DBTeam, DBPlayer
 from pigskin_mastermind.models.player import Player
 from pigskin_mastermind.models.team import Team
 from pigskin_mastermind.services.decision_tools import LineupOptimizer
+from pigskin_mastermind.utils.positions import normalize_position
 
 router = APIRouter(prefix="/lineups", tags=["lineups"])
 
 
 def _db_team_to_domain(db_team, db_players):
-    """Convert DB models to domain models for service layer."""
-    players = [
-        Player(
-            player_id=p.player_id,
-            name=p.name,
-            position=p.position,
-            team=p.nfl_team,
-            projected_points=p.projected_points,
-            actual_points=p.actual_points,
-            stats=p.stats or {},
-            headshot_url=p.headshot_url,
+    """Convert DB models to domain models for service layer.
+
+    Positions are normalized on the way through — rows imported before the
+    normalizer existed still say ``D/ST``, which ``Player.__post_init__``
+    rejects. Anything that isn't a fantasy position is skipped rather than
+    raising and taking the whole page down.
+    """
+    players = []
+    for p in db_players:
+        position = normalize_position(p.position)
+        if position is None:
+            continue
+        players.append(
+            Player(
+                player_id=p.player_id,
+                name=p.name,
+                position=position,
+                team=p.nfl_team,
+                projected_points=p.projected_points,
+                actual_points=p.actual_points,
+                stats=p.stats or {},
+                headshot_url=p.headshot_url,
+                db_id=p.id,
+                bye_week=p.bye_week,
+                injury_status=p.injury_status,
+            )
         )
-        for p in db_players
-    ]
     return Team(
         team_id=db_team.team_id,
         name=db_team.name,
@@ -58,9 +72,14 @@ async def lineup_page(
 async def optimize_lineup(
     request: Request,
     team_db_id: int,
+    week: Optional[int] = Query(None, ge=1, le=18),
     db: Session = Depends(get_db)
 ):
-    """Optimize lineup for a team, returns HTML fragment."""
+    """Optimize lineup for a team, returns HTML fragment.
+
+    ``week`` is used only for presentation — it flags starters whose bye falls
+    on that week. The optimizer itself still ranks on projected points.
+    """
     from pigskin_mastermind.api.main import templates
     db_team = db.query(DBTeam).filter(DBTeam.id == team_db_id, DBTeam.is_user_team == True).first()
     if not db_team:
@@ -82,5 +101,11 @@ async def optimize_lineup(
 
     return templates.TemplateResponse(
         "lineups/_lineup_result.html",
-        {"request": request, "result": result, "team": team, "team_db_id": team_db_id}
+        {
+            "request": request,
+            "result": result,
+            "team": team,
+            "team_db_id": team_db_id,
+            "selected_week": week,
+        }
     )

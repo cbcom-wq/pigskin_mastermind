@@ -994,7 +994,8 @@ class ProjectionCriteriaBuilder:
         Filters team data to the same positional group so the denominator
         reflects relevant competition (WRs+TEs compete for targets; RBs
         compete for carries+targets; QBs for pass attempts).  Falls back to
-        ``snap_pct * 100`` when position-specific team data is unavailable,
+        ``snap_pct`` (already 0-100) when position-specific team data is
+        unavailable,
         and ultimately to ESPN weekly fantasy-point share among same-position
         teammates when no season stats exist at all.
 
@@ -1018,7 +1019,7 @@ class ProjectionCriteriaBuilder:
         # K/DEF have no relevant touch-based denominator — use snap_pct directly
         if pos_upper not in ('QB', 'RB', 'WR', 'TE'):
             if player_season.snap_pct:
-                return min(player_season.snap_pct * 100, 100)
+                return min(player_season.snap_pct, 100)
             return 0.0
 
         # Positional group that shares the same opportunity pool
@@ -1044,7 +1045,7 @@ class ProjectionCriteriaBuilder:
         if not team_seasons:
             # Fall back to snap_pct when no position-matching teammates found
             if player_season.snap_pct:
-                return min(player_season.snap_pct * 100, 100)
+                return min(player_season.snap_pct, 100)
             return 0.0
 
         if pos_upper == 'QB':
@@ -1066,7 +1067,7 @@ class ProjectionCriteriaBuilder:
 
         if team_total == 0:
             if player_season.snap_pct:
-                return min(player_season.snap_pct * 100, 100)
+                return min(player_season.snap_pct, 100)
             return 0.0
 
         return max(0, min(100, (player_val / team_total) * 100))

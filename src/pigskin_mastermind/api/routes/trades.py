@@ -1,7 +1,6 @@
 """Trade analyzer routes."""
 
 from fastapi import APIRouter, Depends, Request, HTTPException
-from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List
@@ -39,49 +38,33 @@ async def team_players_for_trade(
     db: Session = Depends(get_db)
 ):
     """Return HTML fragment with a team's players for the Give column."""
-    if not team_id:
-        return HTMLResponse(
-            '<p class="text-sm text-slate-400 text-center py-8">Select a team above to see your players</p>'
+    from pigskin_mastermind.api.main import templates
+
+    def _empty(message: str):
+        return templates.TemplateResponse(
+            "players/_trade_result.html",
+            {"request": request, "players": [], "side": "give", "empty_message": message},
         )
+
+    if not team_id:
+        return _empty("Select a team above to see your players")
 
     # Verify this is a user's team
     team = db.query(DBTeam).filter(DBTeam.id == team_id, DBTeam.is_user_team == True).first()
     if not team:
-        return HTMLResponse(
-            '<p class="text-sm text-slate-400 text-center py-8">Team not found or not claimed</p>'
-        )
+        return _empty("Team not found or not claimed")
 
     players = db.query(DBPlayer).filter(
         DBPlayer.team_id == team_id
     ).order_by(DBPlayer.position, DBPlayer.projected_points.desc()).all()
 
     if not players:
-        return HTMLResponse(
-            '<p class="text-sm text-slate-400 text-center py-8">No players on this team</p>'
-        )
+        return _empty("No players on this team")
 
-    html_parts = []
-    for p in players:
-        img_html = f'<img src="{p.headshot_url}" alt="" class="w-7 h-7 rounded-full object-cover bg-slate-200 flex-shrink-0" onerror="this.style.display=\'none\'" />' if p.headshot_url else ''
-        html_parts.append(
-            f'<div class="flex items-center justify-between p-2 rounded-lg hover:bg-slate-50 transition-colors">'
-            f'  <div class="flex items-center gap-2">'
-            f'    {img_html}'
-            f'    <span class="inline-flex items-center justify-center w-9 h-5 rounded text-[10px] font-bold badge-{p.position.lower()}">{p.position}</span>'
-            f'    <div>'
-            f'      <p class="text-sm font-medium text-slate-700">{p.name}</p>'
-            f'      <p class="text-xs text-slate-400">{p.nfl_team} &middot; {p.projected_points:.1f} pts</p>'
-            f'    </div>'
-            f'  </div>'
-            f'  <button type="button"'
-            f'    onclick="toggleGivePlayer({p.id}, \'{p.name}\', \'{p.position}\', {p.projected_points:.1f})"'
-            f'    data-player-give="{p.id}"'
-            f'    class="px-2 py-1 text-xs font-medium rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors">'
-            f'    Select'
-            f'  </button>'
-            f'</div>'
-        )
-    return HTMLResponse("\n".join(html_parts))
+    return templates.TemplateResponse(
+        "players/_trade_result.html",
+        {"request": request, "players": players, "side": "give"},
+    )
 
 
 @router.post("/analyze")

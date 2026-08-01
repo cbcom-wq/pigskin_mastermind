@@ -187,6 +187,50 @@ def _get_stats_db():
     return SessionLocal()
 
 
+@main.group()
+def players():
+    """Player roster and identity commands."""
+    pass
+
+
+@players.command('merge-identities')
+@click.option('--dry-run/--apply', default=True,
+              help='Report what would change without writing (default: dry run)')
+@click.option('--verbose', is_flag=True, help='List every merge and collision')
+def players_merge_identities(dry_run, verbose):
+    """Fold duplicate player rows from nfl_data_py / FFC into their ESPN twins.
+
+    Three importers create rows under three prefixes, so the same player can
+    exist several times with the stats split between the copies. This resolves
+    them through nflverse's cross-ID table and merges the duplicates.
+    """
+    from pigskin_mastermind.services.player_identity import PlayerIdentityService
+
+    db = _get_stats_db()
+    try:
+        service = PlayerIdentityService(db)
+
+        if not dry_run:
+            click.echo("Backfilling per-source ID columns...")
+            updated = service.backfill_id_columns()
+            click.echo(f"  {updated} players stamped with cross-source IDs")
+
+        click.echo("Resolving duplicates..." if dry_run else "Merging duplicates...")
+        report = service.merge_duplicates(dry_run=dry_run)
+        click.echo(report.summary())
+
+        if verbose:
+            for line in report.details:
+                click.echo(f"  {line}")
+        elif report.details:
+            click.echo(f"  (run with --verbose to see all {len(report.details)} entries)")
+
+        if dry_run:
+            click.echo("\nNothing was written. Re-run with --apply to commit.")
+    finally:
+        db.close()
+
+
 @stats.command('import-espn')
 @click.option('--league-id', required=True, help='ESPN league ID')
 @click.option('--team-id', required=True, type=int, help='ESPN team ID')
@@ -287,6 +331,14 @@ def stats_import_nfl(years):
         click.echo("Computing defense rankings...")
         defense = service.import_team_defense_rankings(year_list)
         click.echo(f"  {defense} team defense rows imported")
+
+        click.echo("Importing roster metadata (bio)...")
+        roster = service.import_roster_metadata(year_list)
+        click.echo(f"  {roster} players updated with bio data")
+
+        click.echo("Importing snap counts...")
+        snaps = service.import_snap_counts(year_list)
+        click.echo(f"  {snaps} season rows updated with snap share")
 
         click.echo("NFL stats import complete.")
     finally:

@@ -97,6 +97,29 @@ fallback for both `get_scoring_settings(league)` and the dataclass `Player.calcu
 Always resolve through `get_scoring_settings()` rather than hardcoding, so a league's JSON
 `scoring_settings` overrides apply.
 
+### Player identity is resolved, never assumed
+
+Three importers create `DBPlayer` rows — ESPN (`espn_<id>`), nfl_data_py (`nfl_<gsis_id>`), and
+FantasyFootballCalculator (`ffc_<id>`). They are the *same people*, so `DBPlayer` carries
+`espn_id` / `gsis_id` / `pfr_id` and **every importer must go through
+`services/player_identity.py::PlayerIdentityService.resolve()` before creating a row.** It tries the
+ID columns, then the legacy prefixed `player_id`, then nflverse's cross-ID table
+(`nfl_data_py.import_ids()`), then normalized name + position.
+
+`merge_duplicates(dry_run=True)` folds existing duplicates together — exposed as
+`pigskin players merge-identities [--dry-run|--apply]`. Re-run it after a bulk import.
+
+Two things that will bite:
+
+- `DBPlayer.season_stats` / `game_logs` cascade `all, delete-orphan`. Re-pointing a FK then deleting
+  the old parent in the same flush cascades into the rows you just moved — flush and `expire()` first.
+- **Profile/bio fields are real columns, not keys in `stats`.** `stats` is ESPN's raw
+  scoring-period payload and is replaced wholesale on every sync, so anything stored there is lost.
+
+Positions are normalized at every import boundary via `utils/positions.py::normalize_position()`
+(`D/ST`/`DST` → `DEF`; non-fantasy positions return `None` and the row is skipped).
+`snap_pct` is canonically **0–100** — the importer scales nflverse's 0–1 `offense_pct`.
+
 ### Projection pipeline
 
 ```

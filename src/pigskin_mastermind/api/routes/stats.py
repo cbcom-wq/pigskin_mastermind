@@ -118,12 +118,18 @@ async def import_nfl_stats(
     weekly_count = service.import_weekly_stats(year_list)
     seasonal_count = service.import_seasonal_stats(year_list)
     defense_count = service.import_team_defense_rankings(year_list)
+    # Bio and snap share round out the player profile; both were previously
+    # implemented but never called from anywhere.
+    roster_count = service.import_roster_metadata(year_list)
+    snap_count = service.import_snap_counts(year_list)
 
     return {
         "status": "success",
         "weekly_rows": weekly_count,
         "seasonal_rows": seasonal_count,
         "defense_rows": defense_count,
+        "roster_metadata_rows": roster_count,
+        "snap_count_rows": snap_count,
     }
 
 

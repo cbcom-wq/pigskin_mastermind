@@ -17,6 +17,7 @@ from pigskin_mastermind.models.database import (
     DBWeeklyTeamStats,
 )
 from pigskin_mastermind.services.adp_service import ADPService
+from pigskin_mastermind.services.player_identity import normalize_name
 from pigskin_mastermind.services.mock_draft import (
     AIProfile,
     DEFAULT_LINEUP_SLOTS,
@@ -26,6 +27,7 @@ from pigskin_mastermind.services.mock_draft import (
     draft_engine,
     fetch_espn_adp,
     randomize_ai_profiles,
+    roster_size,
 )
 from pigskin_mastermind.utils.season import current_fantasy_season
 
@@ -80,31 +82,37 @@ class SimulationRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _enrich_with_headshots(players: List[dict], db: Session) -> List[dict]:
-    """Attach headshot_url to each player by matching on normalised name.
+def _enrich_from_db(players: List[dict], db: Session) -> List[dict]:
+    """Attach headshot, profile id, bye week, and injury status from the database.
 
-    Players already carrying a non-empty headshot_url are left unchanged.
+    The ESPN ADP feed is fetched live and knows none of these, so the draft
+    board would otherwise show no bye/injury badges and no link into the player
+    profile. Matching is on the shared normalized name so "A.J. Brown" finds
+    "AJ Brown".
     """
-    # Only query if there are players that still need headshots
-    needs = [p for p in players if not p.get("headshot_url")]
-    if not needs:
-        return players
-
-    db_rows = db.query(DBPlayer.name, DBPlayer.headshot_url).filter(
-        DBPlayer.headshot_url.isnot(None),
-        DBPlayer.headshot_url != "",
+    db_rows = db.query(
+        DBPlayer.id,
+        DBPlayer.name,
+        DBPlayer.position,
+        DBPlayer.headshot_url,
+        DBPlayer.bye_week,
+        DBPlayer.injury_status,
     ).all()
 
-    # Build a normalised name → URL lookup (lowercase, strip whitespace)
-    headshot_map: Dict[str, str] = {
-        row.name.strip().lower(): row.headshot_url
-        for row in db_rows
-        if row.headshot_url
-    }
+    by_name: Dict[tuple, Any] = {}
+    for row in db_rows:
+        by_name.setdefault((normalize_name(row.name), row.position), row)
 
     for p in players:
+        row = by_name.get((normalize_name(p.get("name", "")), p.get("position")))
+        if row is None:
+            p.setdefault("headshot_url", "")
+            continue
         if not p.get("headshot_url"):
-            p["headshot_url"] = headshot_map.get(p["name"].strip().lower(), "")
+            p["headshot_url"] = row.headshot_url or ""
+        p["db_id"] = row.id
+        p["bye_week"] = row.bye_week
+        p["injury_status"] = row.injury_status
 
     return players
 
@@ -141,7 +149,11 @@ def _fetch_espn_adp_with_fallback(
 
 
 def _slot_to_lineup_key(slot_position: Optional[str]) -> Optional[str]:
-    """Map stored weekly slot labels to draft lineup slot keys."""
+    """Map stored weekly slot labels to draft lineup slot keys.
+
+    Bench labels map to ``BENCH`` so an inferred format keeps the league's full
+    roster size.  ``IR`` stays unmapped — nobody drafts for an IR spot.
+    """
     if not slot_position:
         return None
     slot = slot_position.strip().upper()
@@ -158,6 +170,9 @@ def _slot_to_lineup_key(slot_position: Optional[str]) -> Optional[str]:
         "D/ST": "DEF",
         "DST": "DEF",
         "DEF": "DEF",
+        "BE": "BENCH",
+        "BN": "BENCH",
+        "BENCH": "BENCH",
     }
     return slot_map.get(slot)
 
@@ -235,14 +250,24 @@ def _build_league_presets(db: Session) -> List[Dict[str, Any]]:
     league_presets: List[Dict[str, Any]] = []
 
     for league in leagues:
-        inferred_slots = None
-        if not league.roster_slots:
-            inferred_slots = _derive_roster_slots_from_imported_roster(
+        saved_slots = dict(league.roster_slots) if league.roster_slots else None
+        # Leagues synced before bench was tracked have starters but no BENCH
+        # key, which would run the draft several rounds short.  Fall back to
+        # the stored roster to recover the bench count.
+        needs_inference = not saved_slots or "BENCH" not in saved_slots
+        inferred_slots = (
+            _derive_roster_slots_from_imported_roster(
                 league_identifier=league.league_id,
                 db=db,
             )
+            if needs_inference
+            else None
+        )
 
-        resolved_slots = league.roster_slots or inferred_slots or dict(DEFAULT_LINEUP_SLOTS)
+        if saved_slots and inferred_slots and "BENCH" in inferred_slots:
+            saved_slots["BENCH"] = inferred_slots["BENCH"]
+
+        resolved_slots = saved_slots or inferred_slots or dict(DEFAULT_LINEUP_SLOTS)
         league_presets.append(
             {
                 "id": league.id,
@@ -251,6 +276,8 @@ def _build_league_presets(db: Session) -> List[Dict[str, Any]]:
                 "year": league.year,
                 "roster_slots": resolved_slots,
                 "has_custom_slots": bool(league.roster_slots or inferred_slots),
+                "roster_size": roster_size(resolved_slots),
+                "bench_slots": int(resolved_slots.get("BENCH", 0)),
                 "scoring_format": _derive_scoring_format(league.scoring_settings),
             }
         )
@@ -364,7 +391,7 @@ async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
                 status_code=503,
                 detail="Failed to fetch ADP data from ESPN. Check connectivity or try again.",
             )
-        player_pool = _enrich_with_headshots(player_pool, db)
+        player_pool = _enrich_from_db(player_pool, db)
     elif req.player_pool:
         player_pool = req.player_pool
 

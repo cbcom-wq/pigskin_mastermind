@@ -1,0 +1,28 @@
+{# Player list table rows (HTMX fragment for /api/players/list). #}
+{% from "components/_player.html" import player_headshot, position_badge, injury_badge, bye_badge %}
+{% if not players %}
+<tr><td colspan="8" class="px-6 py-8 text-center text-sm text-slate-400">No players found</td></tr>
+{% else %}
+{% for p in players %}
+<tr class="hover:bg-slate-50 transition-colors cursor-pointer" onclick="window.location='/players/{{ p.id }}'">
+    <td class="px-6 py-3 text-sm font-medium">
+        <div class="flex items-center gap-2">
+            {{ player_headshot(p, "sm") }}
+            <a href="/players/{{ p.id }}" class="text-field-700 hover:text-field-900 hover:underline" onclick="event.stopPropagation()">{{ p.name }}</a>
+            {{ injury_badge(p.injury_status) }}
+        </div>
+    </td>
+    <td class="px-6 py-3">{{ position_badge(p.position, "sm") }}</td>
+    <td class="px-6 py-3 text-sm text-slate-600">{{ p.nfl_team }}</td>
+    <td class="px-6 py-3 text-sm text-slate-600">{{ p.team.name if p.team else "—" }}</td>
+    <td class="px-6 py-3 text-sm text-center">
+        {%- if p.bye_week %}{{ bye_badge(p.bye_week) }}{% else %}<span class="text-slate-300">—</span>{% endif -%}
+    </td>
+    <td class="px-6 py-3 text-sm text-slate-600 text-right">
+        {%- if p.age %}{{ p.age }}{% else %}<span class="text-slate-300">—</span>{% endif -%}
+    </td>
+    <td class="px-6 py-3 text-sm font-semibold text-slate-700 text-right">{{ "%.1f" | format(p.projected_points or 0.0) }}</td>
+    <td class="px-6 py-3 text-sm font-semibold text-slate-700 text-right">{{ "%.1f" | format(p.actual_points or 0.0) }}</td>
+</tr>
+{% endfor %}
+{% endif %}

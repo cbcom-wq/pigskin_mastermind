@@ -48,6 +48,64 @@ const DraftBoard = (() => {
 
   function posClass(pos) { return POS_COLORS[pos] || 'bg-slate-600 text-slate-200'; }
 
+  /**
+   * Injury pill. ESPN reports ACTIVE/NORMAL for healthy players, which is not
+   * worth the pixels — only real statuses render.
+   */
+  function injuryBadge(status) {
+    if (!status) return '';
+    const s = String(status).toUpperCase();
+    if (s === 'ACTIVE' || s === 'NORMAL') return '';
+    let style, label;
+    if (['OUT', 'IR', 'INJURY_RESERVE', 'SUSPENSION'].includes(s)) {
+      style = 'bg-red-500/20 text-red-300'; label = (s === 'INJURY_RESERVE') ? 'IR' : s.slice(0, 3);
+    } else if (s === 'DOUBTFUL') {
+      style = 'bg-orange-500/20 text-orange-300'; label = 'D';
+    } else if (s === 'QUESTIONABLE') {
+      style = 'bg-amber-500/20 text-amber-300'; label = 'Q';
+    } else {
+      style = 'bg-slate-600 text-slate-300'; label = s.slice(0, 3);
+    }
+    const title = s.replace(/_/g, ' ');
+    return `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold ${style}" title="${title}">${label}</span>`;
+  }
+
+  /**
+   * Bye pill, highlighted when the week collides with players already drafted
+   * to the user's roster — the whole point of showing it during a draft.
+   */
+  function byeBadge(week, conflict) {
+    if (!week) return '';
+    const style = conflict ? 'bg-red-500/20 text-red-300' : 'bg-slate-700 text-slate-400';
+    const title = conflict
+      ? `Bye week ${week} — collides with players already on your roster`
+      : `Bye week ${week}`;
+    return `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold ${style}" title="${title}">BYE ${week}</span>`;
+  }
+
+  /** Bye weeks already represented on the user's roster, week -> count. */
+  function userByeWeeks() {
+    const counts = {};
+    if (!state || !state.rosters || userSlot === null) return counts;
+    const roster = state.rosters[userSlot] || [];
+    roster.forEach(p => {
+      if (p.bye_week) counts[p.bye_week] = (counts[p.bye_week] || 0) + 1;
+    });
+    return counts;
+  }
+
+  /** True when drafting this player would stack another starter on a used bye. */
+  function hasByeConflict(player, byeCounts) {
+    return !!(player.bye_week && byeCounts[player.bye_week]);
+  }
+
+  /** Profile link for a pool player, when the row is backed by a DB row. */
+  function playerProfileHref(p) {
+    if (p.db_id == null) return null;
+    const back = encodeURIComponent(window.location.pathname + window.location.search);
+    return `/players/${p.db_id}?back=${back}`;
+  }
+
   // --- Name display -------------------------------------------------
   // Generational suffixes are part of the identity, not the surname:
   // "Kenneth Walker III" must never collapse to "III".
@@ -393,6 +451,8 @@ const DraftBoard = (() => {
       return;
     }
 
+    const byeCounts = userByeWeeks();
+
     container.innerHTML = players.slice(0, 200).map((p, i) => {
       const adpLabel = p.adp_rank != null ? p.adp_rank.toFixed(1) : '';
       const valueDelta = p.adp_rank != null ? currentPick - p.adp_rank : null;
@@ -413,9 +473,13 @@ const DraftBoard = (() => {
           ${p.headshot_url ? `<img src="${p.headshot_url}" alt="" class="w-7 h-7 rounded-full object-cover bg-slate-700 flex-shrink-0" onerror="this.style.display='none'" />` : `<div class="w-7 h-7 rounded-full bg-slate-700 flex items-center justify-center flex-shrink-0 text-xs">${POS_EMOJI[p.position] || '🏈'}</div>`}
           <span class="inline-flex items-center justify-center w-9 h-5 rounded text-[10px] font-bold flex-shrink-0 ${posClass(p.position)}">${p.position}</span>
           <div class="min-w-0">
-            <p class="text-sm font-medium text-slate-200 truncate">${p.name}</p>
+            <div class="flex items-center gap-1.5 min-w-0">
+              <p class="text-sm font-medium text-slate-200 truncate">${p.name}</p>
+              ${injuryBadge(p.injury_status)}
+              ${byeBadge(p.bye_week, hasByeConflict(p, byeCounts))}
+            </div>
             <p class="text-xs text-slate-500">
-              ${p.nfl_team} · ${p.projected_points.toFixed(1)} pts
+              ${p.nfl_team} · ${(p.projected_points || 0).toFixed(1)} pts
               ${adpLabel ? `<span class="ml-1 text-slate-400">ADP ${adpLabel}</span>` : ''}
               ${valueTag}
             </p>
@@ -465,8 +529,14 @@ const DraftBoard = (() => {
 
     // Positional rank
     const samePos = state.available_players.filter(p => p.position === player.position);
-    samePos.sort((a, b) => b.projected_points - a.projected_points);
+    samePos.sort((a, b) => (b.projected_points || 0) - (a.projected_points || 0));
     const posRank = samePos.findIndex(p => p.id === player.id) + 1;
+
+    // Bye-week context against what the user has already drafted
+    const byeCounts = userByeWeeks();
+    const byeCount = player.bye_week ? (byeCounts[player.bye_week] || 0) : 0;
+    const byeConflict = byeCount > 0;
+    const profileHref = playerProfileHref(player);
 
     panel.classList.remove('hidden');
     panel.innerHTML = `
@@ -478,12 +548,15 @@ const DraftBoard = (() => {
 
         <div class="flex items-center gap-3">
           ${player.headshot_url ? `<img src="${player.headshot_url}" alt="" class="w-16 h-16 rounded-full object-cover bg-slate-700 border-2 border-slate-600" onerror="this.style.display='none'" />` : `<div class="w-16 h-16 rounded-full bg-slate-700 flex items-center justify-center text-2xl">${POS_EMOJI[player.position] || '🏈'}</div>`}
-          <div>
+          <div class="min-w-0">
             <p class="text-lg font-bold text-white">${player.name}</p>
-            <div class="flex items-center gap-2 mt-0.5">
+            <div class="flex items-center gap-2 mt-0.5 flex-wrap">
               <span class="inline-flex items-center justify-center px-2 py-0.5 rounded text-[10px] font-bold ${posClass(player.position)}">${player.position}</span>
               <span class="text-xs text-slate-400">${player.nfl_team}</span>
+              ${injuryBadge(player.injury_status)}
+              ${byeBadge(player.bye_week, byeConflict)}
             </div>
+            ${profileHref ? `<a href="${profileHref}" class="text-[11px] text-pigskin-400 hover:text-pigskin-300 hover:underline">View full profile →</a>` : ''}
           </div>
         </div>
 
@@ -491,6 +564,14 @@ const DraftBoard = (() => {
           <p class="text-sm font-bold ${valueClass}">${valueLabel}</p>
           ${player.adp_rank != null ? `<p class="text-xs text-slate-400 mt-0.5">ADP: ${player.adp_rank.toFixed(1)} · Current Pick: ${currentPick} · Delta: ${(currentPick - player.adp_rank) > 0 ? '+' : ''}${(currentPick - player.adp_rank).toFixed(0)}</p>` : ''}
         </div>
+
+        ${byeConflict ? `
+        <div class="rounded-lg border border-red-500/30 bg-red-500/10 p-3">
+          <p class="text-xs font-bold text-red-300">⚠️ Bye week stack</p>
+          <p class="text-[11px] text-slate-400 mt-0.5">
+            You already have ${byeCount} player${byeCount === 1 ? '' : 's'} on bye in week ${player.bye_week}.
+          </p>
+        </div>` : ''}
 
         <div class="grid grid-cols-2 gap-3">
           <div class="bg-slate-800/50 rounded-lg p-3 text-center">

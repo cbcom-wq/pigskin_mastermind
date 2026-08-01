@@ -1,0 +1,97 @@
+{#
+  Shared player presentation macros — the single source for how a player looks
+  anywhere in the app.
+
+  Usage:
+    {% from "components/_player.html" import player_chip, player_headshot, injury_badge, bye_badge %}
+    {{ player_chip(player, size="sm", href="/players/" ~ player.id) }}
+
+  `player` may be a DBPlayer or any object/dict exposing name, position,
+  nfl_team, headshot_url, injury_status and bye_week.
+#}
+
+{%- set _SIZES = {
+  "xs": {"img": "w-5 h-5",   "badge": "w-7 h-4 text-[8px]",   "name": "text-xs"},
+  "sm": {"img": "w-8 h-8",   "badge": "w-10 h-6 text-xs",     "name": "text-sm"},
+  "md": {"img": "w-10 h-10", "badge": "w-12 h-7 text-sm",     "name": "text-base"},
+  "lg": {"img": "w-20 h-20", "badge": "w-16 h-10 text-sm",    "name": "text-2xl"}
+} -%}
+
+{#- Position badge class, falling back to a neutral chip for unmapped values
+    like ESPN's raw "D/ST" so nothing renders unstyled. -#}
+{% macro position_class(position) -%}
+{%- set p = (position | default('', true)) | lower -%}
+{%- if p in ('qb', 'rb', 'wr', 'te', 'k', 'def', 'flex') -%}badge-{{ p }}{%- else -%}bg-slate-200 text-slate-600{%- endif -%}
+{%- endmacro %}
+
+{% macro player_headshot(player, size="sm") %}
+{%- set cls = _SIZES.get(size, _SIZES["sm"]).img -%}
+{%- if player.headshot_url is defined and player.headshot_url -%}
+<img src="{{ player.headshot_url }}" alt="" class="{{ cls }} rounded-full object-cover bg-slate-200 flex-shrink-0" onerror="this.style.display='none'" />
+{%- else -%}
+<div class="{{ cls }} rounded-full bg-slate-200 flex-shrink-0"></div>
+{%- endif -%}
+{% endmacro %}
+
+{% macro position_badge(position, size="sm") %}
+{%- set cls = _SIZES.get(size, _SIZES["sm"]).badge -%}
+<span class="inline-flex items-center justify-center {{ cls }} rounded font-bold flex-shrink-0 {{ position_class(position) }}">{{ position }}</span>
+{% endmacro %}
+
+{#- Injury pill. ESPN reports ACTIVE / NORMAL for healthy players, which is not
+    worth the pixels — only real statuses render. -#}
+{% macro injury_badge(status) %}
+{%- set s = (status | default('', true)) | upper -%}
+{%- if s and s not in ('ACTIVE', 'NORMAL') -%}
+  {%- if s in ('OUT', 'INJURY_RESERVE', 'IR', 'SUSPENSION') -%}
+    {%- set style, label = 'bg-red-100 text-red-700', ('IR' if s in ('INJURY_RESERVE', 'IR') else s[:3]) -%}
+  {%- elif s == 'DOUBTFUL' -%}
+    {%- set style, label = 'bg-orange-100 text-orange-700', 'D' -%}
+  {%- elif s == 'QUESTIONABLE' -%}
+    {%- set style, label = 'bg-amber-100 text-amber-700', 'Q' -%}
+  {%- else -%}
+    {%- set style, label = 'bg-slate-100 text-slate-600', s[:3] -%}
+  {%- endif -%}
+<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold {{ style }}" title="{{ s | replace('_', ' ') | title }}">{{ label }}</span>
+{%- endif -%}
+{% endmacro %}
+
+{#- Bye pill. Highlighted when the bye is the week being viewed. -#}
+{% macro bye_badge(week, current_week=None) %}
+{%- if week -%}
+{%- set is_now = current_week is not none and week == current_week -%}
+<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold {{ 'bg-red-100 text-red-700' if is_now else 'bg-slate-100 text-slate-500' }}"
+      title="{{ 'On bye this week' if is_now else 'Bye week ' ~ week }}">BYE {{ week }}</span>
+{%- endif -%}
+{% endmacro %}
+
+{#
+  Full player row: headshot, position badge, name, team, and status pills.
+
+  href          — wraps the chip in a link when given
+  show_bye      — render the bye pill
+  show_injury   — render the injury pill (default on)
+  current_week  — highlights the bye pill when it matches
+  subtitle      — replaces the default "TEAM · fantasy team" line
+#}
+{% macro player_chip(player, size="sm", href=None, show_bye=False, show_injury=True, current_week=None, subtitle=None) %}
+{%- set s = _SIZES.get(size, _SIZES["sm"]) -%}
+<div class="flex items-center gap-2 min-w-0">
+  {{ player_headshot(player, size) }}
+  {{ position_badge(player.position, size) }}
+  <div class="min-w-0">
+    <p class="{{ s.name }} font-medium text-slate-800 truncate">
+      {%- if href -%}<a href="{{ href }}" class="hover:text-field-700 hover:underline">{{ player.name }}</a>{%- else -%}{{ player.name }}{%- endif -%}
+    </p>
+    <p class="text-xs text-slate-400 truncate">
+      {{ subtitle if subtitle is not none else player.nfl_team }}
+    </p>
+  </div>
+  {%- if show_injury or show_bye %}
+  <div class="flex items-center gap-1 flex-shrink-0">
+    {%- if show_injury %}{{ injury_badge(player.injury_status | default(None, true)) }}{% endif -%}
+    {%- if show_bye %}{{ bye_badge(player.bye_week | default(None, true), current_week) }}{% endif -%}
+  </div>
+  {%- endif %}
+</div>
+{% endmacro %}

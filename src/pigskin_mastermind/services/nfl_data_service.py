@@ -16,6 +16,10 @@ from pigskin_mastermind.models.database import (
     DBPlayer, DBPlayerGameLog, DBPlayerSeasonStats, DBNFLTeamStats,
     DBWeeklyPlayerStats, DBWeeklyTeamStats, DBTeam, DBLeague,
 )
+from pigskin_mastermind.services.player_identity import (
+    PlayerIdentityService, is_placeholder_name,
+)
+from pigskin_mastermind.utils.positions import normalize_position
 
 # Columns to pull from the PBP dataset — keeps payload small
 _PBP_COLUMNS = [
@@ -45,6 +49,58 @@ class NFLDataService:
 
     def __init__(self, db: Session):
         self.db = db
+        self.identity = PlayerIdentityService(db)
+
+    def _resolve_or_create(
+        self,
+        *,
+        gsis_id: Optional[str] = None,
+        pfr_id: Optional[str] = None,
+        name: Optional[str] = None,
+        position: Optional[str] = None,
+        nfl_team: Optional[str] = None,
+        create: bool = True,
+    ) -> Optional[DBPlayer]:
+        """Find the DBPlayer for an nflverse row, creating one only if useful.
+
+        Older code created a row for every gsis id it saw, using ``'Unknown'``
+        whenever the dataframe had no name column — ``import_seasonal_data()``
+        has neither ``player_display_name`` nor ``position``, so that produced
+        hundreds of nameless rows. Now the cross-ID map supplies the missing
+        name and position, and a row is created only when we end up with a real
+        one.
+        """
+        player = self.identity.resolve(
+            gsis_id=gsis_id, pfr_id=pfr_id, name=name, position=position
+        )
+        if player is not None:
+            self.identity.stamp_ids(player, gsis_id=gsis_id, pfr_id=pfr_id)
+            return player
+
+        if not create:
+            return None
+
+        # Fill the gaps from nflverse's cross-ID table before giving up.
+        entry = self.identity.lookup_ids(gsis_id=gsis_id, pfr_id=pfr_id) or {}
+        resolved_name = name if not is_placeholder_name(name) else None
+        resolved_name = resolved_name or entry.get("name")
+        resolved_position = normalize_position(position) or entry.get("position")
+
+        if not resolved_name or not resolved_position:
+            # A row with no name and no position helps nobody and pollutes
+            # search; skip it and let a later import with better data create it.
+            return None
+
+        player = DBPlayer(
+            player_id=f"nfl_{gsis_id or pfr_id}",
+            name=resolved_name,
+            position=resolved_position,
+            nfl_team=nfl_team or entry.get("team") or "FA",
+        )
+        self.db.add(player)
+        self.db.flush()
+        self.identity.stamp_ids(player, gsis_id=gsis_id, pfr_id=pfr_id)
+        return player
 
     def import_weekly_stats(self, years: List[int]) -> int:
         """Import weekly player stats for given years.
@@ -62,21 +118,14 @@ class NFLDataService:
             if not player_gsis_id:
                 continue
 
-            # Find or create player by gsis_id
-            player_id_str = f"nfl_{player_gsis_id}"
-            db_player = self.db.query(DBPlayer).filter_by(player_id=player_id_str).first()
-            if not db_player:
-                name = row.get('player_display_name') or row.get('player_name', 'Unknown')
-                position = row.get('position', 'Unknown')
-                team = row.get('recent_team', 'FA')
-                db_player = DBPlayer(
-                    player_id=player_id_str,
-                    name=name,
-                    position=position,
-                    nfl_team=team or 'FA',
-                )
-                self.db.add(db_player)
-                self.db.flush()
+            db_player = self._resolve_or_create(
+                gsis_id=player_gsis_id,
+                name=row.get('player_display_name') or row.get('player_name'),
+                position=row.get('position'),
+                nfl_team=row.get('recent_team'),
+            )
+            if db_player is None:
+                continue
 
             year = int(row.get('season', 0))
             week = int(row.get('week', 0))
@@ -131,20 +180,16 @@ class NFLDataService:
             if not player_gsis_id:
                 continue
 
-            player_id_str = f"nfl_{player_gsis_id}"
-            db_player = self.db.query(DBPlayer).filter_by(player_id=player_id_str).first()
-            if not db_player:
-                name = row.get('player_display_name') or row.get('player_name', 'Unknown')
-                position = row.get('position', 'Unknown')
-                team = row.get('recent_team', 'FA')
-                db_player = DBPlayer(
-                    player_id=player_id_str,
-                    name=name,
-                    position=position,
-                    nfl_team=team or 'FA',
-                )
-                self.db.add(db_player)
-                self.db.flush()
+            # import_seasonal_data() carries no name or position column, so
+            # the cross-ID map inside _resolve_or_create supplies both.
+            db_player = self._resolve_or_create(
+                gsis_id=player_gsis_id,
+                name=row.get('player_display_name') or row.get('player_name'),
+                position=row.get('position'),
+                nfl_team=row.get('recent_team'),
+            )
+            if db_player is None:
+                continue
 
             year = int(row.get('season', 0))
             if not year:
@@ -190,7 +235,12 @@ class NFLDataService:
             )
             season.air_yards = _safe_float(row.get('air_yards_share'))
             season.yac = _safe_float(row.get('receiving_yards_after_catch'))
-            season.wopr = _safe_float(row.get('wopr'))
+            # The seasonal frame ships wopr split as wopr_x / wopr_y by an
+            # upstream merge; a plain 'wopr' column has not existed for a while,
+            # so this silently stored 0.0 for everyone.
+            season.wopr = _safe_float(
+                row.get('wopr_x') if row.get('wopr_x') is not None else row.get('wopr')
+            )
             season.source = 'nfl_data_py'
             season.updated_at = datetime.utcnow()
             count += 1
@@ -224,11 +274,11 @@ class NFLDataService:
             if not year:
                 continue
 
-            # Try to find player by matching — snap count data uses PFR IDs
-            # We'll update any existing season stats that match
-            # Look up via game logs from same year to find the player
-            player_id_str = f"nfl_{pfr_id}"
-            db_player = self.db.query(DBPlayer).filter_by(player_id=player_id_str).first()
+            # Snap-count data is keyed by PFR id ("MahoPa00"), while players are
+            # stored under their gsis id. Resolving through the cross-ID map is
+            # what makes this match at all — the old `nfl_<pfr_id>` lookup could
+            # never hit a row, which is why snap_pct was NULL for everyone.
+            db_player = self._resolve_or_create(pfr_id=pfr_id, create=False)
             if not db_player:
                 continue
 
@@ -239,7 +289,9 @@ class NFLDataService:
                 continue
 
             season.snap_count = _safe_int(row.get('offense_snaps'))
-            season.snap_pct = _safe_float(row.get('offense_pct'))
+            # nflverse reports offense_pct as a 0–1 fraction; every consumer
+            # (player page, projection criteria) treats snap_pct as 0–100.
+            season.snap_pct = _to_percentage(row.get('offense_pct'))
             season.updated_at = datetime.utcnow()
             count += 1
 
@@ -474,43 +526,76 @@ class NFLDataService:
         self.db.commit()
         return count
 
-    def import_roster_metadata(self, years: List[int]) -> None:
-        """Import player metadata (updates existing DBPlayer records).
+    def import_roster_metadata(self, years: List[int]) -> int:
+        """Import player bio metadata (height, weight, age, college, experience).
 
-        Uses nfl_data_py roster data to supplement player info.
+        Writes to real ``DBPlayer`` columns rather than the ``stats`` JSON
+        field: ``stats`` holds ESPN's raw scoring-period payload and is replaced
+        wholesale on every team sync, so bio stored there did not survive.
+
+        Returns:
+            Number of players updated.
         """
         if nfl is None:
             raise ImportError("nfl_data_py is not installed. Run: pip install nfl_data_py")
-        df = nfl.import_rosters(years)
+        df = _import_rosters(years)
+        now = datetime.utcnow()
+        count = 0
 
         for _, row in df.iterrows():
             gsis_id = row.get('player_id') or row.get('gsis_id')
             if not gsis_id:
                 continue
 
-            player_id_str = f"nfl_{gsis_id}"
-            db_player = self.db.query(DBPlayer).filter_by(player_id=player_id_str).first()
+            db_player = self._resolve_or_create(
+                gsis_id=gsis_id,
+                pfr_id=_safe_str(row.get('pfr_id')),
+                name=row.get('player_name') or row.get('full_name'),
+                position=row.get('position'),
+                nfl_team=row.get('team'),
+                create=False,
+            )
             if not db_player:
                 continue
 
-            # Update metadata stored in the stats JSON field
-            metadata = db_player.stats or {}
-            metadata['height'] = _safe_str(row.get('height'))
-            metadata['weight'] = _safe_int(row.get('weight'))
-            metadata['age'] = _safe_int(row.get('age'))
-            metadata['years_exp'] = _safe_int(row.get('years_exp'))
-            metadata['draft_number'] = _safe_int(row.get('draft_number'))
-            metadata['college'] = _safe_str(row.get('college'))
-            db_player.stats = metadata
+            # The roster feed carries espn/pfr ids directly — cheaper and more
+            # reliable than going back through the cross-ID table.
+            self.identity.stamp_ids(
+                db_player,
+                gsis_id=gsis_id,
+                espn_id=_safe_str(row.get('espn_id')),
+                pfr_id=_safe_str(row.get('pfr_id')),
+            )
+
+            db_player.height = _format_height(row.get('height'))
+            db_player.weight = _safe_int(row.get('weight')) or None
+            db_player.age = _safe_int(row.get('age')) or None
+            db_player.years_exp = _safe_int(row.get('years_exp'))
+            db_player.draft_number = _safe_int(row.get('draft_number')) or None
+            db_player.college = _safe_str(row.get('college'))
+            # Normalize whatever is already stored (repairs a "1.0" written by
+            # an earlier run) before falling back to the roster feed.
+            db_player.jersey = (
+                _format_jersey(db_player.jersey)
+                or _format_jersey(row.get('jersey_number'))
+            )
+            if db_player.years_exp is None and row.get('rookie_year'):
+                rookie_year = _safe_int(row.get('rookie_year'))
+                season = _safe_int(row.get('season'))
+                if rookie_year and season:
+                    db_player.years_exp = max(season - rookie_year, 0)
 
             # Import headshot URL from roster data
             headshot = _safe_str(row.get('headshot_url') or row.get('headshot'))
             if headshot:
                 db_player.headshot_url = headshot
 
-            db_player.updated_at = datetime.utcnow()
+            db_player.profile_updated_at = now
+            db_player.updated_at = now
+            count += 1
 
         self.db.commit()
+        return count
 
     def get_play_by_play(
         self,
@@ -947,6 +1032,66 @@ class NFLDataService:
 
         self.db.commit()
         return count
+
+
+def _to_percentage(val) -> Optional[float]:
+    """Scale a 0–1 fraction to 0–100, passing through values already in percent."""
+    value = _safe_float(val)
+    if val is None or (isinstance(val, float) and val != val):
+        return None
+    return round(value * 100, 1) if value <= 1.0 else round(value, 1)
+
+
+def _format_height(val) -> Optional[str]:
+    """Render nflverse's height (inches, as a float) as feet-inches.
+
+    Returns strings already in ``6-1`` form untouched.
+    """
+    if val is None:
+        return None
+    text = str(val).strip()
+    if not text or text.lower() in {'nan', 'none'}:
+        return None
+    if '-' in text or "'" in text:
+        return text
+    try:
+        inches = int(float(text))
+    except (TypeError, ValueError):
+        return text
+    if inches <= 0:
+        return None
+    return f"{inches // 12}-{inches % 12}"
+
+
+def _format_jersey(val) -> Optional[str]:
+    """Render a jersey number without a stray ``.0`` from float storage."""
+    if val is None:
+        return None
+    text = str(val).strip()
+    if not text or text.lower() in {'nan', 'none'}:
+        return None
+    try:
+        return str(int(float(text)))
+    except (TypeError, ValueError):
+        return text
+
+
+def _import_rosters(years: List[int]):
+    """Fetch season rosters, tolerating nfl_data_py's renamed API.
+
+    Older releases exposed ``import_rosters``; current ones split it into
+    ``import_seasonal_rosters`` / ``import_weekly_rosters``. Calling the wrong
+    one raises AttributeError, which is how this stayed broken while it had no
+    callers.
+    """
+    for name in ('import_seasonal_rosters', 'import_rosters'):
+        fn = getattr(nfl, name, None)
+        if fn is not None:
+            return fn(years)
+    raise ImportError(
+        "nfl_data_py exposes no roster import function "
+        "(looked for import_seasonal_rosters, import_rosters)"
+    )
 
 
 def _safe_int(val) -> int:

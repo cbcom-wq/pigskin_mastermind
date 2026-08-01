@@ -1,0 +1,17 @@
+{# Global search modal results (HTMX fragment for /api/players/search). #}
+{% from "components/_player.html" import player_chip %}
+{% if not results %}
+<div class="px-4 py-6 text-center text-sm text-slate-400">No players found</div>
+{% else %}
+{% for row in results %}
+<a href="/players/{{ row.player.id }}" class="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-slate-50 transition-colors cursor-pointer">
+    {{ player_chip(row.player, size="sm", show_bye=True, subtitle=row.subtitle) }}
+    <div class="text-right flex-shrink-0">
+        <p class="text-sm font-semibold text-slate-700">
+            {%- if row.adp is not none %}{{ "%.1f" | format(row.adp) }}{% else %}&mdash;{% endif -%}
+        </p>
+        <p class="text-[10px] text-slate-400">ADP</p>
+    </div>
+</a>
+{% endfor %}
+{% endif %}

@@ -17,6 +17,10 @@ class Player:
         stats: Dictionary of player statistics
         projected_points: Projected fantasy points
         actual_points: Actual fantasy points scored
+        db_id: Primary key of the matching DBPlayer, when converted from one.
+            Templates use it to link to the player profile.
+        bye_week: Week this player's NFL team is off, when known
+        injury_status: ESPN injury designation (QUESTIONABLE, OUT, ...)
     """
     player_id: str
     name: str
@@ -26,12 +30,22 @@ class Player:
     projected_points: float = 0.0
     actual_points: float = 0.0
     headshot_url: Optional[str] = None
-    
+    db_id: Optional[int] = None
+    bye_week: Optional[int] = None
+    injury_status: Optional[str] = None
+
     def __post_init__(self):
         """Validate player data after initialization."""
         valid_positions = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF']
         if self.position not in valid_positions:
             raise ValueError(f"Invalid position: {self.position}. Must be one of {valid_positions}")
+
+    @property
+    def is_out(self) -> bool:
+        """True when the player is ruled out (OUT, IR, or suspended)."""
+        return (self.injury_status or '').upper() in {
+            'OUT', 'IR', 'INJURY_RESERVE', 'SUSPENSION',
+        }
     
     def update_stats(self, stats: Dict[str, Any]) -> None:
         """
