@@ -106,11 +106,11 @@ function createWindow() {
 app.whenReady().then(async () => {
   createWindow();
 
-  const port = await pickPort();
-  const url = `http://127.0.0.1:${port}/`;
-  backend = startBackend(port);
-
   try {
+    const port = await pickPort();
+    const url = `http://127.0.0.1:${port}/`;
+    backend = startBackend(port);
+
     await waitForServer(url, { isAlive: () => !backendExited });
     if (mainWindow) mainWindow.loadURL(url);
   } catch (err) {
