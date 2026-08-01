@@ -1,6 +1,6 @@
 import sys
 import os
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from sqlalchemy.orm import Session
 from datetime import datetime
 
@@ -86,6 +86,60 @@ TUNER_PLAYER_LIMITS: Dict[str, int] = {
 # Fetch this many times more candidates than the final cap so we can rank
 # locally by actual production and drop zero-point / inactive players.
 TUNER_CANDIDATE_MULTIPLIER: int = 2
+
+# ESPN files the season aggregate under scoring period '0'; every other key in
+# the raw stats blob is a week.
+SEASON_SCORING_PERIOD = '0'
+
+# An NFL fantasy season runs at most 18 scoring periods.
+MAX_SCORING_PERIODS = 18
+
+# ESPN's avg_points arrives rounded to 2dp, so it is only a safe divisor once
+# it clears that rounding noise. At 0.2+ the implied game count stays accurate
+# to within half a game across an 18-week season, which is what round() needs.
+MIN_TRUSTWORTHY_AVG_POINTS = 0.2
+
+
+def resolve_season_games_and_average(
+    season_data: Dict[str, Any],
+    raw_stats: Dict[str, Any],
+) -> Tuple[int, float]:
+    """Recover (games_played, points_per_game) from an ESPN season aggregate.
+
+    ESPN's season entry carries ``avg_points`` (its ``appliedAverage``) next to
+    the ``points`` season total, and it averages over games *played* — so
+    ``points / avg_points`` recovers the true game count.
+
+    The blob's week keys are not a usable substitute. It holds only the scoring
+    periods a given import happened to fetch, and ESPN still emits entries for
+    weeks the player sat out (``points`` 0.0, empty ``breakdown``). Counting
+    those keys made a full-season total divide by 1, so ``fantasy_points_avg``
+    came out equal to ``fantasy_points_total``.
+
+    Args:
+        season_data: The ``'0'`` entry from the raw stats blob.
+        raw_stats: The whole raw stats blob, used for the fallback count.
+
+    Returns:
+        Tuple of (games played, fantasy points per game).
+    """
+    points = float(season_data.get('points') or 0.0)
+    avg = float(season_data.get('avg_points') or 0.0)
+
+    if abs(avg) >= MIN_TRUSTWORTHY_AVG_POINTS:
+        implied_games = round(abs(points) / abs(avg))
+        if 1 <= implied_games <= MAX_SCORING_PERIODS:
+            return implied_games, avg
+
+    # No usable average — fall back to counting only the weeks that actually
+    # carry stat data, which is the honest lower bound on games played.
+    games = sum(
+        1 for key, week in raw_stats.items()
+        if key != SEASON_SCORING_PERIOD
+        and isinstance(week, dict)
+        and week.get('breakdown')
+    )
+    return games, (points / games if games else 0.0)
 
 
 class ESPNSyncService:
@@ -1207,8 +1261,10 @@ class ESPNSyncService:
                     season = DBPlayerSeasonStats(player_id=player.id, year=year)
                     self.db.add(season)
 
-                week_keys = [k for k in raw.keys() if k != '0']
-                season.games_played = len(week_keys)
+                games, season_avg = resolve_season_games_and_average(
+                    season_data, raw,
+                )
+                season.games_played = games
                 season.pass_att = parsed.get('pass_att', 0)
                 season.pass_cmp = parsed.get('pass_cmp', 0)
                 season.pass_yd = parsed.get('pass_yd', 0)
@@ -1223,10 +1279,7 @@ class ESPNSyncService:
                 season.rec_yd = parsed.get('rec_yd', 0)
                 season.rec_td = parsed.get('rec_td', 0)
                 season.fantasy_points_total = points_total
-                season.fantasy_points_avg = (
-                    points_total / season.games_played
-                    if season.games_played > 0 else 0.0
-                )
+                season.fantasy_points_avg = season_avg
                 # Prefer targets (opportunities) over rec (completions) for the
                 # receiving component so efficiency reflects true opportunity rate.
                 # Falls back to rec when ESPN does not export receivingTargets.
@@ -1431,9 +1484,10 @@ class ESPNSyncService:
                 season = DBPlayerSeasonStats(player_id=player.id, year=year)
                 self.db.add(season)
 
-            # Count games from the per-week keys (exclude '0')
-            week_keys = [k for k in raw.keys() if k != '0']
-            season.games_played = len(week_keys)
+            games, season_avg = resolve_season_games_and_average(
+                season_data, raw,
+            )
+            season.games_played = games
 
             season.pass_att = parsed.get('pass_att', 0)
             season.pass_cmp = parsed.get('pass_cmp', 0)
@@ -1449,10 +1503,7 @@ class ESPNSyncService:
             season.rec_yd = parsed.get('rec_yd', 0)
             season.rec_td = parsed.get('rec_td', 0)
             season.fantasy_points_total = points_total
-            season.fantasy_points_avg = (
-                points_total / season.games_played
-                if season.games_played > 0 else 0.0
-            )
+            season.fantasy_points_avg = season_avg
             # Prefer targets (opportunities) over rec (completions) for the
             # receiving component so efficiency reflects true opportunity rate.
             # Falls back to rec when ESPN does not export receivingTargets.
