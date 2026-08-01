@@ -69,6 +69,7 @@ Optional: set `ODDS_API_KEY` for live sportsbook data, or call the odds `/seed` 
 | Sportsbook odds and prop-derived projections | Working with an API key; seedable without |
 | Game / player / team play animations | Working |
 | Season animation charts | Working |
+| Desktop app (Electron launcher) | Working, local-only; requires the repo and `.venv` in place |
 | Entertainment (names, power rankings, awards, trash talk) | Working; CLI + library only, no UI |
 | Yahoo import | **Stub.** `YahooImporter` in `services/importer.py` is unimplemented |
 | `ESPNImporter` in `services/importer.py` | **Stub.** Real ESPN work goes through `espn_sync.py` |
