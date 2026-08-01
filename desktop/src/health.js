@@ -23,7 +23,7 @@ async function waitForServer(url, options = {}) {
     }
 
     try {
-      const response = await fetchImpl(url);
+      const response = await fetchImpl(url, { signal: AbortSignal.timeout(intervalMs * 8) });
       if (response.status === 200) return;
     } catch {
       // Connection refused while uvicorn is still importing. Keep waiting.

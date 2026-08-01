@@ -15,6 +15,7 @@ const REPORTED_LOG_LINES = 50;
 let backend = null;
 let backendExited = false;
 let mainWindow = null;
+let quitting = false;
 const logLines = [];
 
 function recordOutput(chunk) {
@@ -75,7 +76,11 @@ function stopBackend() {
 
   // A plain kill() leaves uvicorn orphaned on Windows, still holding the
   // port and the SQLite file. /T kills the tree, /F forces it.
-  execFile('taskkill', ['/PID', String(pid), '/T', '/F'], () => {});
+  execFile('taskkill', ['/PID', String(pid), '/T', '/F'], (err, stdout, stderr) => {
+    if (err) {
+      recordOutput(`taskkill failed for PID ${pid}: ${err.message}\n${stderr || ''}`);
+    }
+  });
 }
 
 function createWindow() {
@@ -108,12 +113,14 @@ app.whenReady().then(async () => {
 
   try {
     const port = await pickPort();
+    if (quitting) return;
     const url = `http://127.0.0.1:${port}/`;
     backend = startBackend(port);
 
     await waitForServer(url, { isAlive: () => !backendExited });
     if (mainWindow) mainWindow.loadURL(url);
   } catch (err) {
+    if (quitting) return;
     dialog.showErrorBox(
       'Pigskin Mastermind failed to start',
       `${err.message}\n\nLast output from the backend:\n\n${recentLog()}`,
@@ -126,4 +133,7 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
-app.on('before-quit', stopBackend);
+app.on('before-quit', () => {
+  quitting = true;
+  stopBackend();
+});

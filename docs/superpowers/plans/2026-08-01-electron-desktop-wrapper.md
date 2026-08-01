@@ -59,6 +59,10 @@ Creates the npm package, ignores `node_modules`, and delivers the first tested m
 }
 ```
 
+> **Note (post-implementation):** `node --test test/` fails on Node 24 — the runner treats
+> `test/` as a file, not a directory glob. The implementation correctly uses
+> `node --test test/*.test.js` instead; keep that form if this file is used as a reference.
+
 - [ ] **Step 2: Ignore `node_modules`**
 
 Append to `.gitignore`:
