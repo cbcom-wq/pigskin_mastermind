@@ -3,7 +3,9 @@ from unittest.mock import Mock, patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-from pigskin_mastermind.models.database import Base, DBTeam, DBPlayer
+from pigskin_mastermind.models.database import (
+    Base, DBTeam, DBPlayer, DBPlayerSeasonStats,
+)
 from pigskin_mastermind.services.espn_sync import ESPNSyncService, TUNER_PLAYER_LIMITS
 
 test_engine = create_engine(
@@ -219,3 +221,152 @@ def test_import_relevant_players_uses_ranking(mock_league, db):
     assert "Good QB" in imported_names
     assert "Zero QB1" not in imported_names
     assert "Zero QB2" not in imported_names
+
+
+# ---------------------------------------------------------------------------
+# Season aggregation: games_played must reflect games actually played
+# ---------------------------------------------------------------------------
+
+# A season aggregate as ESPN returns it under scoring period '0'.  Modelled on
+# the real 2025 Saquon Barkley payload: 213.8 points over 16 games played.
+BARKLEY_SEASON_BREAKDOWN = {
+    'rushingAttempts': 293,
+    'rushingYards': 1250,
+    'rushingTouchdowns': 6,
+    'receivingTargets': 47,
+    'receivingReceptions': 38,
+    'receivingYards': 340,
+    'receivingTouchdowns': 2,
+    'lostFumbles': 1,
+}
+
+
+def _make_season_blob(points, avg_points, extra_weeks=None):
+    """Build a raw ESPN stats blob: season aggregate under '0' plus weeks."""
+    blob = {
+        '0': {
+            'points': points,
+            'avg_points': avg_points,
+            'breakdown': dict(BARKLEY_SEASON_BREAKDOWN),
+            'projected_points': 0.0,
+            'projected_breakdown': {},
+        },
+    }
+    blob.update(extra_weeks or {})
+    return blob
+
+
+def _add_player(db, name="Saquon Barkley", stats=None, position="RB"):
+    player = DBPlayer(
+        player_id=f"espn_{abs(hash(name)) % 100000}",
+        name=name,
+        position=position,
+        nfl_team="PHI",
+        stats=stats,
+    )
+    db.add(player)
+    db.commit()
+    return player
+
+
+def test_season_aggregate_does_not_count_empty_week_as_a_game(db):
+    """Regression: a season total must never be divided by a placeholder week.
+
+    ESPN's blob commonly holds only the season aggregate ('0') plus a single
+    scoring-period entry for a week the player did not play — ``points`` 0.0
+    and no ``breakdown``.  Counting that key as a game made
+    ``fantasy_points_avg`` equal the full-season ``fantasy_points_total``.
+    """
+    stats = _make_season_blob(
+        points=213.8,
+        avg_points=13.36,
+        extra_weeks={'18': {'points': 0.0, 'breakdown': {}, 'avg_points': 0.0}},
+    )
+    player = _add_player(db, stats=stats)
+
+    ESPNSyncService(db).populate_stats_from_player_json(year=2025)
+
+    season = db.query(DBPlayerSeasonStats).filter_by(
+        player_id=player.id, year=2025,
+    ).first()
+    assert season is not None
+    assert season.fantasy_points_total == pytest.approx(213.8)
+    # The bug: games_played == 1 and avg == total
+    assert season.games_played == 16
+    assert season.fantasy_points_avg == pytest.approx(13.36, abs=0.05)
+    assert season.fantasy_points_avg != pytest.approx(season.fantasy_points_total)
+
+
+def test_season_aggregate_never_pairs_one_game_with_a_season_total(db):
+    """A season-total-sized number must never sit against games_played == 1."""
+    players = [
+        _add_player(db, name="QB One", position="QB",
+                    stats=_make_season_blob(349.06, 21.82,
+                                            {'18': {'points': 0.0, 'breakdown': {}}})),
+        _add_player(db, name="RB Two", position="RB",
+                    stats=_make_season_blob(213.8, 13.36,
+                                            {'17': {'points': 0.0, 'breakdown': {}}})),
+        _add_player(db, name="K Three", position="K",
+                    stats=_make_season_blob(108.0, 7.2,
+                                            {'18': {'points': 0.0, 'breakdown': {}}})),
+    ]
+    ESPNSyncService(db).populate_stats_from_player_json(year=2025)
+
+    rows = db.query(DBPlayerSeasonStats).filter_by(year=2025).all()
+    assert len(rows) == len(players)
+    for row in rows:
+        if row.fantasy_points_total > 50:
+            assert row.games_played > 1, (
+                f"player {row.player_id} has a season total of "
+                f"{row.fantasy_points_total} against {row.games_played} game(s)"
+            )
+        # The averaging invariant, whatever the game count.
+        assert row.fantasy_points_avg <= row.fantasy_points_total / 2
+
+
+def test_season_average_matches_total_over_games(db):
+    """fantasy_points_avg must stay consistent with total / games_played."""
+    player = _add_player(db, stats=_make_season_blob(
+        points=213.8, avg_points=13.36,
+        extra_weeks={'18': {'points': 0.0, 'breakdown': {}}},
+    ))
+    ESPNSyncService(db).populate_stats_from_player_json(year=2025)
+
+    season = db.query(DBPlayerSeasonStats).filter_by(player_id=player.id).first()
+    assert season.fantasy_points_avg == pytest.approx(
+        season.fantasy_points_total / season.games_played, abs=0.05,
+    )
+
+
+def test_season_games_fall_back_to_weeks_with_real_stats(db):
+    """Without a usable avg_points, only weeks carrying stats count as games."""
+    week_with_stats = {
+        'points': 12.4,
+        'breakdown': {'rushingAttempts': 14, 'rushingYards': 74},
+    }
+    stats = _make_season_blob(points=24.8, avg_points=0.0, extra_weeks={
+        '1': dict(week_with_stats),
+        '2': dict(week_with_stats),
+        '3': {'points': 0.0, 'breakdown': {}},   # did not play
+    })
+    player = _add_player(db, stats=stats)
+
+    ESPNSyncService(db).populate_stats_from_player_json(year=2025)
+
+    season = db.query(DBPlayerSeasonStats).filter_by(player_id=player.id).first()
+    assert season.games_played == 2
+    assert season.fantasy_points_avg == pytest.approx(12.4)
+
+
+def test_single_player_stats_path_also_counts_games_correctly(db):
+    """_populate_single_player_stats shares the same games_played rule."""
+    player = _add_player(db, stats=_make_season_blob(
+        points=213.8, avg_points=13.36,
+        extra_weeks={'18': {'points': 0.0, 'breakdown': {}}},
+    ))
+
+    ESPNSyncService(db)._populate_single_player_stats(player, year=2025)
+
+    season = db.query(DBPlayerSeasonStats).filter_by(player_id=player.id).first()
+    assert season.games_played == 16
+    assert season.fantasy_points_avg == pytest.approx(13.36, abs=0.05)
