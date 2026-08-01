@@ -1,0 +1,14 @@
+{
+  "name": "pigskin-mastermind-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron launcher for the Pigskin Mastermind FastAPI app",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "electron": "^43.2.0"
+  }
+}
