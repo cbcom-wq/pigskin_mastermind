@@ -28,6 +28,25 @@ alembic upgrade head
 uvicorn pigskin_mastermind.api.main:app --reload
 ```
 
+### Desktop app (Electron)
+
+A local-only launcher lives in `desktop/`. It spawns uvicorn from `.venv` on a free ephemeral port,
+points a window at it, and kills the backend on quit.
+
+```bash
+cd desktop
+npm install     # first time only
+npm start       # launch the desktop app
+npm test        # unit tests for the port picker and health poll
+```
+
+It uses the repo's `pigskin_mastermind.db` via an absolute `DATABASE_URL`. **Do not run the desktop
+app and a dev `uvicorn` at the same time** — two writers on one SQLite file produce
+`database is locked`.
+
+Helper modules live in `desktop/src/`, not `desktop/lib/`: the blanket `lib/` rule in `.gitignore`
+matches at any depth and would leave them untracked.
+
 ### Testing
 
 ```bash
