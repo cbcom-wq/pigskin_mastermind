@@ -34,13 +34,21 @@ desktop/
 ├── package.json      # electron devDependency, "start" script
 ├── main.js           # process lifecycle + window
 ├── loading.html      # splash shown during backend boot
-└── lib/
-    ├── port.js       # pick a free ephemeral port
-    └── health.js     # poll until the server answers
+├── src/
+│   ├── port.js       # pick a free ephemeral port
+│   └── health.js     # poll until the server answers
+└── test/
+    ├── port.test.js
+    └── health.test.js
 ```
 
 Splitting `port.js` and `health.js` out of `main.js` is what makes any of this testable —
 `main.js` itself can only be exercised by launching Electron.
+
+The directory is `src/`, not `lib/`, deliberately: `.gitignore` line 13 is a blanket `lib/` rule
+(it is what hides the vendored `espn_api`), and it matches at any depth. `desktop/lib/port.js`
+would have been silently untracked. `desktop/node_modules/` is *not* currently ignored and must be
+added.
 
 ## Launch sequence
 
@@ -79,8 +87,9 @@ client is git-ignored), and that message needs to reach the user.
 
 ## Shutdown
 
-On both `window-all-closed` and `before-quit`, terminate the backend with
-`taskkill /PID <pid> /T /F`.
+Terminate the backend with `taskkill /PID <pid> /T /F` from a single `before-quit` handler.
+`window-all-closed` calls `app.quit()`, which routes through `before-quit`, so one handler covers
+both paths without a double-kill guard.
 
 A plain `SIGTERM` to a `python -m uvicorn` child on Windows reliably leaves an orphaned process
 holding both the port and the SQLite file. `/T` kills the tree; `/F` forces it.
