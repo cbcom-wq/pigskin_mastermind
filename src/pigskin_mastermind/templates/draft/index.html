@@ -566,7 +566,11 @@
   // Store randomised profile data keyed by slot
   let aiProfileData = {};
 
-  function buildAIRows() {
+  // `applyRandomized` marks a rebuild triggered by the 🎲 button: freshly
+  // randomised strategies must win over whatever the dropdowns currently show.
+  // Every select carries a non-empty value (there is no blank option), so
+  // without this the preserved selection below would always shadow them.
+  function buildAIRows(applyRandomized = false) {
     const numTeams = parseInt(document.getElementById('num-teams').value) || 10;
     const userSlot = parseInt(document.getElementById('user-pick-pos').value) || 1;
     const container = document.getElementById('ai-strategy-rows');
@@ -593,8 +597,12 @@
         </select>
         <span id="ai-badge-${slot}">${badgeHtml}</span>`;
       container.appendChild(div);
-      // Restore the prior selection, falling back to randomised profile data
-      const restored = chosen[String(slot)] || (profileInfo && profileInfo.strategy);
+      // Restore the prior selection, falling back to randomised profile data.
+      // After a randomize the priority flips: the new strategy wins.
+      const randomized = profileInfo && profileInfo.strategy;
+      const restored = applyRandomized
+        ? (randomized || chosen[String(slot)])
+        : (chosen[String(slot)] || randomized);
       if (restored) {
         const sel = document.getElementById(`ai-strat-${slot}`);
         if (sel) sel.value = restored;
@@ -623,7 +631,7 @@
       for (const [slot, info] of Object.entries(data)) {
         aiProfileData[slot] = { strategy: info.strategy, ...info.profile };
       }
-      buildAIRows();
+      buildAIRows(true);
       showToast('AI strategies & profiles randomized!', 'success');
     } catch (e) {
       showToast('Network error', 'error');
