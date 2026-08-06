@@ -21,10 +21,13 @@ from typing import Any, Dict, List, Optional
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.models.database import DBPlayer, DBPlayerSeasonStats
+from pigskin_mastermind.services.mock_draft import fetch_espn_adp
 from pigskin_mastermind.services.player_identity import PlayerIdentityService
+from pigskin_mastermind.utils.nfl_teams import normalize_team
 from pigskin_mastermind.utils.positions import FANTASY_POSITIONS, normalize_position
 from pigskin_mastermind.utils.season import current_fantasy_season
 
@@ -49,6 +52,18 @@ _FFC_SCORING_FORMATS = {"standard", "ppr", "half-ppr", "2qb", "dynasty"}
 
 # Minimum games before a season's per-game average is trusted as a projection.
 _MIN_GAMES_FOR_AVERAGE = 4
+
+#: Draft data older than this prompts the user to refresh. Lives here so the
+#: server and the draft page cannot disagree about what "out of date" means.
+STALE_AFTER_DAYS = 7
+
+
+def _strip_espn_prefix(player_id: Optional[str]) -> Optional[str]:
+    """Turn a pool id like ``espn_4047646`` back into the bare ESPN id."""
+    if not player_id:
+        return None
+    text = str(player_id)
+    return text[5:] if text.startswith("espn_") else text
 
 
 def _pick_to_overall(value: Any, num_teams: int) -> Optional[float]:
@@ -85,6 +100,10 @@ class ADPService:
     """
 
     ADP_SOURCE_LABEL = "fantasyfootballcalculator"
+    #: Players below FFC's board, backfilled from ESPN with a synthetic ADP.
+    ESPN_TAIL_SOURCE_LABEL = "espn_tail"
+    #: Every source the draft pool draws from, best consensus data first.
+    DRAFT_POOL_SOURCES = (ADP_SOURCE_LABEL, ESPN_TAIL_SOURCE_LABEL)
 
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -204,7 +223,8 @@ class ADPService:
         -------
         dict
             Summary with ``imported``, ``created``, ``skipped``,
-            ``total``, ``source``, and ``last_updated`` keys.
+            ``total``, ``source``, ``last_updated``, and ``team_changes``
+            (a list of ``{name, old, new}`` for players whose NFL team moved).
         """
         year = year or current_fantasy_season()
         players = self.fetch_ffc_adp(year=year, scoring=scoring, num_teams=num_teams)
@@ -215,12 +235,14 @@ class ADPService:
                 "skipped": 0,
                 "total": 0,
                 "source": self.ADP_SOURCE_LABEL,
+                "team_changes": [],
                 "error": "Failed to fetch data from Fantasy Football Calculator",
             }
 
         imported = 0
         created = 0
         skipped = 0
+        team_changes: List[Dict[str, str]] = []
         now = datetime.utcnow()
 
         for entry in players:
@@ -234,6 +256,12 @@ class ADPService:
                     continue
                 db_player = self._create_minimal_player(entry)
                 created += 1
+            else:
+                # Rosters move in the offseason. Without this, an existing row
+                # keeps whatever the last ESPN sync wrote — the stale-team bug.
+                change = self._apply_team_update(db_player, entry.get("team"))
+                if change:
+                    team_changes.append(change)
 
             # FFC ships the bye week alongside ADP — the only free source we
             # have for players who were never on an ESPN roster.
@@ -272,7 +300,222 @@ class ADPService:
             "total": len(players),
             "source": self.ADP_SOURCE_LABEL,
             "last_updated": now.isoformat(),
+            "team_changes": team_changes,
         }
+
+    def refresh_draft_data(
+        self,
+        year: Optional[int] = None,
+        scoring: str = "ppr",
+        num_teams: int = 12,
+    ) -> Dict[str, Any]:
+        """Refresh everything the draft pool depends on, in one action.
+
+        Runs FFC first (real consensus ADP for the top of the board), then the
+        ESPN tail (depth, and the more complete roster feed). Order matters for
+        teams: ESPN runs second, so where the two disagree ESPN's value is what
+        persists.
+
+        The ESPN leg is **non-fatal**. It targets an undocumented public
+        endpoint, and a refresh must never leave the pool worse than it started
+        — a failure there yields a shallower board, not a broken one.
+
+        Returns
+        -------
+        dict
+            The FFC summary, plus ``tail_imported`` / ``tail_created`` /
+            ``tail_total``, a merged ``team_changes``, ``teams_canonicalized``,
+            and ``tail_error`` when the ESPN leg failed.
+        """
+        year = year or current_fantasy_season()
+
+        result = self.import_from_ffc(year=year, scoring=scoring, num_teams=num_teams)
+        if result.get("error"):
+            return result
+
+        tail = self.import_espn_tail(year=year)
+
+        changes: Dict[str, Dict[str, str]] = {}
+        for change in list(result.get("team_changes", [])) + list(tail.get("team_changes", [])):
+            existing = changes.get(change["name"])
+            if existing is None:
+                changes[change["name"]] = change
+            else:
+                # Same player corrected twice — keep the original "old" so the
+                # report reads from where they started, not from FFC's guess.
+                existing["new"] = change["new"]
+
+        result["team_changes"] = [c for c in changes.values() if c["old"] != c["new"]]
+        result["tail_imported"] = tail.get("imported", 0)
+        result["tail_created"] = tail.get("created", 0)
+        result["tail_total"] = tail.get("total", 0)
+        if tail.get("error"):
+            result["tail_error"] = tail["error"]
+
+        result["teams_canonicalized"] = self.canonicalize_stored_teams()
+        return result
+
+    def import_espn_tail(
+        self,
+        year: Optional[int] = None,
+        limit: int = 1000,
+    ) -> Dict[str, Any]:
+        """Backfill the draft pool below FFC's board using ESPN's deeper list.
+
+        FFC's API returns roughly 250 players no matter what league size you
+        ask for, but a 12-team 15-round draft is 180 picks — so the pool runs
+        dry in the late rounds. ESPN's board carries ~1000 players.
+
+        Two things are deliberately decoupled here:
+
+        * **Team updates apply to every ESPN player**, including those already
+          on the FFC board. ESPN's ``proTeamId`` is the most complete roster
+          feed we have, and skipping the FFC players would leave the top ~250
+          — the ones most visible in a draft — on stale teams.
+        * **ADP rows are written only for players FFC did not rank**, so real
+          consensus ADP is never overwritten with a synthetic value.
+
+        Tail ADP is ``max_ffc_adp + rank``, ordered by ESPN's projection rather
+        than its ADP: ESPN reports a placeholder ADP (~170) for hundreds of
+        undrafted players, so their ADP cannot order them. The resulting value
+        is a sort key, not a claim about real draft position — the
+        ``espn_tail`` ``adp_source`` is what tells the two apart.
+
+        Returns
+        -------
+        dict
+            ``imported``, ``created``, ``total``, ``source``, ``team_changes``,
+            and ``error`` (set when ESPN is unreachable).
+        """
+        year = year or current_fantasy_season()
+        board = fetch_espn_adp(year=year, limit=limit)
+        if not board:
+            return {
+                "imported": 0,
+                "created": 0,
+                "total": 0,
+                "source": self.ESPN_TAIL_SOURCE_LABEL,
+                "team_changes": [],
+                "error": "Failed to fetch player board from ESPN",
+            }
+
+        ranked_player_ids = {
+            row.player_id
+            for row in self.db.query(DBPlayerSeasonStats.player_id)
+            .filter(
+                DBPlayerSeasonStats.year == year,
+                DBPlayerSeasonStats.adp.isnot(None),
+                DBPlayerSeasonStats.adp_source == self.ADP_SOURCE_LABEL,
+            )
+            .all()
+        }
+        max_ffc_adp = (
+            self.db.query(func.max(DBPlayerSeasonStats.adp))
+            .filter(
+                DBPlayerSeasonStats.year == year,
+                DBPlayerSeasonStats.adp_source == self.ADP_SOURCE_LABEL,
+            )
+            .scalar()
+        ) or 0.0
+
+        imported = 0
+        created = 0
+        team_changes: List[Dict[str, str]] = []
+        now = datetime.utcnow()
+
+        # Best projection first — ESPN's tied placeholder ADP can't order these.
+        ordered = sorted(
+            board,
+            key=lambda entry: float(entry.get("projected_points") or 0.0),
+            reverse=True,
+        )
+
+        tail_rank = 0
+        for entry in ordered:
+            position = normalize_position(entry.get("position"))
+            if not position:
+                continue
+
+            db_player = self.identity.resolve(
+                espn_id=_strip_espn_prefix(entry.get("id")),
+                name=entry.get("name"),
+                position=position,
+            )
+            if db_player is None:
+                db_player = self._create_player_from_espn(entry, position)
+                created += 1
+
+            # Applies to FFC-board players too — see the docstring.
+            change = self._apply_team_update(db_player, entry.get("nfl_team"))
+            if change:
+                team_changes.append(change)
+
+            if db_player.id in ranked_player_ids:
+                continue  # FFC already ranked them; leave consensus ADP alone.
+
+            tail_rank += 1
+            season = (
+                self.db.query(DBPlayerSeasonStats)
+                .filter_by(player_id=db_player.id, year=year)
+                .first()
+            )
+            if not season:
+                season = DBPlayerSeasonStats(player_id=db_player.id, year=year)
+                self.db.add(season)
+
+            season.adp = round(max_ffc_adp + tail_rank, 2)
+            season.adp_source = self.ESPN_TAIL_SOURCE_LABEL
+            season.updated_at = now
+            imported += 1
+
+        self.db.commit()
+
+        return {
+            "imported": imported,
+            "created": created,
+            "total": len(board),
+            "source": self.ESPN_TAIL_SOURCE_LABEL,
+            "team_changes": team_changes,
+            "last_updated": now.isoformat(),
+        }
+
+    def _create_player_from_espn(self, entry: Dict[str, Any], position: str) -> DBPlayer:
+        """Create a minimal ``DBPlayer`` for an ESPN board entry."""
+        player = DBPlayer(
+            player_id=entry.get("id") or f"espn_{entry['name']}",
+            name=entry["name"],
+            position=position,
+            nfl_team=normalize_team(entry.get("nfl_team")) or "FA",
+            projected_points=float(entry.get("projected_points") or 0.0),
+        )
+        self.db.add(player)
+        self.db.flush()  # assign player.id for the season-stats FK
+        self.identity.stamp_ids(player, espn_id=_strip_espn_prefix(entry.get("id")))
+        return player
+
+    def canonicalize_stored_teams(self) -> int:
+        """Rewrite non-canonical ``nfl_team`` spellings across the players table.
+
+        The importers only touch players their source ships. Anyone else — a
+        retired player, a deep-bench body ESPN's board omits — would otherwise
+        keep a stale spelling like ``WSH`` forever, and go on missing joins
+        against NFL team stats.
+
+        Values that normalize to nothing (``FA``, ``None``) are left alone:
+        those are not misspellings, they are genuinely teamless players.
+
+        Returns the number of rows changed.
+        """
+        fixed = 0
+        for player in self.db.query(DBPlayer).filter(DBPlayer.nfl_team.isnot(None)).all():
+            canonical = normalize_team(player.nfl_team)
+            if canonical is not None and canonical != player.nfl_team:
+                player.nfl_team = canonical
+                fixed += 1
+
+        if fixed:
+            self.db.commit()
+        return fixed
 
     # ------------------------------------------------------------------
     # Lookup
@@ -390,7 +633,7 @@ class ADPService:
             self.db.query(DBPlayer, DBPlayerSeasonStats)
             .join(DBPlayerSeasonStats, DBPlayerSeasonStats.player_id == DBPlayer.id)
             .filter(DBPlayerSeasonStats.adp.isnot(None))
-            .filter(DBPlayerSeasonStats.adp_source == self.ADP_SOURCE_LABEL)
+            .filter(DBPlayerSeasonStats.adp_source.in_(self.DRAFT_POOL_SOURCES))
         )
 
         if year is not None:
@@ -455,33 +698,81 @@ class ADPService:
         year : int, optional
             Season year. Defaults to the current fantasy season.
 
+        Staleness is decided here rather than in the page so the server and
+        the UI cannot disagree about what "out of date" means.
+
         Returns
         -------
         dict
-            ``{"year": int, "last_updated": ISO string or None, "count": int}``.
-            ``last_updated`` is the most recent import time for the
-            source/year; ``None`` when no rows exist.
+            ``year``, ``last_updated`` (ISO string or ``None``), ``count``,
+            ``ffc_count``, ``tail_count``, ``age_days`` (``None`` when nothing
+            has been imported), and ``stale``.
         """
         year = year or current_fantasy_season()
         rows = (
-            self.db.query(DBPlayerSeasonStats.updated_at)
+            self.db.query(DBPlayerSeasonStats.updated_at, DBPlayerSeasonStats.adp_source)
             .filter(
                 DBPlayerSeasonStats.adp.isnot(None),
-                DBPlayerSeasonStats.adp_source == self.ADP_SOURCE_LABEL,
+                DBPlayerSeasonStats.adp_source.in_(self.DRAFT_POOL_SOURCES),
                 DBPlayerSeasonStats.year == year,
             )
             .all()
         )
         timestamps = [r.updated_at for r in rows if r.updated_at is not None]
+        last_updated = max(timestamps) if timestamps else None
+        age_days = (
+            (datetime.utcnow() - last_updated).days if last_updated is not None else None
+        )
+
         return {
             "year": year,
-            "last_updated": max(timestamps).isoformat() if timestamps else None,
+            "last_updated": last_updated.isoformat() if last_updated else None,
             "count": len(rows),
+            "ffc_count": sum(1 for r in rows if r.adp_source == self.ADP_SOURCE_LABEL),
+            "tail_count": sum(
+                1 for r in rows if r.adp_source == self.ESPN_TAIL_SOURCE_LABEL
+            ),
+            "age_days": age_days,
+            "stale": age_days is None or age_days > STALE_AFTER_DAYS,
         }
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _apply_team_update(
+        self,
+        player: DBPlayer,
+        source_team: Optional[str],
+    ) -> Optional[Dict[str, str]]:
+        """Point *player* at *source_team*, returning the change if there was one.
+
+        Shared by the FFC and ESPN importers so both spell teams the same way
+        and report changes in the same shape.
+
+        Two cases deliberately write without reporting a change:
+
+        * an unusable ``source_team`` (``FA``, blank, unrecognized) leaves the
+          stored value alone — an unsigned player must not wipe a good team;
+        * a stored value that is merely a different spelling of the same
+          franchise (``WSH`` vs ``WAS``) is canonicalized in place, because
+          that is not a roster move.
+        """
+        canonical = normalize_team(source_team)
+        if canonical is None:
+            return None
+
+        stored = player.nfl_team
+        stored_canonical = normalize_team(stored)
+
+        if stored_canonical == canonical:
+            # Same franchise — rewrite only if the stored spelling was stale.
+            if stored != canonical:
+                player.nfl_team = canonical
+            return None
+
+        player.nfl_team = canonical
+        return {"name": player.name, "old": stored, "new": canonical}
 
     def _find_player(self, name: str, position: str) -> Optional[DBPlayer]:
         """Find a DBPlayer by name and position.
@@ -505,7 +796,7 @@ class ADPService:
             player_id=f"ffc_{ffc_id or slug}",
             name=entry["name"],
             position=normalize_position(entry["position"]) or entry["position"],
-            nfl_team=entry.get("team") or "FA",
+            nfl_team=normalize_team(entry.get("team")) or "FA",
             projected_points=0.0,
         )
         self.db.add(player)

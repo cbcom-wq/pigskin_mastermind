@@ -258,6 +258,110 @@ class TestImportFromFFC:
         season = db.query(DBPlayerSeasonStats).filter_by(player_id=matched.id, year=2025).first()
         assert season.adp == pytest.approx(10.0)
 
+    def test_import_updates_team_for_existing_player(self, db):
+        """The reported bug: a player who changed teams kept his old one.
+
+        Would fail before the fix — import_from_ffc set nfl_team only inside
+        _create_minimal_player, so already-existing rows were never corrected.
+        """
+        _seed_players(db)
+        svc = ADPService(db)
+        payload = [
+            {"player_id": 2860, "name": "Saquon Barkley", "position": "RB", "team": "NE",
+             "adp": 1.6, "adp_formatted": "1.02", "times_drafted": 19,
+             "high": 1, "low": 3, "stdev": 0.8, "bye": 9},
+        ]
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _ffc_response(payload)
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("pigskin_mastermind.services.adp_service.urlopen", return_value=mock_resp):
+            result = svc.import_from_ffc(year=2025)
+
+        rb = db.query(DBPlayer).filter_by(name="Saquon Barkley").first()
+        assert rb.nfl_team == "NE"
+        assert result["team_changes"] == [
+            {"name": "Saquon Barkley", "old": "PHI", "new": "NE"}
+        ]
+
+    def test_import_reports_no_change_when_team_is_same(self, db):
+        _seed_players(db)
+        svc = ADPService(db)
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _ffc_response()  # every team matches the seed
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("pigskin_mastermind.services.adp_service.urlopen", return_value=mock_resp):
+            result = svc.import_from_ffc(year=2025)
+
+        assert result["team_changes"] == []
+
+    def test_import_does_not_overwrite_real_team_with_free_agent(self, db):
+        """A source reporting FA for an unsigned player must not wipe a good team."""
+        _seed_players(db)
+        svc = ADPService(db)
+        payload = [
+            {"player_id": 2860, "name": "Saquon Barkley", "position": "RB", "team": "FA",
+             "adp": 1.6, "adp_formatted": "1.02", "times_drafted": 19,
+             "high": 1, "low": 3, "stdev": 0.8, "bye": 9},
+        ]
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _ffc_response(payload)
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("pigskin_mastermind.services.adp_service.urlopen", return_value=mock_resp):
+            result = svc.import_from_ffc(year=2025)
+
+        rb = db.query(DBPlayer).filter_by(name="Saquon Barkley").first()
+        assert rb.nfl_team == "PHI"
+        assert result["team_changes"] == []
+
+    def test_import_canonicalizes_wsh_without_reporting_a_change(self, db):
+        """WSH and WAS are the same franchise — not a team change."""
+        db.add(DBPlayer(player_id="espn_301", name="Jayden Daniels", position="QB",
+                        nfl_team="WSH"))
+        db.commit()
+        svc = ADPService(db)
+        payload = [
+            {"player_id": 7777, "name": "Jayden Daniels", "position": "QB", "team": "WAS",
+             "adp": 40.0, "adp_formatted": "4.04", "times_drafted": 30,
+             "high": 30, "low": 50, "stdev": 4.0, "bye": 14},
+        ]
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _ffc_response(payload)
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("pigskin_mastermind.services.adp_service.urlopen", return_value=mock_resp):
+            result = svc.import_from_ffc(year=2025)
+
+        qb = db.query(DBPlayer).filter_by(name="Jayden Daniels").first()
+        assert qb.nfl_team == "WAS"  # canonicalized in place
+        assert result["team_changes"] == []  # but not a roster move
+
+    def test_canonicalize_stored_teams_fixes_rows_no_source_returns(self, db):
+        """Players neither source ships must not stay on a stale spelling."""
+        db.add_all([
+            DBPlayer(player_id="espn_401", name="Benched Guy", position="RB", nfl_team="WSH"),
+            DBPlayer(player_id="espn_402", name="Other Guy", position="WR", nfl_team="JAC"),
+            DBPlayer(player_id="espn_403", name="Fine Guy", position="TE", nfl_team="KC"),
+            DBPlayer(player_id="espn_404", name="Loose Guy", position="QB", nfl_team="FA"),
+        ])
+        db.commit()
+        svc = ADPService(db)
+
+        fixed = svc.canonicalize_stored_teams()
+
+        assert fixed == 2
+        assert db.query(DBPlayer).filter_by(player_id="espn_401").first().nfl_team == "WAS"
+        assert db.query(DBPlayer).filter_by(player_id="espn_402").first().nfl_team == "JAX"
+        assert db.query(DBPlayer).filter_by(player_id="espn_403").first().nfl_team == "KC"
+        # FA is not a spelling problem — leave it alone.
+        assert db.query(DBPlayer).filter_by(player_id="espn_404").first().nfl_team == "FA"
+
     def test_import_creates_season_stats_rows(self, db):
         _seed_players(db)
         svc = ADPService(db)

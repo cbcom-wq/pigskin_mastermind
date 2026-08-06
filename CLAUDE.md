@@ -139,6 +139,14 @@ Positions are normalized at every import boundary via `utils/positions.py::norma
 (`D/ST`/`DST` → `DEF`; non-fantasy positions return `None` and the row is skipped).
 `snap_pct` is canonically **0–100** — the importer scales nflverse's 0–1 `offense_pct`.
 
+**Teams are normalized the same way**, via `utils/nfl_teams.py::normalize_team()` — ESPN says
+`WSH`, everyone else says `WAS`, and PFR-style exports say `GNB`/`KAN`. Two spellings of one
+franchise make a player look like they changed teams and silently break the abbreviation joins in
+`projection_criteria_builder.py`. `normalize_team()` returns `None` for `FA`/blank/unrecognized,
+which means **leave the stored value alone** — never write it, or an unsigned player wipes a good
+team. Applied in `adp_service.py` and `espn_sync.py`; normalizing only one of them lets the next
+sync undo the other.
+
 ### Projection pipeline
 
 ```
@@ -197,6 +205,22 @@ state keyed by `draft_id`. It does not survive a server restart and is not share
 do not run uvicorn with `--workers > 1` and expect drafts to work. Snake order, the `DraftStrategy`
 enum, `AIProfile` weights, ADP-driven pools (ESPN, or FantasyFootballCalculator via `ADPService`),
 draft grading, and commentary all live in this module.
+
+**The draft pool has two sources, and both matter.** FFC's API returns ~250 players no matter what
+league size you request, but a 12-team 15-round draft is 180 picks — so an FFC-only pool empties
+before the draft ends. `ADPService.import_espn_tail()` backfills from ESPN's 1000-player board,
+tagged `adp_source="espn_tail"` with a synthetic ADP of `max_ffc_adp + rank`. That value is a sort
+key, not a draft position; the `adp_source` label is what distinguishes it. The tail is ordered by
+ESPN's projection because ~789 of its players share a placeholder ADP of 170.
+
+- `refresh_draft_data()` is the one call that refreshes everything: FFC, then the tail, then
+  `canonicalize_stored_teams()`. **Order matters** — ESPN runs second, so it wins on team conflicts.
+- The tail applies team updates to *all* ~1000 ESPN players but writes ADP rows only for those FFC
+  didn't rank. Skipping FFC-board players wholesale would leave the top ~250 on stale teams.
+- `get_adp_for_draft_pool()` reads both sources; `get_all_adp()` (the `/adp/rankings` consensus
+  view) stays FFC-only.
+- `get_adp_metadata()` owns the staleness verdict (`STALE_AFTER_DAYS = 7`) so the draft page and the
+  API can't disagree about what "out of date" means.
 
 ### Web layer conventions
 

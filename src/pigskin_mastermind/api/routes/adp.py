@@ -55,6 +55,7 @@ async def import_ffc_adp(req: ImportFFCRequest, db: Session = Depends(get_db)):
     if result.get("error"):
         raise HTTPException(status_code=503, detail=result["error"])
     result["year"] = year
+    result["team_changes_count"] = len(result.get("team_changes", []))
     return result
 
 

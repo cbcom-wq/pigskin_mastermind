@@ -20,6 +20,7 @@ from pigskin_mastermind.models.database import (
 )
 from pigskin_mastermind.services.espn_stats_mapper import map_espn_breakdown_to_stats
 from pigskin_mastermind.services.player_identity import PlayerIdentityService
+from pigskin_mastermind.utils.nfl_teams import normalize_team
 from pigskin_mastermind.utils.positions import normalize_position
 
 # Regular-season weeks used when deriving a bye from a team's schedule.
@@ -342,7 +343,9 @@ class ESPNSyncService:
 
         db_player.name = espn_player.name
         db_player.position = normalize_position(espn_player.position) or espn_player.position
-        db_player.nfl_team = espn_player.proTeam
+        # ESPN spells Washington "WSH"; the rest of the app uses "WAS". Keep one
+        # spelling, and never let an "FA" reading wipe a real team.
+        db_player.nfl_team = normalize_team(espn_player.proTeam) or db_player.nfl_team
         db_player.projected_points = getattr(espn_player, 'projected_points', 0.0)
         db_player.actual_points = getattr(espn_player, 'points', 0.0)
         db_player.stats = getattr(espn_player, 'stats', {})
@@ -516,7 +519,7 @@ class ESPNSyncService:
                     player_id=player_id,
                     name=box_player.name,
                     position=box_player.position,
-                    nfl_team=box_player.proTeam,
+                    nfl_team=normalize_team(box_player.proTeam) or box_player.proTeam,
                     team_id=db_weekly.team_id
                 )
                 self.db.add(db_player)
@@ -1335,7 +1338,9 @@ class ESPNSyncService:
 
         db_player.name = espn_player.name
         db_player.position = normalize_position(espn_player.position) or espn_player.position
-        db_player.nfl_team = espn_player.proTeam
+        # ESPN spells Washington "WSH"; the rest of the app uses "WAS". Keep one
+        # spelling, and never let an "FA" reading wipe a real team.
+        db_player.nfl_team = normalize_team(espn_player.proTeam) or db_player.nfl_team
         db_player.projected_points = getattr(espn_player, 'projected_points', 0.0)
         db_player.actual_points = getattr(espn_player, 'points', 0.0)
 

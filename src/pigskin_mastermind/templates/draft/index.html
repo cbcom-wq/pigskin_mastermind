@@ -300,6 +300,35 @@
   </div>
 
 </div>
+
+<!-- Stale draft-data prompt: shown once per session when ADP is older than a week -->
+<div id="stale-data-modal"
+     class="hidden fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+     role="dialog" aria-modal="true" aria-labelledby="stale-data-title">
+  <div class="draft-card max-w-md w-full p-6 space-y-4 border border-amber-500/30">
+    <div class="flex items-start gap-3">
+      <span class="text-2xl leading-none" aria-hidden="true">⚠</span>
+      <div class="space-y-1">
+        <h3 id="stale-data-title" class="text-lg font-black text-white">Draft data is out of date</h3>
+        <p id="stale-data-message" class="text-sm text-slate-400"></p>
+      </div>
+    </div>
+    <p class="text-xs text-slate-500">
+      Refreshing pulls current ADP from Fantasy Football Calculator and backfills the
+      late-round pool from ESPN. Takes a few seconds.
+    </p>
+    <div class="flex gap-2 justify-end pt-1">
+      <button type="button" id="stale-dismiss-btn"
+              class="px-4 py-2 text-sm font-semibold text-slate-300 hover:text-white transition-colors">
+        Continue anyway
+      </button>
+      <button type="button" id="stale-refresh-btn"
+              class="px-4 py-2 bg-pigskin-600 text-white text-sm font-bold rounded-lg hover:bg-pigskin-500 transition-colors disabled:opacity-60">
+        Refresh now
+      </button>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -444,13 +473,45 @@
     }
   }
 
-  function describeFreshness(lastUpdated) {
-    // Returns {text, stale} for an ISO timestamp (UTC, no timezone suffix).
-    if (!lastUpdated) return { text: 'never refreshed', stale: true };
+  function describeFreshness(data) {
+    // Formats the server's freshness verdict. The server owns `stale` and
+    // `age_days` so the page and the API can't disagree about what's out of date.
+    const lastUpdated = data.last_updated;
+    if (!lastUpdated) return { text: 'never refreshed', stale: true, ageDays: null };
     const updated = new Date(lastUpdated.endsWith('Z') ? lastUpdated : lastUpdated + 'Z');
-    const ageDays = Math.floor((Date.now() - updated.getTime()) / 86400000);
     const dateLabel = updated.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-    return { text: `updated ${dateLabel}`, stale: ageDays > 7, ageDays };
+    return { text: `updated ${dateLabel}`, stale: !!data.stale, ageDays: data.age_days };
+  }
+
+  const STALE_DISMISS_KEY = 'pm-draft-stale-dismissed';
+
+  function maybePromptRefresh(fresh) {
+    if (!fresh.stale) return;
+    try {
+      if (sessionStorage.getItem(STALE_DISMISS_KEY)) return;
+    } catch (e) { /* private mode — just show it */ }
+
+    document.getElementById('stale-data-message').textContent = fresh.ageDays == null
+      ? 'Draft data has never been imported, so player teams and ADP are missing.'
+      : `Last refreshed ${fresh.ageDays} days ago. Players who changed teams may still show their old one.`;
+    document.getElementById('stale-data-modal').classList.remove('hidden');
+  }
+
+  function dismissStaleModal() {
+    document.getElementById('stale-data-modal').classList.add('hidden');
+    try { sessionStorage.setItem(STALE_DISMISS_KEY, '1'); } catch (e) { /* ignore */ }
+  }
+
+  function reportRefreshResult(data) {
+    const changes = data.team_changes || [];
+    const parts = [`${data.imported ?? data.total_in_db} players imported`];
+    if (data.created) parts.push(`${data.created} new`);
+    if (data.tail_imported) parts.push(`${data.tail_imported} added to the late-round pool`);
+    if (changes.length) parts.push(`${changes.length} changed teams`);
+    showToast(`ADP refreshed — ${parts.join(', ')}`, 'success');
+    if (data.tail_error) {
+      showToast('ESPN pool backfill unavailable — the board is correct but shallower.', 'warning');
+    }
   }
 
   async function loadAdpData(forceRefresh = false) {
@@ -480,7 +541,7 @@
       const footerEl = document.getElementById('adp-footer');
       const baseSubtitle = `${sourceLabel} ${data.year || year} ADP${scoringLabel} · ${adpPlayers.length} players`;
       if (source === 'ffc') {
-        const fresh = describeFreshness(data.last_updated);
+        const fresh = describeFreshness(data);
         subtitleEl.innerHTML = '';
         subtitleEl.append(document.createTextNode(`${baseSubtitle} · ${fresh.text}`));
         if (fresh.stale) {
@@ -491,10 +552,14 @@
             : ' — hit ↺ Refresh';
           subtitleEl.append(warn);
         }
-        footerEl.textContent = `${adpPlayers.length} players ranked by ${sourceLabel} ADP for ${data.year || year}${scoringLabel} · ${fresh.text}`;
+        const poolNote = data.total_in_db
+          ? ` · ${data.total_in_db} in the draft pool`
+          : '';
+        footerEl.textContent = `${adpPlayers.length} players ranked by ${sourceLabel} ADP for ${data.year || year}${scoringLabel}${poolNote} · ${fresh.text}`;
         if (doRefresh) {
-          const createdNote = data.created ? `, ${data.created} new players added` : '';
-          showToast(`ADP refreshed — ${data.imported ?? data.total_in_db} players imported${createdNote}`, 'success');
+          reportRefreshResult(data);
+        } else {
+          maybePromptRefresh(fresh);
         }
       } else {
         subtitleEl.textContent = `${baseSubtitle} · live`;
@@ -511,6 +576,20 @@
       if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.textContent = '↺ Refresh'; }
     }
   }
+
+  document.getElementById('stale-dismiss-btn').addEventListener('click', dismissStaleModal);
+  document.getElementById('stale-refresh-btn').addEventListener('click', async function () {
+    const btn = this;
+    btn.disabled = true;
+    btn.textContent = 'Refreshing…';
+    try {
+      await loadAdpData(true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Refresh now';
+      dismissStaleModal();
+    }
+  });
 
   function filterAdpPlayers() { if (adpPlayers.length) renderAdpList(adpPlayers); }
 
@@ -895,5 +974,9 @@
 
   // Init
   onSettingsChange();
+  // The FFC radio ships `checked`, but onchange never fires for a default, so
+  // the rankings panel sat empty until the user clicked something. Loading it
+  // here is also what surfaces the stale-data prompt on arrival.
+  onPoolSourceChange();
 </script>
 {% endblock %}

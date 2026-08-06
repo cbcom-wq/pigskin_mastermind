@@ -936,9 +936,13 @@ def test_get_adp_endpoint_ffc_auto_import_success(client):
     with patch("pigskin_mastermind.api.routes.draft.ADPService") as mock_svc_cls:
         mock_svc = mock_svc_cls.return_value
         mock_svc.get_adp_for_draft_pool.side_effect = [[], fake_ffc_players]
-        mock_svc.import_from_ffc.return_value = {"imported": 2, "created": 0, "skipped": 0, "total": 2}
+        mock_svc.refresh_draft_data.return_value = {
+            "imported": 2, "created": 0, "skipped": 0, "total": 2,
+            "tail_imported": 0, "team_changes": [],
+        }
         mock_svc.get_adp_metadata.return_value = {
             "year": 2025, "last_updated": "2025-08-01T12:00:00", "count": 2,
+            "ffc_count": 2, "tail_count": 0, "age_days": 0, "stale": False,
         }
 
         resp = client.get("/draft/adp?year=2025&source=ffc")
@@ -949,7 +953,7 @@ def test_get_adp_endpoint_ffc_auto_import_success(client):
     assert data["count"] == 2
     assert data["last_updated"] == "2025-08-01T12:00:00"
     assert data["total_in_db"] == 2
-    mock_svc.import_from_ffc.assert_called_once_with(year=2025, scoring="half-ppr")
+    mock_svc.refresh_draft_data.assert_called_once_with(year=2025, scoring="half-ppr")
 
 
 def test_get_adp_endpoint_ffc_refresh_forces_import(client):
@@ -962,12 +966,16 @@ def test_get_adp_endpoint_ffc_refresh_forces_import(client):
     with patch("pigskin_mastermind.api.routes.draft.ADPService") as mock_svc_cls:
         mock_svc = mock_svc_cls.return_value
         mock_svc.get_adp_for_draft_pool.return_value = fake_ffc_players
-        mock_svc.import_from_ffc.return_value = {
+        mock_svc.refresh_draft_data.return_value = {
             "imported": 1, "created": 1, "skipped": 0, "total": 1,
             "last_updated": "2025-08-02T09:00:00",
+            "tail_imported": 7, "team_changes": [
+                {"name": "Top QB", "old": "SEA", "new": "KC"},
+            ],
         }
         mock_svc.get_adp_metadata.return_value = {
             "year": 2025, "last_updated": "2025-08-02T09:00:00", "count": 1,
+            "ffc_count": 1, "tail_count": 7, "age_days": 0, "stale": False,
         }
 
         resp = client.get("/draft/adp?year=2025&source=ffc&refresh=true")
@@ -977,7 +985,9 @@ def test_get_adp_endpoint_ffc_refresh_forces_import(client):
     assert data["imported"] == 1
     assert data["created"] == 1
     assert data["last_updated"] == "2025-08-02T09:00:00"
-    mock_svc.import_from_ffc.assert_called_once_with(year=2025, scoring="half-ppr")
+    assert data["tail_imported"] == 7
+    assert data["team_changes"] == [{"name": "Top QB", "old": "SEA", "new": "KC"}]
+    mock_svc.refresh_draft_data.assert_called_once_with(year=2025, scoring="half-ppr")
 
 
 def test_get_adp_endpoint_defaults_to_current_season(client):
@@ -993,6 +1003,7 @@ def test_get_adp_endpoint_defaults_to_current_season(client):
         mock_svc.get_adp_for_draft_pool.return_value = fake_ffc_players
         mock_svc.get_adp_metadata.return_value = {
             "year": 2031, "last_updated": "2031-08-01T12:00:00", "count": 1,
+            "ffc_count": 1, "tail_count": 0, "age_days": 0, "stale": False,
         }
 
         resp = client.get("/draft/adp?source=ffc")
@@ -1007,7 +1018,7 @@ def test_get_adp_endpoint_ffc_auto_import_failure(client):
     with patch("pigskin_mastermind.api.routes.draft.ADPService") as mock_svc_cls:
         mock_svc = mock_svc_cls.return_value
         mock_svc.get_adp_for_draft_pool.return_value = []
-        mock_svc.import_from_ffc.return_value = {"error": "Failed to fetch data from Fantasy Football Calculator"}
+        mock_svc.refresh_draft_data.return_value = {"error": "Failed to fetch data from Fantasy Football Calculator"}
 
         resp = client.get("/draft/adp?year=2025&source=ffc")
 

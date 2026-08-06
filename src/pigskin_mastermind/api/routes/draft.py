@@ -365,7 +365,7 @@ async def start_draft(req: StartDraftRequest, db: Session = Depends(get_db)):
         adp_svc = ADPService(db)
         player_pool = adp_svc.get_adp_for_draft_pool(year=adp_year)
         if not player_pool:
-            import_result = adp_svc.import_from_ffc(year=adp_year, scoring=req.ffc_scoring)
+            import_result = adp_svc.refresh_draft_data(year=adp_year, scoring=req.ffc_scoring)
             if import_result.get("error"):
                 raise HTTPException(
                     status_code=503,
@@ -485,14 +485,14 @@ async def get_draft_adp(
         import_result: Optional[dict] = None
 
         if refresh:
-            import_result = adp_svc.import_from_ffc(year=year, scoring=scoring)
+            import_result = adp_svc.refresh_draft_data(year=year, scoring=scoring)
             if import_result.get("error"):
                 raise HTTPException(status_code=503, detail=import_result["error"])
 
         all_players = adp_svc.get_adp_for_draft_pool(year=year)
         if not all_players and not refresh:
             # Bootstrap: no local data for this season yet — import once.
-            import_result = adp_svc.import_from_ffc(year=year, scoring=scoring)
+            import_result = adp_svc.refresh_draft_data(year=year, scoring=scoring)
             if import_result.get("error"):
                 raise HTTPException(
                     status_code=503,
@@ -521,10 +521,18 @@ async def get_draft_adp(
             "players": players,
             "last_updated": metadata["last_updated"],
             "total_in_db": metadata["count"],
+            "ffc_count": metadata["ffc_count"],
+            "tail_count": metadata["tail_count"],
+            "age_days": metadata["age_days"],
+            "stale": metadata["stale"],
         }
         if import_result:
             resp["imported"] = import_result.get("imported", 0)
             resp["created"] = import_result.get("created", 0)
+            resp["tail_imported"] = import_result.get("tail_imported", 0)
+            resp["team_changes"] = import_result.get("team_changes", [])
+            if import_result.get("tail_error"):
+                resp["tail_error"] = import_result["tail_error"]
         return resp
 
     # Legacy ESPN fallback
