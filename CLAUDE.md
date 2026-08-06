@@ -125,8 +125,20 @@ FantasyFootballCalculator (`ffc_<id>`). They are the *same people*, so `DBPlayer
 ID columns, then the legacy prefixed `player_id`, then nflverse's cross-ID table
 (`nfl_data_py.import_ids()`), then normalized name + position.
 
+**Team defenses are the exception: they resolve by NFL team, not by name.** ESPN calls Atlanta's
+"Falcons D/ST", FFC calls it "Atlanta Defense", and nflverse has no entry at all — so name matching
+can never work, and every import used to create another row. `resolve()` takes an `nfl_team` kwarg
+and checks `find_defense()` first; there is exactly one defense per team, so the team *is* the
+identity. Team matching applies to `DEF` only, or two RBs on one roster would collapse together.
+
 `merge_duplicates(dry_run=True)` folds existing duplicates together — exposed as
-`pigskin players merge-identities [--dry-run|--apply]`. Re-run it after a bulk import.
+`pigskin players merge-identities [--dry-run|--apply] [--position DEF]`. Re-run it after a bulk
+import. It calls `canonicalize_positions()` first, because a defense stored as `D/ST` matches
+nothing and is dropped from the draft pool. `--position` scopes a targeted cleanup instead of
+folding every duplicate at once.
+
+When two season rows collide, real consensus ADP beats a synthetic `espn_tail` value — otherwise the
+placeholder wins purely by arriving first.
 
 Two things that will bite:
 

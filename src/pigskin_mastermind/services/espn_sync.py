@@ -332,6 +332,25 @@ class ESPNSyncService:
 
         return db_team
 
+    def _create_player_from_box(self, box_player: Any, team_db_id: Optional[int]) -> DBPlayer:
+        """Create a base player row seen only in a box score.
+
+        This path used to store ESPN's raw position, which is how team defenses
+        ended up saved as ``D/ST`` instead of ``DEF`` — and a ``D/ST`` row is
+        silently dropped from the draft pool, so the defense could never be
+        drafted. Normalize here like every other import boundary.
+        """
+        db_player = DBPlayer(
+            player_id=f"espn_{box_player.playerId}",
+            name=box_player.name,
+            position=normalize_position(box_player.position) or box_player.position,
+            nfl_team=normalize_team(box_player.proTeam) or box_player.proTeam,
+            team_id=team_db_id,
+        )
+        self.db.add(db_player)
+        self.db.flush()
+        return db_player
+
     def _import_player(self, espn_player: Any, team_db_id: int) -> DBPlayer:
         """Import a single player"""
         player_id = f"espn_{espn_player.playerId}"
@@ -515,15 +534,7 @@ class ESPNSyncService:
             # Find or create the base player record
             db_player = self.db.query(DBPlayer).filter_by(player_id=player_id).first()
             if not db_player:
-                db_player = DBPlayer(
-                    player_id=player_id,
-                    name=box_player.name,
-                    position=box_player.position,
-                    nfl_team=normalize_team(box_player.proTeam) or box_player.proTeam,
-                    team_id=db_weekly.team_id
-                )
-                self.db.add(db_player)
-                self.db.flush()
+                db_player = self._create_player_from_box(box_player, db_weekly.team_id)
 
             # Upsert the weekly player stats
             db_wp = self.db.query(DBWeeklyPlayerStats).filter_by(

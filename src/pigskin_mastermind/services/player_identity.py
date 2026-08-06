@@ -38,6 +38,7 @@ from pigskin_mastermind.models.database import (
     DBPlayerSeasonStats,
     DBWeeklyPlayerStats,
 )
+from pigskin_mastermind.utils.nfl_teams import normalize_team
 from pigskin_mastermind.utils.positions import normalize_position
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,16 @@ _NFL_PREFERRED_SEASON_FIELDS = (
 _ESPN_PREFERRED_SEASON_FIELDS = (
     "adp", "adp_source", "adp_stdev", "adp_high", "adp_low", "adp_times_drafted",
     "pass_rating",
+)
+
+#: ADP source whose values are a sort key, not an observed draft position.
+#: Anything real outranks it. Defined here so both the merger and ADPService
+#: agree on the label without importing each other.
+ESPN_TAIL_ADP_SOURCE = "espn_tail"
+
+# The ADP field group, moved together so a value never separates from its source.
+_ADP_FIELDS = (
+    "adp", "adp_source", "adp_stdev", "adp_high", "adp_low", "adp_times_drafted",
 )
 
 _SEASON_STAT_FIELDS = (
@@ -218,15 +229,25 @@ class PlayerIdentityService:
         pfr_id: Optional[str] = None,
         name: Optional[str] = None,
         position: Optional[str] = None,
+        nfl_team: Optional[str] = None,
     ) -> Optional[DBPlayer]:
         """Find the existing ``DBPlayer`` for this person, or ``None``.
 
         Every importer should call this before creating a row. Any combination
         of identifiers may be supplied; more is better.
+
+        Passing *nfl_team* additionally lets team defenses resolve — see
+        :meth:`find_defense`.
         """
         espn_id = _clean_id(espn_id)
         gsis_id = _clean_id(gsis_id)
         pfr_id = _clean_id(pfr_id)
+
+        # 0. A team defense is its team. Every source names them differently,
+        #    so name matching can never work — check this before anything else.
+        defense = self.find_defense(position, nfl_team)
+        if defense is not None:
+            return defense
 
         # 1. Direct hit on a stored per-source ID.
         found = self._by_id_columns(espn_id=espn_id, gsis_id=gsis_id, pfr_id=pfr_id)
@@ -263,6 +284,61 @@ class PlayerIdentityService:
 
         # 4. Name + position.
         return self.find_by_name(name, position)
+
+    def canonicalize_positions(self) -> int:
+        """Rewrite non-canonical fantasy positions across the players table.
+
+        ESPN's ``D/ST`` spelling is the one that matters: a defense stored that
+        way is filtered out of the draft pool, so it can never be drafted, and
+        :meth:`find_defense` cannot match it either.
+
+        Positions that normalize to ``None`` are left alone — a ``DT`` is a real
+        player at a non-fantasy position, not a mislabeled team defense.
+
+        Returns the number of rows changed.
+        """
+        fixed = 0
+        for player in self.db.query(DBPlayer).filter(DBPlayer.position.isnot(None)).all():
+            canonical = normalize_position(player.position)
+            if canonical is not None and canonical != player.position:
+                player.position = canonical
+                fixed += 1
+        if fixed:
+            self.db.flush()
+        return fixed
+
+    def find_defense(
+        self,
+        position: Optional[str],
+        nfl_team: Optional[str],
+        exclude_id: Optional[int] = None,
+    ) -> Optional[DBPlayer]:
+        """Find a team defense by its NFL team, or ``None``.
+
+        Defenses are the one case where name matching is hopeless: ESPN calls
+        Atlanta's "Falcons D/ST", FFC calls it "Atlanta Defense", and nflverse's
+        cross-ID table has no entry at all. There is exactly one defense per
+        team, so the team *is* the identity.
+
+        Returns ``None`` for any non-DEF position, so two running backs on the
+        same team never collapse into each other.
+
+        *exclude_id* skips a specific row — needed when looking for the survivor
+        of a duplicate, which would otherwise match itself.
+        """
+        if normalize_position(position) != 'DEF':
+            return None
+
+        canonical_team = normalize_team(nfl_team)
+        if canonical_team is None:
+            return None
+
+        for player in self.db.query(DBPlayer).filter(DBPlayer.position == 'DEF').all():
+            if player.id == exclude_id:
+                continue
+            if normalize_team(player.nfl_team) == canonical_team:
+                return player
+        return None
 
     def find_by_name(
         self, name: Optional[str], position: Optional[str] = None
@@ -338,7 +414,9 @@ class PlayerIdentityService:
     # De-duplication
     # ------------------------------------------------------------------
 
-    def merge_duplicates(self, dry_run: bool = True) -> MergeReport:
+    def merge_duplicates(
+        self, dry_run: bool = True, position: Optional[str] = None
+    ) -> MergeReport:
         """Fold ``nfl_*`` and ``ffc_*`` rows into their ESPN counterparts.
 
         For each non-ESPN row this re-points ``player_season_stats``,
@@ -354,17 +432,27 @@ class PlayerIdentityService:
         dry_run : bool
             When True (default) the transaction is rolled back and only the
             report is returned.
+        position : str, optional
+            Restrict the merge to one fantasy position, so a targeted cleanup
+            (say, duplicate team defenses) can run without touching unrelated
+            duplicates. Accepts source spellings — ``D/ST`` selects ``DEF``.
         """
         report = MergeReport(dry_run=dry_run)
 
-        duplicates = (
-            self.db.query(DBPlayer)
-            .filter(
-                DBPlayer.player_id.like("nfl\\_%", escape="\\")
-                | DBPlayer.player_id.like("ffc\\_%", escape="\\")
-            )
-            .all()
+        # Defenses can only be matched once their positions are canonical —
+        # find_defense looks for DEF, and ESPN's rows arrive spelled D/ST.
+        self.canonicalize_positions()
+
+        query = self.db.query(DBPlayer).filter(
+            DBPlayer.player_id.like("nfl\\_%", escape="\\")
+            | DBPlayer.player_id.like("ffc\\_%", escape="\\")
         )
+        wanted = normalize_position(position) if position else None
+        if wanted is not None:
+            # Positions are canonical by now, so filtering on the canonical
+            # value catches rows that arrived spelled D/ST.
+            query = query.filter(DBPlayer.position == wanted)
+        duplicates = query.all()
 
         for duplicate in duplicates:
             survivor = self._find_survivor(duplicate)
@@ -419,7 +507,10 @@ class PlayerIdentityService:
             pfr_id=duplicate.pfr_id,
         )
 
-        candidates: List[Optional[DBPlayer]] = []
+        candidates: List[Optional[DBPlayer]] = [
+            # A defense is its team; its name never matches across sources.
+            self.find_defense(duplicate.position, duplicate.nfl_team, exclude_id=duplicate.id),
+        ]
         if entry is not None:
             candidates.append(
                 self._by_id_columns(
@@ -489,6 +580,15 @@ class PlayerIdentityService:
             for name_ in _NFL_PREFERRED_SEASON_FIELDS:
                 if not _is_empty(getattr(row, name_, None)):
                     setattr(existing, name_, getattr(row, name_))
+            # Real consensus ADP outranks a synthetic tail value, which is only
+            # a sort key. Without this the "fill empties only" rule below would
+            # keep the placeholder purely because it got there first.
+            if (
+                existing.adp_source == ESPN_TAIL_ADP_SOURCE
+                and row.adp_source not in (None, ESPN_TAIL_ADP_SOURCE)
+            ):
+                for name_ in _ADP_FIELDS:
+                    setattr(existing, name_, getattr(row, name_, None))
             for name_ in _ESPN_PREFERRED_SEASON_FIELDS + _SEASON_STAT_FIELDS:
                 if _is_empty(getattr(existing, name_, None)) and not _is_empty(getattr(row, name_, None)):
                     setattr(existing, name_, getattr(row, name_))

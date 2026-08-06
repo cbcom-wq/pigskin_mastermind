@@ -197,12 +197,21 @@ def players():
 @click.option('--dry-run/--apply', default=True,
               help='Report what would change without writing (default: dry run)')
 @click.option('--verbose', is_flag=True, help='List every merge and collision')
-def players_merge_identities(dry_run, verbose):
+@click.option('--position', default=None,
+              help='Restrict to one position (e.g. DEF) instead of merging everything')
+def players_merge_identities(dry_run, verbose, position):
     """Fold duplicate player rows from nfl_data_py / FFC into their ESPN twins.
 
     Three importers create rows under three prefixes, so the same player can
     exist several times with the stats split between the copies. This resolves
     them through nflverse's cross-ID table and merges the duplicates.
+
+    Team defenses are matched by NFL team rather than by name, since every
+    source names them differently ("Falcons D/ST" vs "Atlanta Defense").
+
+    Use --position to scope a targeted cleanup, e.g.::
+
+        pigskin players merge-identities --position DEF --apply
     """
     from pigskin_mastermind.services.player_identity import PlayerIdentityService
 
@@ -216,7 +225,7 @@ def players_merge_identities(dry_run, verbose):
             click.echo(f"  {updated} players stamped with cross-source IDs")
 
         click.echo("Resolving duplicates..." if dry_run else "Merging duplicates...")
-        report = service.merge_duplicates(dry_run=dry_run)
+        report = service.merge_duplicates(dry_run=dry_run, position=position)
         click.echo(report.summary())
 
         if verbose:

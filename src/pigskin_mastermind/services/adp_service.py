@@ -26,7 +26,10 @@ from sqlalchemy.orm import Session
 
 from pigskin_mastermind.models.database import DBPlayer, DBPlayerSeasonStats
 from pigskin_mastermind.services.mock_draft import fetch_espn_adp
-from pigskin_mastermind.services.player_identity import PlayerIdentityService
+from pigskin_mastermind.services.player_identity import (
+    ESPN_TAIL_ADP_SOURCE,
+    PlayerIdentityService,
+)
 from pigskin_mastermind.utils.nfl_teams import normalize_team
 from pigskin_mastermind.utils.positions import FANTASY_POSITIONS, normalize_position
 from pigskin_mastermind.utils.season import current_fantasy_season
@@ -101,7 +104,7 @@ class ADPService:
 
     ADP_SOURCE_LABEL = "fantasyfootballcalculator"
     #: Players below FFC's board, backfilled from ESPN with a synthetic ADP.
-    ESPN_TAIL_SOURCE_LABEL = "espn_tail"
+    ESPN_TAIL_SOURCE_LABEL = ESPN_TAIL_ADP_SOURCE
     #: Every source the draft pool draws from, best consensus data first.
     DRAFT_POOL_SOURCES = (ADP_SOURCE_LABEL, ESPN_TAIL_SOURCE_LABEL)
 
@@ -249,7 +252,7 @@ class ADPService:
             name = entry["name"]
             position = entry["position"]
 
-            db_player = self._find_player(name, position)
+            db_player = self._find_player(name, position, entry.get("team"))
             if db_player is None:
                 if not create_missing:
                     skipped += 1
@@ -440,6 +443,7 @@ class ADPService:
                 espn_id=_strip_espn_prefix(entry.get("id")),
                 name=entry.get("name"),
                 position=position,
+                nfl_team=entry.get("nfl_team"),
             )
             if db_player is None:
                 db_player = self._create_player_from_espn(entry, position)
@@ -452,6 +456,14 @@ class ADPService:
 
             if db_player.id in ranked_player_ids:
                 continue  # FFC already ranked them; leave consensus ADP alone.
+
+            if db_player.position not in FANTASY_POSITIONS:
+                # ESPN's board occasionally returns an IDP under a fantasy slot
+                # id, and resolving by espn_id then lands on a row stored at a
+                # real defensive position like 'DT'. get_adp_for_draft_pool
+                # filters those out, so writing ADP here only creates a season
+                # row nothing can ever draft.
+                continue
 
             tail_rank += 1
             season = (
@@ -774,14 +786,25 @@ class ADPService:
         player.nfl_team = canonical
         return {"name": player.name, "old": stored, "new": canonical}
 
-    def _find_player(self, name: str, position: str) -> Optional[DBPlayer]:
+    def _find_player(
+        self,
+        name: str,
+        position: str,
+        nfl_team: Optional[str] = None,
+    ) -> Optional[DBPlayer]:
         """Find a DBPlayer by name and position.
 
         Delegates to :class:`PlayerIdentityService` so FFC shares one matcher
         with the ESPN and nfl_data_py importers — exact name first, then a
         normalized match with punctuation and Jr/Sr/III-style suffixes stripped,
         so "AJ Brown" still finds "A.J. Brown".
+
+        *nfl_team* additionally resolves team defenses, whose names never match
+        across sources ("Atlanta Defense" vs "Falcons D/ST").
         """
+        defense = self.identity.find_defense(position, nfl_team)
+        if defense is not None:
+            return defense
         return self.identity.find_by_name(name, position)
 
     def _create_minimal_player(self, entry: Dict[str, Any]) -> DBPlayer:
