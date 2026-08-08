@@ -21,7 +21,14 @@
 - Scoring is 0.5 PPR resolved via `get_scoring_settings()`, never hardcoded.
 - Alembic head at plan start is `d4a1c6e9b2f7`.
 - Baseline failure count at commit `a6768ed` is **17**. Never let the suite exceed that minus what the current stage has fixed.
-- Run `black src/ tests/` and `flake8 src/ tests/` before each commit.
+- **Lint gate — scoped to the files you touched, not the whole tree.** The repo has ~4,025 pre-existing flake8 violations and no config; `black` wraps at 88 while flake8 defaults to 79, so running both unconfigured makes them contradict each other. Task 1 adds a `.flake8` with `max-line-length = 88`. From then on:
+
+  ```bash
+  black <files you changed>
+  flake8 <files you changed>
+  ```
+
+  **`flake8` must report zero violations in the files your task touched.** Do not attempt to fix the pre-existing violations in files your task did not otherwise change — that is out of scope and buries the real diff.
 
 ---
 
@@ -115,11 +122,37 @@ Expected: `23 passed` (or all-pass with no `NameError`).
 
 Expected: failure count drops from 48 to 25.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Add the flake8 config**
+
+The repo has no flake8 config, so flake8 defaults to 79 characters while `black` wraps at 88 — they contradict each other, and the ~4,025 pre-existing violations make a whole-tree gate meaningless. Create `.flake8` at the repo root (`.flake8` rather than `setup.cfg`, because `setup.py` exists and a stray `setup.cfg` would also be read by setuptools):
+
+```ini
+[flake8]
+max-line-length = 88
+extend-ignore = E203, W503
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    alembic/versions,
+    src/pigskin_mastermind/lib
+```
+
+`E203`/`W503` are the two checks black's formatting deliberately violates. `src/pigskin_mastermind/lib` is the vendored, git-ignored ESPN client — not ours to lint.
+
+- [ ] **Step 6: Verify the gate works on the file you changed**
 
 ```bash
-black src/ tests/ && flake8 src/ tests/
-git add src/pigskin_mastermind/services/projection_algorithm_tuner.py
+.venv/Scripts/python -m flake8 src/pigskin_mastermind/services/projection_algorithm_tuner.py
+```
+
+Expected: no output.
+
+- [ ] **Step 7: Commit**
+
+```bash
+black src/pigskin_mastermind/services/projection_algorithm_tuner.py
+git add .flake8 src/pigskin_mastermind/services/projection_algorithm_tuner.py
 git commit -m "fix(tuner): import WeeklyProjectionService in the algorithm tuner"
 ```
 
@@ -229,7 +262,6 @@ Expected: all pass.
 - [ ] **Step 8: Commit**
 
 ```bash
-black src/ tests/ && flake8 src/ tests/
 git add tests/test_projection_criteria_builder.py
 git commit -m "test(projections): assert leakage-free properties, not leaky values"
 ```
@@ -330,7 +362,6 @@ Expected: **17 failed** — back to the `a6768ed` baseline exactly, with all fou
 - [ ] **Step 7: Commit the Stage 1 checkpoint**
 
 ```bash
-black src/ tests/ && flake8 src/ tests/
 git add -A src/ tests/ alembic/
 git commit -m "$(cat <<'EOF'
 fix(projections): leakage-free shrunk baselines, real schedules, honest coefficients
@@ -508,7 +539,6 @@ Expected: `[('player_projections',)]`.
 - [ ] **Step 7: Commit**
 
 ```bash
-black src/ tests/ && flake8 src/ tests/
 git add src/pigskin_mastermind/models/database.py alembic/versions/e7b2d9f4a1c3_add_player_projections.py tests/test_projection_refresh.py
 git commit -m "feat(projections): add player_projections table, one row per source and scope"
 ```
@@ -704,7 +734,6 @@ Expected: 3 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-black src/ tests/ && flake8 src/ tests/
 git add src/pigskin_mastermind/services/adp_service.py tests/test_adp_service.py
 git commit -m "feat(projections): persist ESPN board season totals as a projection source"
 ```
@@ -911,7 +940,6 @@ Expected: 9 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-black src/ tests/ && flake8 src/ tests/
 git add src/pigskin_mastermind/services/projection_blender.py tests/test_projection_blender.py
 git commit -m "feat(projections): add source blender that renormalizes over present sources"
 ```
@@ -1016,7 +1044,6 @@ Expected: all pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-black src/ tests/ && flake8 src/ tests/
 git add src/pigskin_mastermind/services/sportsbook_projection_service.py tests/test_sportsbook_projection_service.py
 git commit -m "feat(odds): add id-based sportsbook projection lookup"
 ```
@@ -1619,7 +1646,6 @@ Expected: still 17 failures — no new ones.
 - [ ] **Step 12: Commit**
 
 ```bash
-black src/ tests/ && flake8 src/ tests/
 git add src/pigskin_mastermind/services/projection_refresh.py src/pigskin_mastermind/cli.py src/pigskin_mastermind/api/routes/stats.py tests/test_projection_refresh.py
 git commit -m "feat(projections): add batch refresh service, get_projection, CLI and route"
 ```
@@ -1819,7 +1845,6 @@ Expected: the new tests pass. The four baseline `test_mock_draft` failures may n
 - [ ] **Step 6: Commit**
 
 ```bash
-black src/ tests/ && flake8 src/ tests/
 git add src/pigskin_mastermind/services/adp_service.py tests/test_adp_service.py tests/test_mock_draft.py
 git commit -m "feat(draft): rank the pool on blended season totals"
 ```
@@ -1854,14 +1879,13 @@ def test_optimizer_ranks_on_the_weekly_blend(client, db):
     ))
     db.commit()
 
-    resp = client.post("/api/lineups/optimize",
-                       json={"team_id": 1, "week": 1, "year": 2026})
+    resp = client.post(f"/lineups/{good.team_id}/optimize?week=1&year=2026")
     assert resp.status_code == 200
     starters = [p["name"] for p in resp.json().get("starters", [])]
     assert good.name in starters
 ```
 
-Adjust the request shape to match the route's real contract — read `lineups.py` first.
+The route is `POST /lineups/{team_db_id}/optimize` (`lineups.py:71`, router prefix `/lineups`) — verified, not `/api/lineups/optimize`. Read the handler to confirm whether `week`/`year` are query params or a body before finalizing the call.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -1978,7 +2002,6 @@ Expected: all pass, including the two baseline failures.
 - [ ] **Step 6: Commit**
 
 ```bash
-black src/ tests/ && flake8 src/ tests/
 git add src/pigskin_mastermind/api/routes/lineups.py src/pigskin_mastermind/api/routes/trades.py tests/integration/
 git commit -m "feat(lineups,trades): rank on blended weekly projections"
 ```
@@ -2015,9 +2038,11 @@ def test_player_list_orders_by_blended_projection(client, db):
                               source="blend", projected_points=310.0))
     db.commit()
 
-    body = client.get("/players/list?position=RB").text
+    body = client.get("/api/players/list?position=RB").text
     assert body.index("Zzz Star") < body.index("Aaa Backup")
 ```
+
+The route is `GET /api/players/list` (`players.py:216`) — verified. The two ordering sites are `players.py:191` (inside `/api/players/search`) and `players.py:237` (inside `/api/players/list`).
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -2135,7 +2160,6 @@ Expected: **8 failures** — only `TestGetPlayByPlay` (7) and `test_import_team_
 - [ ] **Step 9: Commit**
 
 ```bash
-black src/ tests/ && flake8 src/ tests/
 git add src/pigskin_mastermind/api/routes/players.py src/pigskin_mastermind/api/routes/teams.py src/pigskin_mastermind/templates/ tests/integration/
 git commit -m "feat(ui): rank and display blended projections with source breakdown"
 ```
@@ -2237,7 +2261,6 @@ Note that projections are now persisted and consumed app-wide, and that weekly s
 
 ```bash
 .venv/Scripts/python -m pytest tests/ -q 2>&1 | tail -3
-black src/ tests/ && flake8 src/ tests/
 ```
 
 Expected: 8 failures (the documented unrelated ones), clean formatting.
