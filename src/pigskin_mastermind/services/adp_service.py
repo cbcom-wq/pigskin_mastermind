@@ -24,7 +24,11 @@ from urllib.request import Request, urlopen
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from pigskin_mastermind.models.database import DBPlayer, DBPlayerSeasonStats
+from pigskin_mastermind.models.database import (
+    DBPlayer,
+    DBPlayerProjection,
+    DBPlayerSeasonStats,
+)
 from pigskin_mastermind.services.mock_draft import fetch_espn_adp
 from pigskin_mastermind.services.player_identity import (
     ESPN_TAIL_ADP_SOURCE,
@@ -489,6 +493,86 @@ class ADPService:
             "source": self.ESPN_TAIL_SOURCE_LABEL,
             "team_changes": team_changes,
             "last_updated": now.isoformat(),
+        }
+
+    ESPN_PROJECTION_SOURCE = "espn"
+
+    def import_espn_projections(
+        self,
+        year: Optional[int] = None,
+        limit: int = 1000,
+    ) -> Dict[str, Any]:
+        """Persist ESPN's season point projections from the public board.
+
+        ESPN's ``ratings["0"].totalRating`` is a genuine season total -- the
+        2026 board returns 416.6 for McCaffrey and 375.0 for Nacua. The app
+        never used it: ``_create_player_from_espn`` writes it to
+        ``DBPlayer.projected_points`` but only for players it *creates*, so
+        every established star kept the per-game value espn_sync wrote, and
+        most kept 0.0.
+
+        Writes season-scope rows (``week=None``) at season scale.
+        """
+        year = year or current_fantasy_season()
+        board = fetch_espn_adp(year=year, limit=limit)
+        if not board:
+            return {
+                "imported": 0, "skipped": 0, "total": 0, "year": year,
+                "error": "Failed to fetch player board from ESPN",
+            }
+
+        now = datetime.utcnow()
+        imported = 0
+        skipped = 0
+
+        for entry in board:
+            points = float(entry.get("projected_points") or 0.0)
+            if points <= 0:
+                # ESPN reports 0.0 for players it has no projection for.
+                # Storing that would rank them as genuinely worthless.
+                skipped += 1
+                continue
+
+            position = normalize_position(entry.get("position"))
+            if not position:
+                skipped += 1
+                continue
+
+            player = self.identity.resolve(
+                espn_id=_strip_espn_prefix(entry.get("id")),
+                name=entry.get("name"),
+                position=position,
+                nfl_team=normalize_team(entry.get("nfl_team")),
+            )
+            if player is None:
+                skipped += 1
+                continue
+
+            row = (
+                self.db.query(DBPlayerProjection)
+                .filter_by(
+                    player_id=player.id, year=year, week=None,
+                    source=self.ESPN_PROJECTION_SOURCE,
+                )
+                .first()
+            )
+            if row is None:
+                row = DBPlayerProjection(
+                    player_id=player.id, year=year, week=None,
+                    source=self.ESPN_PROJECTION_SOURCE,
+                )
+                self.db.add(row)
+
+            row.projected_points = points
+            row.computed_at = now
+            row.components = {"espn_total_rating": points,
+                              "espn_adp": entry.get("adp_rank")}
+            imported += 1
+
+        self.db.commit()
+        return {
+            "imported": imported, "skipped": skipped,
+            "total": len(board), "year": year, "error": None,
         }
 
     def _create_player_from_espn(self, entry: Dict[str, Any], position: str) -> DBPlayer:

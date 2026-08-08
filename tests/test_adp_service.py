@@ -593,3 +593,70 @@ class TestGetAdpForDraftPool:
         svc = ADPService(db)
         pool = svc.get_adp_for_draft_pool(year=2025)
         assert pool == []
+
+
+def test_import_espn_projections_writes_season_rows(db, monkeypatch):
+    """Board totals land as source='espn' season rows, matched by identity."""
+    from pigskin_mastermind.models.database import DBPlayer, DBPlayerProjection
+    from pigskin_mastermind.services import adp_service as adp_mod
+
+    existing = DBPlayer(
+        player_id="espn_4242", espn_id="4242",
+        name="Bijan Robinson", position="RB", nfl_team="ATL",
+    )
+    db.add(existing)
+    db.commit()
+
+    monkeypatch.setattr(adp_mod, "fetch_espn_adp", lambda year, limit: [
+        {"id": "espn_4242", "name": "Bijan Robinson", "position": "RB",
+         "nfl_team": "ATL", "projected_points": 370.8, "adp_rank": 2.6},
+    ])
+
+    result = adp_mod.ADPService(db).import_espn_projections(year=2026)
+
+    assert result["imported"] == 1
+    row = db.query(DBPlayerProjection).filter_by(
+        player_id=existing.id, year=2026, week=None, source="espn",
+    ).one()
+    assert row.projected_points == 370.8
+
+
+def test_import_espn_projections_skips_zero_totals(db, monkeypatch):
+    """A 0.0 totalRating is 'ESPN has no opinion', not 'worth zero points'."""
+    from pigskin_mastermind.models.database import DBPlayer, DBPlayerProjection
+    from pigskin_mastermind.services import adp_service as adp_mod
+
+    db.add(DBPlayer(player_id="espn_9", espn_id="9", name="Deep Bench",
+                    position="WR", nfl_team="NYJ"))
+    db.commit()
+    monkeypatch.setattr(adp_mod, "fetch_espn_adp", lambda year, limit: [
+        {"id": "espn_9", "name": "Deep Bench", "position": "WR",
+         "nfl_team": "NYJ", "projected_points": 0.0, "adp_rank": 300.0},
+    ])
+
+    result = adp_mod.ADPService(db).import_espn_projections(year=2026)
+
+    assert result["imported"] == 0
+    assert db.query(DBPlayerProjection).count() == 0
+
+
+def test_import_espn_projections_is_idempotent(db, monkeypatch):
+    """Re-running updates in place rather than violating the unique index."""
+    from pigskin_mastermind.models.database import DBPlayer, DBPlayerProjection
+    from pigskin_mastermind.services import adp_service as adp_mod
+
+    db.add(DBPlayer(player_id="espn_4242", espn_id="4242",
+                    name="Bijan Robinson", position="RB", nfl_team="ATL"))
+    db.commit()
+    board = [{"id": "espn_4242", "name": "Bijan Robinson", "position": "RB",
+              "nfl_team": "ATL", "projected_points": 370.8, "adp_rank": 2.6}]
+    monkeypatch.setattr(adp_mod, "fetch_espn_adp", lambda year, limit: board)
+
+    svc = adp_mod.ADPService(db)
+    svc.import_espn_projections(year=2026)
+    board[0]["projected_points"] = 355.0
+    svc.import_espn_projections(year=2026)
+
+    rows = db.query(DBPlayerProjection).filter_by(source="espn").all()
+    assert len(rows) == 1
+    assert rows[0].projected_points == 355.0
