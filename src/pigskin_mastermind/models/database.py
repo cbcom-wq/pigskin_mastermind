@@ -264,6 +264,48 @@ class DBNFLGame(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class DBPlayerProjection(Base):
+    """One projection per player per scope per source.
+
+    ``DBPlayer.projected_points`` cannot hold this. Two importers write it in
+    two different units -- espn_sync stores a per-game scoring-period value,
+    adp_service stores the board's season-scale totalRating -- so the column
+    ranks Philip Rivers above Josh Allen. This table keeps each source
+    separate and units explicit, which also lets the UI show *why* two
+    sources disagree instead of hiding it behind one number.
+    """
+    __tablename__ = "player_projections"
+    __table_args__ = (
+        UniqueConstraint(
+            'player_id', 'year', 'week', 'source', name='uq_player_projection',
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=False, index=True)
+    year = Column(Integer, nullable=False, index=True)
+
+    # NULL means the season scope. Season rows store season TOTALS; weekly
+    # rows store that week's points.
+    week = Column(Integer, nullable=True)
+
+    # blend | model | espn | sportsbook | adp
+    source = Column(String, nullable=False)
+
+    projected_points = Column(Float, nullable=False, default=0.0)
+    floor = Column(Float, nullable=True)
+    ceiling = Column(Float, nullable=True)
+    std_dev = Column(Float, nullable=True)
+
+    # A real column, not a components key: the draft pool converts season
+    # totals to a per-game rate and reaching into JSON for the divisor is how
+    # the mixed-unit bug comes back.
+    expected_games = Column(Float, nullable=True)
+
+    components = Column(JSON, default=dict)
+    computed_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class DBPlayerGameLog(Base):
     """Individual game log entries — one row per player per game."""
     __tablename__ = "player_game_logs"
