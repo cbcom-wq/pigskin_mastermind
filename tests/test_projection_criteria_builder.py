@@ -1722,6 +1722,96 @@ class TestNoLookAheadLeakage:
     """A projection must not move when the future changes."""
 
     def test_week_8_projection_ignores_later_weeks(self, db, sample_data):
+        # player_skill_level draws its peer pool from the *prior* season
+        # (peer_year = year - 1) whenever before_week is given — see
+        # _compute_skill_composite's docstring. `sample_data` only defines
+        # 2024 season stats, so without 2023 data this call falls through to
+        # _estimate_skill_from_weekly, which finds no DBWeeklyPlayerStats
+        # rows either and returns a hardcoded 50.0 in both the "before" and
+        # "after" calls below — a value that can't move regardless of
+        # leakage, so asserting equality on it would guard nothing. Populate
+        # a real 2023 peer pool (this player + one peer, both meeting
+        # MIN_GAMES_FOR_PEER_POOL) so player_skill_level is a genuine
+        # percentile instead.
+        #
+        # Verified sensitive by temporarily hardcoding
+        # `peer_year = year` in _compute_skill_composite (deleting the
+        # before_week cutoff) and re-running this test against this same
+        # fixture: player_skill_level went from 15.50 ("before") to 6.84
+        # ("after") — moved by the week 9-18 data added below — while
+        # historical_average_points stayed at 16.94 in both. Reverted after
+        # confirming the assertion below fails under that fault.
+        peer = DBPlayer(
+            player_id="leak_peer1",
+            name="Peer QB",
+            position="QB",
+            nfl_team="SEA",
+            team_id=sample_data.team_id,
+            stats={},
+        )
+        db.add(peer)
+        db.flush()
+
+        db.add(
+            DBPlayerSeasonStats(
+                player_id=sample_data.id,
+                year=2023,
+                games_played=16,
+                pass_att=520,
+                pass_cmp=330,
+                pass_yd=4200,
+                pass_td=30,
+                pass_int=12,
+                rush_att=45,
+                rush_yd=180,
+                rush_td=2,
+                rec=0,
+                rec_yd=0,
+                rec_td=0,
+                targets=0,
+                fantasy_points_total=288.0,
+                fantasy_points_avg=18.0,
+                fantasy_points_per_touch=round(288.0 / (520 + 45), 6),
+                snap_pct=0.9,
+            )
+        )
+        db.add(
+            DBPlayerSeasonStats(
+                player_id=peer.id,
+                year=2023,
+                games_played=16,
+                pass_att=480,
+                pass_cmp=290,
+                pass_yd=3400,
+                pass_td=20,
+                pass_int=14,
+                rush_att=30,
+                rush_yd=90,
+                rush_td=1,
+                rec=0,
+                rec_yd=0,
+                rec_td=0,
+                targets=0,
+                fantasy_points_total=192.0,
+                fantasy_points_avg=12.0,
+                fantasy_points_per_touch=round(192.0 / (480 + 30), 6),
+                snap_pct=0.85,
+            )
+        )
+        for wk, pts in zip([1, 2, 3, 4], [15.0, 20.0, 18.0, 22.0]):
+            db.add(
+                DBPlayerGameLog(
+                    player_id=sample_data.id,
+                    year=2023,
+                    week=wk,
+                    opponent=f"P{wk}",
+                    pass_yd=250,
+                    pass_td=2,
+                    fantasy_points=pts,
+                )
+            )
+        db.commit()
+
         builder = ProjectionCriteriaBuilder(db)
         before = builder.build_weekly_criteria(sample_data.id, week=8, year=2024)
 
@@ -1760,4 +1850,7 @@ class TestNoLookAheadLeakage:
             year=2024,
         )
         assert after.historical_average_points == before.historical_average_points
+        # Real percentile now (not the 50.0 ESPN-weekly-fallback default —
+        # see setup above), so this is a genuine guard against leakage in
+        # the skill-composite's peer-pool selection, not a vacuous one.
         assert after.player_skill_level == before.player_skill_level
