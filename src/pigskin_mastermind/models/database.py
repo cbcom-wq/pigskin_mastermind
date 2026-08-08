@@ -279,6 +279,15 @@ class DBPlayerProjection(Base):
         UniqueConstraint(
             'player_id', 'year', 'week', 'source', name='uq_player_projection',
         ),
+        # Season rows use week=NULL, and SQL treats NULL as distinct from NULL,
+        # so the constraint above never applies to them. A partial index is what
+        # actually enforces one season row per player per source.
+        Index(
+            'uq_player_projection_season',
+            'player_id', 'year', 'source',
+            unique=True,
+            sqlite_where=Column('week').is_(None),
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)

@@ -2,6 +2,7 @@
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -52,3 +53,19 @@ def test_sources_coexist_for_one_scope(db, player):
         ))
     db.commit()
     assert db.query(DBPlayerProjection).count() == 3
+
+
+def test_duplicate_season_rows_rejected(db, player):
+    """Two season rows with same (player_id, year, source) must be rejected."""
+    db.add(DBPlayerProjection(
+        player_id=player.id, year=2026, week=None, source="blend",
+        projected_points=280.0, expected_games=16.0,
+    ))
+    db.commit()
+    # Attempting a second season row with the same scope should fail
+    db.add(DBPlayerProjection(
+        player_id=player.id, year=2026, week=None, source="blend",
+        projected_points=290.0, expected_games=16.0,
+    ))
+    with pytest.raises(IntegrityError):
+        db.flush()
