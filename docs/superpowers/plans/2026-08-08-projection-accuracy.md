@@ -28,7 +28,15 @@
   flake8 <files you changed>
   ```
 
-  **`flake8` must report zero violations in the files your task touched.** Do not attempt to fix the pre-existing violations in files your task did not otherwise change — that is out of scope and buries the real diff.
+  **The gate is zero NEW violations, not zero violations.** Several files carry pre-existing debt (`cli.py` 43, `teams.py` 10, `stats.py` 10, `database.py` 8, `adp_service.py` 7, `trades.py` 7, `lineups.py` 6, `players.py` 4). Requiring a clean file would force unrelated cleanup that buries the real diff.
+
+  Measure it. Before you edit, record the count:
+
+  ```bash
+  .venv/Scripts/python -m flake8 <file> | wc -l
+  ```
+
+  After your change, the count for that file must be **the same or lower**. Run `black` only on files you were already modifying — never reformat a file wholesale just to satisfy the linter.
 
 ---
 
