@@ -20,6 +20,8 @@
 - Every importer resolves identity through `services/player_identity.py::PlayerIdentityService.resolve()` before creating a row.
 - Scoring is 0.5 PPR resolved via `get_scoring_settings()`, never hardcoded.
 - Alembic head at plan start is `d4a1c6e9b2f7`.
+- **NEVER run `alembic downgrade` against `pigskin_mastermind.db`.** It holds real, expensively-imported data that is not reproducible from the repo. `d4a1c6e9b2f7`'s `downgrade()` calls `op.drop_table('nfl_games')` and reverses the team-stats dedupe — a single overshot step destroys the 842-row schedule (including the entire 2026 season) and halves `nfl_team_stats`. This already happened once during Task 4 and was recovered only because a backup existed. To change an applied migration, write a NEW forward migration. If you believe a downgrade is genuinely required, stop and ask.
+- Back up before any schema change: `cp pigskin_mastermind.db pigskin_mastermind.db.bak-<what>`. Never commit `.db.bak-*` files.
 - Baseline failure count at commit `a6768ed` is **17**. Never let the suite exceed that minus what the current stage has fixed.
 - **Lint gate — scoped to the files you touched, not the whole tree.** The repo has ~4,025 pre-existing flake8 violations and no config; `black` wraps at 88 while flake8 defaults to 79, so running both unconfigured makes them contradict each other. Task 1 adds a `.flake8` with `max-line-length = 88`. From then on:
 
