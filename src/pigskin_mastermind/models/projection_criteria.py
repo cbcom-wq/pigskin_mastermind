@@ -68,10 +68,16 @@ class YearlyProjectionCriteria(PlayerProjectionCriteria):
     Attributes:
         age_deviation_from_optimum: Years from optimal age for position (-10 to 10, 0 is optimal)
         coaching_stability_score: Score representing coaching staff stability (0-100)
+        expected_games: Games the player is expected to play this season (0-17).
+            The projection formula produces a per-game *rate*; multiplying by
+            this is what turns it into a season total. Availability is a real
+            part of season-long value — a 20 ppg player who plays 12 games is
+            worth less than a 17 ppg player who plays all 17.
     """
 
     age_deviation_from_optimum: float = 0.0
     coaching_stability_score: float = 50.0
+    expected_games: float = 17.0
 
     def __post_init__(self):
         """Validate yearly criteria values."""
@@ -84,6 +90,10 @@ class YearlyProjectionCriteria(PlayerProjectionCriteria):
         # Validate coaching stability (0-100)
         if not 0 <= self.coaching_stability_score <= 100:
             raise ValueError("coaching_stability_score must be between 0 and 100")
+
+        # Validate expected games (0-17 — the modern regular season)
+        if not 0 <= self.expected_games <= 17:
+            raise ValueError("expected_games must be between 0 and 17")
 
 
 @dataclass
@@ -100,15 +110,27 @@ class WeeklyProjectionCriteria(PlayerProjectionCriteria):
         momentum (-100 to 100)
         weather_impact_score: Score representing weather conditions impact
         (-100 to 100, 0 is neutral)
+        home_field: 1.0 at home, -1.0 on the road, 0.0 when unknown. Requires
+        the NFL schedule; 0.0 means "no information", not "neutral site".
+        is_available: False when the player cannot play at all — bye week, OUT,
+        or IR. A player who is not playing scores exactly zero, which is a
+        different statement from "risky", and the injury_risk_score nudge
+        cannot express it.
     """
 
     opposing_defense_vs_position_rank: int = 16
     offensive_momentum_score: float = 0.0
     weather_impact_score: float = 0.0
+    home_field: float = 0.0
+    is_available: bool = True
 
     def __post_init__(self):
         """Validate weekly criteria values."""
         super().__post_init__()
+
+        # Validate home field indicator
+        if not -1 <= self.home_field <= 1:
+            raise ValueError("home_field must be between -1 and 1")
 
         # Validate opposing defense rank (1-32 for NFL teams)
         if not 1 <= self.opposing_defense_vs_position_rank <= 32:

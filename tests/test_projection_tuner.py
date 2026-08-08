@@ -1,22 +1,26 @@
 """Tests for ProjectionTunerService — parameterized formula and backtesting."""
 
 import pytest
-import math
+from dataclasses import fields
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from pigskin_mastermind.models.database import (
-    Base, DBPlayer, DBTeam, DBPlayerSeasonStats,
-    DBPlayerGameLog, DBNFLTeamStats,
+    Base,
+    DBPlayer,
+    DBTeam,
+    DBPlayerSeasonStats,
+    DBPlayerGameLog,
+    DBNFLTeamStats,
 )
+from pigskin_mastermind.models.algorithm_coefficients import AlgorithmCoefficients
 from pigskin_mastermind.services.projection_tuner import (
     ProjectionTunerService,
     get_default_coefficients,
     get_coefficient_metadata,
     get_criteria_docs,
     COEFFICIENT_DEFS,
-    CRITERIA_DOCS,
 )
 
 test_engine = create_engine(
@@ -49,8 +53,11 @@ def sample_data(db):
     db.flush()
 
     player = DBPlayer(
-        player_id="p1", name="Test QB", position="QB",
-        nfl_team="KC", team_id=team.id,
+        player_id="p1",
+        name="Test QB",
+        position="QB",
+        nfl_team="KC",
+        team_id=team.id,
         stats={"age": 28, "injuryStatus": ""},
     )
     db.add(player)
@@ -58,11 +65,21 @@ def sample_data(db):
 
     # Season stats
     season = DBPlayerSeasonStats(
-        player_id=player.id, year=2024,
+        player_id=player.id,
+        year=2024,
         games_played=16,
-        pass_att=500, pass_cmp=350, pass_yd=4000, pass_td=30, pass_int=10,
-        rush_att=40, rush_yd=200, rush_td=3,
-        targets=0, rec=0, rec_yd=0, rec_td=0,
+        pass_att=500,
+        pass_cmp=350,
+        pass_yd=4000,
+        pass_td=30,
+        pass_int=10,
+        rush_att=40,
+        rush_yd=200,
+        rush_td=3,
+        targets=0,
+        rec=0,
+        rec_yd=0,
+        rec_td=0,
         fantasy_points_total=320.0,
         fantasy_points_avg=20.0,
         fantasy_points_per_touch=0.59,
@@ -73,27 +90,45 @@ def sample_data(db):
     # Game logs (weeks 1-4)
     for w in range(1, 5):
         log = DBPlayerGameLog(
-            player_id=player.id, year=2024, week=w,
+            player_id=player.id,
+            year=2024,
+            week=w,
             opponent="LV",
-            pass_att=32, pass_cmp=22, pass_yd=260, pass_td=2, pass_int=0,
-            rush_att=3, rush_yd=15, rush_td=0,
+            pass_att=32,
+            pass_cmp=22,
+            pass_yd=260,
+            pass_td=2,
+            pass_int=0,
+            rush_att=3,
+            rush_yd=15,
+            rush_td=0,
             fantasy_points=18.0 + w,  # 19, 20, 21, 22
         )
         db.add(log)
 
     # Team stats
     team_stats = DBNFLTeamStats(
-        nfl_team="KC", year=2024, week=None,
-        total_yards=5500, points_scored=420,
-        def_rank_vs_qb=10, def_rank_vs_rb=15,
-        def_rank_vs_wr=20, def_rank_vs_te=8,
+        nfl_team="KC",
+        year=2024,
+        week=None,
+        total_yards=5500,
+        points_scored=420,
+        def_rank_vs_qb=10,
+        def_rank_vs_rb=15,
+        def_rank_vs_wr=20,
+        def_rank_vs_te=8,
     )
     db.add(team_stats)
     opp_stats = DBNFLTeamStats(
-        nfl_team="LV", year=2024, week=None,
-        total_yards=4800, points_scored=320,
-        def_rank_vs_qb=25, def_rank_vs_rb=18,
-        def_rank_vs_wr=12, def_rank_vs_te=22,
+        nfl_team="LV",
+        year=2024,
+        week=None,
+        total_yards=4800,
+        points_scored=320,
+        def_rank_vs_qb=25,
+        def_rank_vs_rb=18,
+        def_rank_vs_wr=12,
+        def_rank_vs_te=22,
     )
     db.add(opp_stats)
 
@@ -103,18 +138,68 @@ def sample_data(db):
 
 # ── Metadata tests ────────────────────────────────────────────────────────
 
+
 def test_default_coefficients_has_all_keys():
-    """Default coefficients dict should have an entry for every COEFFICIENT_DEFS entry."""
+    """Default coefficients dict should have an entry for every COEFFICIENT_DEFS
+    entry."""
     defaults = get_default_coefficients()
     for cdef in COEFFICIENT_DEFS:
         assert cdef["key"] in defaults
         assert defaults[cdef["key"]] == cdef["default"]
 
 
+def test_coefficient_defs_match_algorithm_coefficients():
+    """Tuner metadata must name and sign coefficients exactly like the formula.
+
+    ``AlgorithmCoefficients.from_dict`` silently drops unknown keys, so a
+    renamed or mistyped key in COEFFICIENT_DEFS makes that slider a no-op in
+    production without any error — which is how ``def_rank_multiplier`` and
+    ``efficiency_clamp`` went unnoticed. Defaults must match too, or promoting
+    a tuning run changes the formula just by saving it.
+    """
+    defaults = get_default_coefficients()
+    formula_fields = {f.name: f.default for f in fields(AlgorithmCoefficients)}
+
+    assert set(defaults) == set(formula_fields), (
+        "COEFFICIENT_DEFS keys diverged from AlgorithmCoefficients fields: "
+        f"tuner-only={sorted(set(defaults) - set(formula_fields))}, "
+        f"formula-only={sorted(set(formula_fields) - set(defaults))}"
+    )
+    for key, formula_default in formula_fields.items():
+        assert defaults[key] == formula_default, (
+            f"{key} default is {defaults[key]} in the tuner but "
+            f"{formula_default} in the formula"
+        )
+
+
+def test_coefficient_slider_ranges_contain_defaults():
+    """Every slider range must admit its own default value.
+
+    Guards the sign convention: ``injury_multiplier`` and the age multipliers
+    are negative in the formula, so a 0..0.3 range would make the default
+    unreachable and invite a sign flip on save.
+    """
+    for cdef in COEFFICIENT_DEFS:
+        assert cdef["min"] <= cdef["default"] <= cdef["max"], (
+            f"{cdef['key']} default {cdef['default']} is outside "
+            f"[{cdef['min']}, {cdef['max']}]"
+        )
+
+
 def test_coefficient_metadata_structure():
     """Each coefficient metadata entry should have required fields."""
     meta = get_coefficient_metadata()
-    required_keys = {"key", "name", "default", "min", "max", "step", "group", "description", "formula"}
+    required_keys = {
+        "key",
+        "name",
+        "default",
+        "min",
+        "max",
+        "step",
+        "group",
+        "description",
+        "formula",
+    }
     for entry in meta:
         assert required_keys.issubset(entry.keys()), f"Missing keys in {entry['key']}"
         assert entry["group"] in ("base", "weekly", "yearly")
@@ -123,12 +208,21 @@ def test_coefficient_metadata_structure():
 def test_criteria_docs_structure():
     """Each criteria doc entry should have required fields."""
     docs = get_criteria_docs()
-    required_keys = {"field", "name", "group", "range", "description", "data_source", "role"}
+    required_keys = {
+        "field",
+        "name",
+        "group",
+        "range",
+        "description",
+        "data_source",
+        "role",
+    }
     for entry in docs:
         assert required_keys.issubset(entry.keys()), f"Missing keys in {entry['field']}"
 
 
 # ── Projection breakdown tests ────────────────────────────────────────────
+
 
 def test_weekly_breakdown_has_steps(db, sample_data):
     """Weekly projection should return a breakdown with steps."""
@@ -140,9 +234,15 @@ def test_weekly_breakdown_has_steps(db, sample_data):
     assert len(result["steps"]) > 0
 
     # Should have base steps + weekly steps
-    # Base: 8 steps (hist avg, skill, offense, defense, touch, trend, efficiency, injury)
-    # Weekly: 3 steps (def rank, momentum, weather)
-    assert len(result["steps"]) == 11
+    # Base: 8 steps (hist avg, skill, offense, defense [folded into matchup
+    #   step for weekly — see _apply_base_breakdown], touch, trend,
+    #   efficiency, injury)
+    # Weekly: 4 steps (def rank, momentum, weather, home field)
+    assert len(result["steps"]) == 12
+
+    step_labels = {s["label"] for s in result["steps"]}
+    assert "Opponent Defense (folded into matchup step)" in step_labels
+    assert "Home Field" in step_labels
 
 
 def test_yearly_breakdown_has_steps(db, sample_data):
@@ -183,21 +283,32 @@ def test_step_has_required_fields(db, sample_data):
     service = ProjectionTunerService(db)
     result = service.project_weekly(sample_data.id, week=1, year=2024)
 
-    required = {"label", "criteria_field", "criteria_value", "coefficient_key",
-                "coefficient_value", "formula", "value"}
+    required = {
+        "label",
+        "criteria_field",
+        "criteria_value",
+        "coefficient_key",
+        "coefficient_value",
+        "formula",
+        "value",
+    }
     for step in result["steps"]:
         assert required.issubset(step.keys()), f"Missing keys in step: {step['label']}"
 
 
 # ── Custom coefficients change results ────────────────────────────────────
 
+
 def test_custom_coefficients_change_projection(db, sample_data):
     """Using different coefficients should produce a different projection."""
     default_service = ProjectionTunerService(db)
-    custom_service = ProjectionTunerService(db, coefficients={
-        "skill_multiplier": 0.3,
-        "offense_multiplier": 0.2,
-    })
+    custom_service = ProjectionTunerService(
+        db,
+        coefficients={
+            "skill_multiplier": 0.3,
+            "offense_multiplier": 0.2,
+        },
+    )
 
     default_result = default_service.project_weekly(sample_data.id, week=1, year=2024)
     custom_result = custom_service.project_weekly(sample_data.id, week=1, year=2024)
@@ -219,7 +330,9 @@ def test_zero_coefficients_only_baseline(db, sample_data):
     # With baseline_weight=0, the baseline step is also zeroed out,
     # so *all* steps (including the baseline) should be zero.
     non_zero_steps = [s for s in result["steps"] if s["value"] != 0.0]
-    assert len(non_zero_steps) == 0, "All steps should be zero when every coefficient is 0"
+    assert (
+        len(non_zero_steps) == 0
+    ), "All steps should be zero when every coefficient is 0"
     assert result["deterministic_total"] == 0
 
     # Monte Carlo total is still positive (criteria-driven, not coefficient-driven)
@@ -228,6 +341,7 @@ def test_zero_coefficients_only_baseline(db, sample_data):
 
 
 # ── Actual points retrieval ───────────────────────────────────────────────
+
 
 def test_actual_points_returned(db, sample_data):
     """Projection should include actual points from game log."""
@@ -248,6 +362,7 @@ def test_error_calculated(db, sample_data):
 
 
 # ── Backtest tests ────────────────────────────────────────────────────────
+
 
 def test_backtest_weekly_returns_stats(db, sample_data):
     """Weekly backtest should return summary statistics."""
@@ -296,6 +411,7 @@ def test_backtest_yearly(db, sample_data):
 
 
 # ── Criteria dict in result ───────────────────────────────────────────────
+
 
 def test_criteria_dict_in_result(db, sample_data):
     """Result should include the criteria values used."""

@@ -337,6 +337,12 @@ def stats_import_nfl(years):
         seasonal = service.import_seasonal_stats(year_list)
         click.echo(f"  {seasonal} season stat rows imported")
 
+        # Before defense rankings: that step reads real final scores from the
+        # schedule to populate points_scored / points_allowed.
+        click.echo("Importing schedules...")
+        games = service.import_schedules(year_list)
+        click.echo(f"  {games} games imported")
+
         click.echo("Computing defense rankings...")
         defense = service.import_team_defense_rankings(year_list)
         click.echo(f"  {defense} team defense rows imported")
@@ -350,6 +356,25 @@ def stats_import_nfl(years):
         click.echo(f"  {snaps} season rows updated with snap share")
 
         click.echo("NFL stats import complete.")
+    finally:
+        db.close()
+
+
+@stats.command('import-schedules')
+@click.option('--years', default='2025,2026', help='Comma-separated years (e.g. 2025,2026)')
+def stats_import_schedules(years):
+    """Import NFL schedules and final scores.
+
+    Needed for projections of *upcoming* weeks — without a schedule the
+    opponent is unknown and every future matchup falls back to neutral.
+    """
+    from pigskin_mastermind.services.nfl_data_service import NFLDataService
+
+    db = _get_stats_db()
+    try:
+        year_list = [int(y.strip()) for y in years.split(',')]
+        count = NFLDataService(db).import_schedules(year_list)
+        click.echo(f"{count} games imported for {', '.join(str(y) for y in year_list)}")
     finally:
         db.close()
 

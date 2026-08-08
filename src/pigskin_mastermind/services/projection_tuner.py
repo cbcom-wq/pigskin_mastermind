@@ -141,13 +141,31 @@ COEFFICIENT_DEFS: List[Dict[str, Any]] = [
         "group": "base",
         "description": (
             "Scales the fantasy-points-per-touch efficiency offset. "
-            "Baseline is 0.5 fpts/touch; values above that boost, below penalise."
+            "Values above the efficiency baseline boost, below penalise."
         ),
-        "formula": "(fantasy_points_per_touch − 0.5) × multiplier  (clamped ±5)",
+        "formula": (
+            "(fantasy_points_per_touch − efficiency_baseline) × multiplier  "
+            "(clamped ±efficiency_cap)"
+        ),
     },
     {
-        "key": "efficiency_clamp",
-        "name": "Efficiency Clamp (max abs)",
+        "key": "efficiency_baseline",
+        "name": "Efficiency Baseline (fpts/touch)",
+        "default": 0.5,
+        "min": 0.0,
+        "max": 3.0,
+        "step": 0.05,
+        "group": "base",
+        "description": (
+            "The centre-point subtracted from fantasy points per touch before "
+            "scaling. A player exactly at this efficiency gets no adjustment; "
+            "raising it makes the efficiency term stricter."
+        ),
+        "formula": "(fantasy_points_per_touch − baseline) × efficiency_multiplier",
+    },
+    {
+        "key": "efficiency_cap",
+        "name": "Efficiency Cap (max abs)",
         "default": 5.0,
         "min": 1.0,
         "max": 20.0,
@@ -157,25 +175,26 @@ COEFFICIENT_DEFS: List[Dict[str, Any]] = [
             "Caps the efficiency adjustment so outlier efficiency values "
             "don't dominate the projection."
         ),
-        "formula": "clamp(efficiency_adjustment, −clamp, +clamp)",
+        "formula": "clamp(efficiency_adjustment, −cap, +cap)",
     },
     {
         "key": "injury_multiplier",
         "name": "Injury Risk Multiplier",
-        "default": 0.05,
-        "min": 0.0,
-        "max": 0.3,
+        "default": -0.05,
+        "min": -0.3,
+        "max": 0.0,
         "step": 0.01,
         "group": "base",
         "description": (
-            "Scales the injury risk score (0–100) into a negative adjustment. "
-            "Higher multiplier means injury risk has more impact."
+            "Scales the injury risk score (0–100) into a points adjustment. "
+            "The value is negative so higher risk lowers the projection; "
+            "a more negative multiplier means injury risk bites harder."
         ),
-        "formula": "injury_risk_score × −multiplier",
+        "formula": "injury_risk_score × multiplier",
     },
     # ── Weekly-specific ───────────────────────────────────────────────────
     {
-        "key": "def_rank_multiplier",
+        "key": "defense_rank_multiplier",
         "name": "Def. Rank vs Position Multiplier",
         "default": 0.15,
         "min": 0.0,
@@ -217,32 +236,48 @@ COEFFICIENT_DEFS: List[Dict[str, Any]] = [
         ),
         "formula": "weather_impact_score × multiplier",
     },
+    {
+        "key": "home_field_multiplier",
+        "name": "Home Field Advantage",
+        "default": 0.3,
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.05,
+        "group": "weekly",
+        "description": (
+            "Points added when the player is at home and removed on the road. "
+            "Requires the NFL schedule to be imported; without it every game "
+            "is treated as neutral."
+        ),
+        "formula": "±multiplier  (+ at home, − away, 0 if unknown)",
+    },
     # ── Yearly-specific ───────────────────────────────────────────────────
     {
         "key": "age_post_peak_multiplier",
         "name": "Age Post-Peak Penalty",
-        "default": 0.5,
-        "min": 0.0,
-        "max": 2.0,
+        "default": -0.5,
+        "min": -2.0,
+        "max": 0.0,
         "step": 0.05,
         "group": "yearly",
         "description": (
-            "Penalty per year past the position's peak age. "
-            "A QB at 32 (peak 29) with multiplier 0.5 loses 1.5 pts."
+            "Points change per year past the position's peak age. Negative, "
+            "so a QB at 32 (peak 29) with multiplier −0.5 loses 1.5 pts."
         ),
-        "formula": "years_past_peak × −multiplier  (only when past peak)",
+        "formula": "years_past_peak × multiplier  (only when past peak)",
     },
     {
         "key": "age_pre_peak_multiplier",
         "name": "Age Pre-Peak Boost",
-        "default": 0.1,
-        "min": 0.0,
-        "max": 1.0,
+        "default": -0.1,
+        "min": -1.0,
+        "max": 0.0,
         "step": 0.05,
         "group": "yearly",
         "description": (
-            "Boost per year before the position's peak age. "
-            "Young players get a small upside bump."
+            "Points change per year before the position's peak age. The age "
+            "deviation is negative pre-peak, so a negative multiplier gives "
+            "young players a small upside bump."
         ),
         "formula": "years_before_peak × multiplier  (only when pre-peak)",
     },
@@ -256,9 +291,29 @@ COEFFICIENT_DEFS: List[Dict[str, Any]] = [
         "group": "yearly",
         "description": (
             "Scales the coaching stability score (0–100). Stable "
-            "coaching (high score) boosts yearly projections."
+            "coaching (high score) boosts yearly projections. "
+            "NOTE: coaching_stability_score has no automatic data source — it "
+            "stays at the neutral 50 unless you supply a manual criteria "
+            "override, so this coefficient does nothing on its own."
         ),
         "formula": "(coaching_stability_score − 50) × multiplier",
+    },
+    # ── Sample-size handling ──────────────────────────────────────────────
+    {
+        "key": "shrinkage_games",
+        "name": "Shrinkage Sample Size (games)",
+        "default": 4.0,
+        "min": 0.0,
+        "max": 16.0,
+        "step": 0.5,
+        "group": "base",
+        "description": (
+            "How many games of evidence it takes before a player's own scoring "
+            "rate outweighs the typical rate for their position. At 4, a player "
+            "with 4 games sits halfway between the two. Set to 0 to trust small "
+            "samples completely — which is what the algorithm used to do."
+        ),
+        "formula": "(games × observed + k × position_prior) ÷ (games + k)",
     },
 ]
 
@@ -790,15 +845,29 @@ class ProjectionTunerService:
             "value": round(off_adj, 2),
         })
 
-        # Opponent defense
-        def_adj = (criteria.opponent_defense_level - 50) * c["defense_multiplier"]
+        # Opponent defense — yearly only. For weekly this field is a linear
+        # restatement of opposing_defense_vs_position_rank, which has its own
+        # step below; scoring both double-counted the matchup. Mirrors the
+        # skip in ProjectionService._apply_base_criteria.
+        is_weekly = isinstance(criteria, WeeklyProjectionCriteria)
+        def_adj = (
+            0.0 if is_weekly
+            else (criteria.opponent_defense_level - 50) * c["defense_multiplier"]
+        )
         steps.append({
-            "label": "Opponent Defense Adjustment",
+            "label": (
+                "Opponent Defense (folded into matchup step)" if is_weekly
+                else "Strength of Schedule Adjustment"
+            ),
             "criteria_field": "opponent_defense_level",
             "criteria_value": criteria.opponent_defense_level,
             "coefficient_key": "defense_multiplier",
             "coefficient_value": c["defense_multiplier"],
-            "formula": f"({criteria.opponent_defense_level:.1f} − 50) × {c['defense_multiplier']}",
+            "formula": (
+                "not scored weekly — see Matchup: Def Rank vs Position"
+                if is_weekly
+                else f"({criteria.opponent_defense_level:.1f} − 50) × {c['defense_multiplier']}"
+            ),
             "value": round(def_adj, 2),
         })
 
@@ -827,10 +896,13 @@ class ProjectionTunerService:
         })
 
         # Efficiency
+        eff_baseline = c["efficiency_baseline"]
+        eff_cap = c["efficiency_cap"]
         if criteria.fantasy_points_per_touch != 0:
-            raw_eff = (criteria.fantasy_points_per_touch - 0.5) * c["efficiency_multiplier"]
-            clamp = c["efficiency_clamp"]
-            eff_adj = max(-clamp, min(clamp, raw_eff))
+            raw_eff = (
+                criteria.fantasy_points_per_touch - eff_baseline
+            ) * c["efficiency_multiplier"]
+            eff_adj = max(-eff_cap, min(eff_cap, raw_eff))
         else:
             eff_adj = 0.0
         steps.append({
@@ -840,21 +912,21 @@ class ProjectionTunerService:
             "coefficient_key": "efficiency_multiplier",
             "coefficient_value": c["efficiency_multiplier"],
             "formula": (
-                f"clamp(({criteria.fantasy_points_per_touch:.2f} − 0.5) "
-                f"× {c['efficiency_multiplier']}, ±{c['efficiency_clamp']})"
+                f"clamp(({criteria.fantasy_points_per_touch:.2f} − {eff_baseline}) "
+                f"× {c['efficiency_multiplier']}, ±{eff_cap})"
             ),
             "value": round(eff_adj, 2),
         })
 
         # Injury risk
-        inj_adj = criteria.injury_risk_score * -c["injury_multiplier"]
+        inj_adj = criteria.injury_risk_score * c["injury_multiplier"]
         steps.append({
             "label": "Injury Risk Penalty",
             "criteria_field": "injury_risk_score",
             "criteria_value": criteria.injury_risk_score,
             "coefficient_key": "injury_multiplier",
             "coefficient_value": c["injury_multiplier"],
-            "formula": f"{criteria.injury_risk_score:.1f} × −{c['injury_multiplier']}",
+            "formula": f"{criteria.injury_risk_score:.1f} × {c['injury_multiplier']}",
             "value": round(inj_adj, 2),
         })
 
@@ -868,14 +940,19 @@ class ProjectionTunerService:
         steps = []
 
         # Defense rank vs position
-        rank_adj = (criteria.opposing_defense_vs_position_rank - 16) * c["def_rank_multiplier"]
+        rank_adj = (
+            criteria.opposing_defense_vs_position_rank - 16
+        ) * c["defense_rank_multiplier"]
         steps.append({
             "label": "Matchup: Def Rank vs Position",
             "criteria_field": "opposing_defense_vs_position_rank",
             "criteria_value": criteria.opposing_defense_vs_position_rank,
-            "coefficient_key": "def_rank_multiplier",
-            "coefficient_value": c["def_rank_multiplier"],
-            "formula": f"({criteria.opposing_defense_vs_position_rank} − 16) × {c['def_rank_multiplier']}",
+            "coefficient_key": "defense_rank_multiplier",
+            "coefficient_value": c["defense_rank_multiplier"],
+            "formula": (
+                f"({criteria.opposing_defense_vs_position_rank} − 16) "
+                f"× {c['defense_rank_multiplier']}"
+            ),
             "value": round(rank_adj, 2),
         })
 
@@ -903,6 +980,18 @@ class ProjectionTunerService:
             "value": round(wx_adj, 2),
         })
 
+        # Home field
+        hf_adj = criteria.home_field * c["home_field_multiplier"]
+        steps.append({
+            "label": "Home Field",
+            "criteria_field": "home_field",
+            "criteria_value": criteria.home_field,
+            "coefficient_key": "home_field_multiplier",
+            "coefficient_value": c["home_field_multiplier"],
+            "formula": f"{criteria.home_field:+.0f} × {c['home_field_multiplier']}",
+            "value": round(hf_adj, 2),
+        })
+
         return steps
 
     def _apply_yearly_breakdown(
@@ -915,13 +1004,13 @@ class ProjectionTunerService:
         # Age deviation
         dev = criteria.age_deviation_from_optimum
         if dev > 0:
-            age_adj = dev * -c["age_post_peak_multiplier"]
-            formula = f"{dev:.1f} × −{c['age_post_peak_multiplier']} (past peak)"
+            age_adj = dev * c["age_post_peak_multiplier"]
+            formula = f"{dev:.1f} × {c['age_post_peak_multiplier']} (past peak)"
             coeff_key = "age_post_peak_multiplier"
             coeff_val = c["age_post_peak_multiplier"]
         else:
-            age_adj = dev * -c["age_pre_peak_multiplier"]
-            formula = f"{dev:.1f} × −{c['age_pre_peak_multiplier']} (pre-peak)"
+            age_adj = dev * c["age_pre_peak_multiplier"]
+            formula = f"{dev:.1f} × {c['age_pre_peak_multiplier']} (pre-peak)"
             coeff_key = "age_pre_peak_multiplier"
             coeff_val = c["age_pre_peak_multiplier"]
 

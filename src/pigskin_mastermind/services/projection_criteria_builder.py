@@ -5,12 +5,27 @@ from collections import defaultdict
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, or_
 
 from pigskin_mastermind.models.database import (
-    DBPlayer, DBPlayerGameLog, DBPlayerSeasonStats, DBNFLTeamStats,
+    DBPlayer, DBPlayerGameLog, DBPlayerSeasonStats, DBNFLTeamStats, DBNFLGame,
     DBWeeklyTeamStats, DBWeeklyPlayerStats, DBLeague,
 )
+from pigskin_mastermind.utils.nfl_teams import normalize_team
+from pigskin_mastermind.services.projection_baseline import (
+    ProjectionBaselines,
+    DEFAULT_SHRINKAGE_GAMES,
+    MIN_GAMES_FOR_PEER_POOL,
+)
+
+
+def _per_game(season: DBPlayerSeasonStats) -> float:
+    """Per-game fantasy points for a season row, preferring the stored average."""
+    if season.fantasy_points_avg and season.fantasy_points_avg > 0:
+        return season.fantasy_points_avg
+    if season.fantasy_points_total and season.games_played:
+        return season.fantasy_points_total / season.games_played
+    return 0.0
 
 import logging
 
@@ -34,11 +49,20 @@ POSITION_PEAK_AGES = {
 class ProjectionCriteriaBuilder:
     """Builds projection criteria from stored stats data."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, shrinkage_games: Optional[float] = None):
         self.db = db
         # Track players already checked this session to avoid repeated work
         self._ensured_players: set = set()
         self._ensured_team_years: set = set()
+        self._matchup_cache: Dict[tuple, Dict[str, Any]] = {}
+        self._schedule_years: Dict[int, bool] = {}
+        self.baselines = ProjectionBaselines(
+            db,
+            shrinkage_games=(
+                DEFAULT_SHRINKAGE_GAMES if shrinkage_games is None
+                else shrinkage_games
+            ),
+        )
 
     # ------------------------------------------------------------------
     # On-demand per-player data population
@@ -283,6 +307,7 @@ class ProjectionCriteriaBuilder:
         week: int,
         year: int,
         overrides: Optional[Dict[str, Any]] = None,
+        opponent_team: Optional[str] = None,
     ) -> WeeklyProjectionCriteria:
         """Auto-build weekly projection criteria from stats data.
 
@@ -291,6 +316,10 @@ class ProjectionCriteriaBuilder:
             week: Target week number.
             year: Target year.
             overrides: Optional dict of criteria field names to override values.
+            opponent_team: Explicit opponent abbreviation. Takes precedence over
+                the derived opponent, which is how callers project a hypothetical
+                matchup — and what ``MonteCarloInputBuilder.build_for_player``
+                has always passed.
 
         Returns:
             WeeklyProjectionCriteria populated from stats.
@@ -308,14 +337,22 @@ class ProjectionCriteriaBuilder:
             .first()
         )
 
-        # Historical average points — fall back to game-log average if the season
-        # record has no fantasy data (e.g. ESPN import only, NFL import not yet run)
-        historical_avg = season.fantasy_points_avg if season else 0.0
+        # Baseline anchor. Uses only games before *week*, so this call returns
+        # the same value whether or not week..18 have been played — which is
+        # what makes a backtest of it honest.
+        baseline = self.baselines.weekly_baseline(
+            player_id, player.position, year, week,
+        )
+        historical_avg = baseline.points_per_game
         if historical_avg == 0.0:
+            # Nothing prior-to-week and no positional prior: fall back to
+            # whatever data exists at all, rather than projecting a zero.
             historical_avg = self._compute_historical_avg_from_logs(player_id)
 
         # Recent trend score: compare last 4 weeks vs season avg (recency-weighted)
-        recent_trend = self._compute_trend_score(player_id, year, num_weeks=4)
+        recent_trend = self._compute_trend_score(
+            player_id, year, num_weeks=4, before_week=week,
+        )
 
         # Fantasy points per touch (position-aware denominator)
         fpts_per_touch = self._compute_position_efficiency(
@@ -323,7 +360,9 @@ class ProjectionCriteriaBuilder:
         )
 
         # Player skill level: multi-factor composite among same position
-        skill_level = self._compute_skill_composite(player_id, player.position, year)
+        skill_level = self._compute_skill_composite(
+            player_id, player.position, year, before_week=week,
+        )
 
         # Injury risk from ESPN status + historical availability
         injury_risk = self._compute_injury_risk(player, player_id)
@@ -333,29 +372,42 @@ class ProjectionCriteriaBuilder:
             player_id, player.position, player.nfl_team, year
         )
 
-        # Opposing defense ranking for this week's opponent
+        # Matchup context. The schedule is what makes this work for *upcoming*
+        # weeks — game logs only exist for games already played, so without it
+        # every future matchup silently collapsed to the neutral rank 16.
+        explicit_opponent = normalize_team(opponent_team)
+        matchup = self._get_matchup(player.nfl_team, week, year)
+        opponent = explicit_opponent or matchup.get('opponent') or (
+            self._get_week_opponent(player_id, week, year)
+        )
+
         def_rank = 16  # default middle
-        opponent = self._get_week_opponent(player_id, week, year)
         if opponent:
-            team_def = (
-                self.db.query(DBNFLTeamStats)
-                .filter_by(nfl_team=opponent, year=year, week=None)
-                .first()
-            )
+            team_def = self._defense_row_for_rank(opponent, year)
             if team_def:
                 pos_lower = player.position.lower()
                 rank_val = getattr(team_def, f'def_rank_vs_{pos_lower}', None)
                 if rank_val:
                     def_rank = max(1, min(32, rank_val))
 
+        # An explicit opponent override means the caller is asking about a
+        # hypothetical matchup, so the real game's home/away no longer applies.
+        home_field = 0.0 if explicit_opponent else matchup.get('home_field', 0.0)
+
         # Team offense level from team scoring
         team_offense = self._compute_team_offense_level(player.nfl_team, year, week=week)
 
         # Offensive momentum from recent team scoring
-        momentum = self._compute_momentum(player.nfl_team, year, num_weeks=4)
+        momentum = self._compute_momentum(
+            player.nfl_team, year, num_weeks=4, before_week=week,
+        )
 
         # Rank 1 = best defense (hardest to score against) → level near 0
         # Rank 32 = worst defense (easiest to score against) → level near 100
+        # NOTE: this is a linear restatement of opposing_defense_vs_position_rank
+        # and is deliberately *not* scored in the weekly formula — see
+        # ProjectionService._apply_base_criteria. It is kept because the Monte
+        # Carlo engine and the criteria display both read it.
         opponent_def_level = ((def_rank - 1) / 31) * 100
 
         criteria_kwargs = {
@@ -370,6 +422,8 @@ class ProjectionCriteriaBuilder:
             'opposing_defense_vs_position_rank': def_rank,
             'offensive_momentum_score': momentum,
             'weather_impact_score': 0.0,
+            'home_field': home_field,
+            'is_available': self._is_available(player, matchup, explicit_opponent),
         }
 
         # Apply overrides
@@ -377,6 +431,105 @@ class ProjectionCriteriaBuilder:
             criteria_kwargs.update(overrides)
 
         return WeeklyProjectionCriteria(**criteria_kwargs)
+
+    # ── Schedule-derived matchup context ─────────────────────────────────
+
+    def _get_matchup(
+        self, nfl_team: Optional[str], week: int, year: int,
+    ) -> Dict[str, Any]:
+        """Look up a team's game for *week* from the imported NFL schedule.
+
+        Returns ``{'opponent', 'home_field', 'on_bye'}``. ``on_bye`` is only
+        trustworthy once the schedule exists — with no games loaded for the
+        year we report "unknown" rather than declaring everyone on bye.
+        """
+        team = normalize_team(nfl_team)
+        if not team:
+            return {'opponent': None, 'home_field': 0.0, 'on_bye': False}
+
+        cache_key = (team, week, year)
+        if cache_key in self._matchup_cache:
+            return self._matchup_cache[cache_key]
+
+        game = (
+            self.db.query(DBNFLGame)
+            .filter(
+                DBNFLGame.year == year,
+                DBNFLGame.week == week,
+                or_(
+                    DBNFLGame.home_team == team,
+                    DBNFLGame.away_team == team,
+                ),
+            )
+            .first()
+        )
+
+        if game is not None:
+            is_home = game.home_team == team
+            result = {
+                'opponent': game.away_team if is_home else game.home_team,
+                'home_field': 1.0 if is_home else -1.0,
+                'on_bye': False,
+            }
+        else:
+            result = {
+                'opponent': None,
+                'home_field': 0.0,
+                # Only a bye if the schedule is loaded for this year and simply
+                # doesn't contain a game for this team in this week.
+                'on_bye': self._schedule_loaded(year),
+            }
+
+        self._matchup_cache[cache_key] = result
+        return result
+
+    def _schedule_loaded(self, year: int) -> bool:
+        """True when ``DBNFLGame`` has any games for *year*."""
+        if year not in self._schedule_years:
+            self._schedule_years[year] = (
+                self.db.query(DBNFLGame).filter_by(year=year).first() is not None
+            )
+        return self._schedule_years[year]
+
+    @staticmethod
+    def _is_available(
+        player: DBPlayer,
+        matchup: Dict[str, Any],
+        explicit_opponent: Optional[str],
+    ) -> bool:
+        """False when the player cannot score at all this week.
+
+        A bye or an OUT/IR designation is not a risk to discount — it is a
+        guaranteed zero, and the additive injury term can't say that.
+        A hypothetical-matchup request overrides the bye, since the caller is
+        explicitly asking "what if they played this opponent".
+        """
+        if not explicit_opponent and matchup.get('on_bye'):
+            return False
+        status = (player.injury_status or '').upper()
+        return status not in ('OUT', 'IR', 'INJURY_RESERVE', 'SUSPENSION')
+
+    def _defense_row_for_rank(
+        self, opponent: str, year: int,
+    ) -> Optional[DBNFLTeamStats]:
+        """Season defense row for *opponent*, falling back to the prior year.
+
+        Early in a season (and all through the preseason) the current year has
+        no defensive ranks yet; last year's are a far better estimate than the
+        neutral rank-16 default.
+        """
+        for candidate_year in (year, year - 1):
+            row = (
+                self.db.query(DBNFLTeamStats)
+                .filter_by(nfl_team=opponent, year=candidate_year, week=None)
+                .first()
+            )
+            if row and any(
+                getattr(row, f'def_rank_vs_{p}', None)
+                for p in ('qb', 'rb', 'wr', 'te')
+            ):
+                return row
+        return None
 
     def build_yearly_criteria(
         self,
@@ -416,9 +569,16 @@ class ProjectionCriteriaBuilder:
                 .first()
             )
 
-        historical_avg = self._compute_weighted_historical_avg(player_id, year)
+        # Baseline. Shrunk toward the position, and toward what ADP implies
+        # when the player has no usable history — otherwise every rookie and
+        # every player the stats import missed anchors at 0.
+        baseline = self.baselines.season_baseline(
+            player_id, player.position, year, adp=self._get_adp(player_id, year),
+        )
+        historical_avg = baseline.points_per_game
         if historical_avg == 0.0:
             historical_avg = self._compute_historical_avg_from_logs(player_id)
+
         fpts_per_touch = self._compute_position_efficiency(
             player_id, player.position, prev_year
         )
@@ -440,23 +600,113 @@ class ProjectionCriteriaBuilder:
 
         criteria_kwargs = {
             'historical_average_points': historical_avg,
-            'recent_trend_score': 0.0,
+            'recent_trend_score': self._compute_year_over_year_trend(
+                player_id, year,
+            ),
             'fantasy_points_per_touch': fpts_per_touch,
             'player_skill_level': skill_level,
             'injury_risk_score': self._compute_injury_risk(player, player_id),
             'positional_touch_percentage': touch_pct,
             'team_offense_level': team_offense,
+            # Strength of the schedule the player is about to face, not the one
+            # they just played. Uses the imported schedule for *year* against
+            # last year's defensive ranks.
             'opponent_defense_level': self._compute_schedule_defense_level(
-                player_id, player.position, prev_year
+                player.nfl_team, player.position, year,
             ),
             'age_deviation_from_optimum': age_dev,
             'coaching_stability_score': 50.0,  # manual override only
+            'expected_games': self._compute_expected_games(player, player_id),
         }
 
         if overrides:
             criteria_kwargs.update(overrides)
 
         return YearlyProjectionCriteria(**criteria_kwargs)
+
+    def _get_adp(self, player_id: int, year: int) -> Optional[float]:
+        """Consensus ADP for *year*, if the draft board has been imported."""
+        row = (
+            self.db.query(DBPlayerSeasonStats)
+            .filter(
+                DBPlayerSeasonStats.player_id == player_id,
+                DBPlayerSeasonStats.year == year,
+                DBPlayerSeasonStats.adp.isnot(None),
+            )
+            .first()
+        )
+        return row.adp if row else None
+
+    def _compute_year_over_year_trend(self, player_id: int, year: int) -> float:
+        """Percent change in per-game scoring between the last two seasons.
+
+        The weekly criteria measure "recent form" within a season; the yearly
+        equivalent is whether a player is ascending or declining across
+        seasons. This used to be hardcoded to 0.0, which made trend_multiplier
+        a no-op for every season projection.
+
+        Returns:
+            Score from -100 to 100.
+        """
+        last = self._season_ppg(player_id, year - 1)
+        prior = self._season_ppg(player_id, year - 2)
+        if not last or not prior or prior < 1.0:
+            return 0.0
+        return max(-100.0, min(100.0, ((last - prior) / prior) * 100))
+
+    def _season_ppg(self, player_id: int, year: int) -> float:
+        """Per-game scoring for a season, 0.0 when the sample is too small."""
+        season = (
+            self.db.query(DBPlayerSeasonStats)
+            .filter_by(player_id=player_id, year=year)
+            .first()
+        )
+        if not season or not season.games_played:
+            return 0.0
+        if season.games_played < MIN_GAMES_FOR_PEER_POOL:
+            return 0.0
+        return _per_game(season)
+
+    def _compute_expected_games(
+        self, player: DBPlayer, player_id: int,
+    ) -> float:
+        """Games the player is expected to play, 0–17.
+
+        Availability is a first-class part of season value, not a rounding
+        error: a 20 ppg player who plays 12 games is worth less than a 17 ppg
+        player who plays all 17, and a per-game projection alone cannot say so.
+        """
+        full_season = 17.0
+
+        status = (player.injury_status or '').upper()
+        if status in ('IR', 'INJURY_RESERVE'):
+            # Season-ending in most cases; assume a partial return at best.
+            return 4.0
+        if status in ('OUT', 'SUSPENSION'):
+            full_season -= 1.0
+
+        seasons = (
+            self.db.query(DBPlayerSeasonStats)
+            .filter(
+                DBPlayerSeasonStats.player_id == player_id,
+                DBPlayerSeasonStats.games_played > 0,
+            )
+            .order_by(desc(DBPlayerSeasonStats.year))
+            .limit(3)
+            .all()
+        )
+        if not seasons:
+            # No history — assume a typical availability rate rather than
+            # perfect health, which would overvalue every unknown player.
+            return full_season * 0.88
+
+        avg_played = sum(s.games_played for s in seasons) / len(seasons)
+        availability = max(0.0, min(1.0, avg_played / 17.0))
+
+        # Floor the rate: three injury-hit seasons in a row is a real signal,
+        # but projecting 3 games for a healthy starter would be worse.
+        availability = max(availability, 0.5)
+        return round(min(full_season, full_season * availability), 2)
 
     def _compute_historical_avg_from_logs(self, player_id: int) -> float:
         """Compute per-game fantasy average directly from game logs.
@@ -490,24 +740,43 @@ class ProjectionCriteriaBuilder:
         return 0.0
 
     def _compute_trend_score(
-        self, player_id: int, year: int, num_weeks: int = 4
+        self,
+        player_id: int,
+        year: int,
+        num_weeks: int = 4,
+        before_week: Optional[int] = None,
     ) -> float:
-        """Compare recency-weighted recent weeks avg to season avg, scaled to -100..100."""
+        """Compare recency-weighted recent weeks avg to season avg, scaled to -100..100.
+
+        ``before_week`` restricts the window to games played *before* that week.
+        Without it a week-3 projection is told about the player's week-15 form,
+        which is information the model would never have at prediction time.
+        """
+        log_query = self.db.query(DBPlayerGameLog).filter_by(
+            player_id=player_id, year=year,
+        )
+        if before_week is not None:
+            log_query = log_query.filter(DBPlayerGameLog.week < before_week)
+
         recent_logs = (
-            self.db.query(DBPlayerGameLog)
-            .filter_by(player_id=player_id, year=year)
+            log_query
             .order_by(desc(DBPlayerGameLog.week))
             .limit(num_weeks)
             .all()
         )
         if not recent_logs:
             # Fall back to DBWeeklyPlayerStats (ESPN matchup data)
-            recent_weekly = (
-                self.db.query(DBWeeklyPlayerStats)
-                .filter(
-                    DBWeeklyPlayerStats.player_id == player_id,
-                    DBWeeklyPlayerStats.actual_points > 0,
+            weekly_query = self.db.query(DBWeeklyPlayerStats).filter(
+                DBWeeklyPlayerStats.player_id == player_id,
+                DBWeeklyPlayerStats.actual_points > 0,
+            )
+            if before_week is not None:
+                weekly_query = weekly_query.filter(
+                    DBWeeklyPlayerStats.week < before_week
                 )
+
+            recent_weekly = (
+                weekly_query
                 .order_by(desc(DBWeeklyPlayerStats.week))
                 .limit(num_weeks)
                 .all()
@@ -521,14 +790,7 @@ class ProjectionCriteriaBuilder:
                 w * s.actual_points for w, s in zip(weights, recent_weekly)
             ) / total_weight
 
-            all_weekly = (
-                self.db.query(DBWeeklyPlayerStats)
-                .filter(
-                    DBWeeklyPlayerStats.player_id == player_id,
-                    DBWeeklyPlayerStats.actual_points > 0,
-                )
-                .all()
-            )
+            all_weekly = weekly_query.all()
             season_avg = (
                 sum(s.actual_points for s in all_weekly) / len(all_weekly)
                 if all_weekly else recent_avg
@@ -548,12 +810,14 @@ class ProjectionCriteriaBuilder:
             w * g.fantasy_points for w, g in zip(weights, recent_logs)
         ) / total_weight
 
-        season = (
-            self.db.query(DBPlayerSeasonStats)
-            .filter_by(player_id=player_id, year=year)
-            .first()
+        # Compare against the season-to-date average from the same cutoff.
+        # DBPlayerSeasonStats.fantasy_points_avg covers the whole season, so
+        # using it here would leak future weeks into the "recent form" signal.
+        all_logs = log_query.all()
+        season_avg = (
+            sum(g.fantasy_points or 0.0 for g in all_logs) / len(all_logs)
+            if all_logs else recent_avg
         )
-        season_avg = season.fantasy_points_avg if season else recent_avg
 
         # Guard: need a meaningful baseline (>= 1 point) and at least 2
         # game logs to produce a stable trend — prevents wild ±100 swings
@@ -561,12 +825,7 @@ class ProjectionCriteriaBuilder:
         if season_avg < 1.0:
             return 0.0
 
-        all_logs_count = (
-            self.db.query(DBPlayerGameLog)
-            .filter_by(player_id=player_id, year=year)
-            .count()
-        )
-        if all_logs_count < 2:
+        if len(all_logs) < 2:
             return 0.0
 
         # Apply confidence multiplier to dampen small-sample swings
@@ -576,18 +835,36 @@ class ProjectionCriteriaBuilder:
         return max(-100, min(100, deviation))
 
     def _compute_skill_composite(
-        self, player_id: int, position: str, year: int
+        self,
+        player_id: int,
+        position: str,
+        year: int,
+        before_week: Optional[int] = None,
     ) -> float:
         """Multi-factor skill score (0-100) blending points, efficiency, consistency, volume.
 
         Falls back to ESPN weekly actual_points when no DBPlayerSeasonStats
         exist for this player (or the whole position group), so ESPN-only
         players still receive a meaningful skill ranking.
+
+        When *before_week* is given the score is computed from the previous
+        season instead of the current one. Percentiling a player against the
+        very season being projected is circular — the baseline already carries
+        that production, so counting it again as "skill" double-weights it and
+        leaks the outcome into the prediction.
         """
+        peer_year = year - 1 if before_week is not None else year
+
         all_seasons = (
             self.db.query(DBPlayerSeasonStats)
             .join(DBPlayer)
-            .filter(DBPlayer.position == position, DBPlayerSeasonStats.year == year)
+            .filter(
+                DBPlayer.position == position,
+                DBPlayerSeasonStats.year == peer_year,
+                # A fair ranking needs comparable samples; a one-game call-up
+                # with a fluke touchdown should not define the 90th percentile.
+                DBPlayerSeasonStats.games_played >= MIN_GAMES_FOR_PEER_POOL,
+            )
             .all()
         )
 
@@ -615,9 +892,12 @@ class ProjectionCriteriaBuilder:
             rank = sum(1 for v in sorted_vals if v < player_val)
             return (rank / total) * 100 if total else 50.0
 
-        # 1. Fantasy points percentile (40%)
-        fpts_list = [s.fantasy_points_total for s in all_seasons]
-        fpts_pct = _percentile(fpts_list, player_season.fantasy_points_total)
+        # 1. Fantasy points percentile (40%) — per game, not total. The peer
+        # pool spans 4- to 17-game seasons, so a season total would rank a
+        # durable mediocre player above a genuinely better injured one. Volume
+        # is scored separately below.
+        fpts_list = [_per_game(s) for s in all_seasons]
+        fpts_pct = _percentile(fpts_list, _per_game(player_season))
 
         # 2. Efficiency percentile (20%) — fantasy points per touch
         eff_list = [s.fantasy_points_per_touch for s in all_seasons]
@@ -626,7 +906,7 @@ class ProjectionCriteriaBuilder:
         # 3. Consistency score (20%) — inverse coefficient of variation from game logs
         game_logs = (
             self.db.query(DBPlayerGameLog)
-            .filter_by(player_id=player_id, year=year)
+            .filter_by(player_id=player_id, year=peer_year)
             .all()
         )
         if len(game_logs) >= 3:
@@ -756,6 +1036,9 @@ class ProjectionCriteriaBuilder:
              across seasons but ESPN data is typically a single season).
         """
         data_year = (year - 1) if (week is not None and week <= 6) else year
+        nfl_team = normalize_team(nfl_team)
+        if not nfl_team:
+            return 50.0
 
         def _pct_rank(values: list, team_val: float) -> float:
             n = len(values)
@@ -775,9 +1058,22 @@ class ProjectionCriteriaBuilder:
             .all()
         )
         if team_stat and all_season and team_stat.points_scored > 0:
-            pts_pct = _pct_rank([t.points_scored for t in all_season], team_stat.points_scored)
-            yds_pct = _pct_rank([t.total_yards for t in all_season], team_stat.total_yards)
-            return max(0.0, min(100.0, pts_pct * 0.5 + yds_pct * 0.5))
+            pts_pct = _pct_rank(
+                [t.points_scored for t in all_season], team_stat.points_scored,
+            )
+            # Yards come from a different import than points and are sometimes
+            # only partially populated (nfl_data_py has no 2025 weekly file, so
+            # 2025 yards come from incomplete game logs). Blending a
+            # mostly-zero column would rank good offenses as bad ones, so only
+            # use yards when the league-wide column looks complete.
+            yard_values = [t.total_yards for t in all_season]
+            yards_complete = (
+                sum(1 for v in yard_values if v and v > 0) >= 0.9 * len(yard_values)
+            )
+            if yards_complete and team_stat.total_yards:
+                yds_pct = _pct_rank(yard_values, team_stat.total_yards)
+                return max(0.0, min(100.0, pts_pct * 0.5 + yds_pct * 0.5))
+            return max(0.0, min(100.0, pts_pct))
 
         # ── Source 2: NFL sync per-week rows → compute per-team averages ─────
         all_weekly = (
@@ -837,20 +1133,34 @@ class ProjectionCriteriaBuilder:
         return max(0.0, min(100.0, _pct_rank(all_avgs, team_avg)))
 
     def _compute_momentum(
-        self, nfl_team: str, year: int, num_weeks: int = 4
+        self,
+        nfl_team: str,
+        year: int,
+        num_weeks: int = 4,
+        before_week: Optional[int] = None,
     ) -> float:
         """Compute offensive momentum blending points (60%) and yards (40%) trends.
+
+        ``before_week`` limits the window to games already played at prediction
+        time — otherwise "recent form" for week 3 includes December.
 
         Returns:
             Score from -100 to 100.
         """
+        team = normalize_team(nfl_team)
+        if not team:
+            return 0.0
+
+        week_query = self.db.query(DBNFLTeamStats).filter(
+            DBNFLTeamStats.nfl_team == team,
+            DBNFLTeamStats.year == year,
+            DBNFLTeamStats.week.isnot(None),
+        )
+        if before_week is not None:
+            week_query = week_query.filter(DBNFLTeamStats.week < before_week)
+
         recent = (
-            self.db.query(DBNFLTeamStats)
-            .filter(
-                DBNFLTeamStats.nfl_team == nfl_team,
-                DBNFLTeamStats.year == year,
-                DBNFLTeamStats.week.isnot(None),
-            )
+            week_query
             .order_by(desc(DBNFLTeamStats.week))
             .limit(num_weeks)
             .all()
@@ -858,15 +1168,7 @@ class ProjectionCriteriaBuilder:
         if len(recent) < 2:
             return 0.0
 
-        all_weeks = (
-            self.db.query(DBNFLTeamStats)
-            .filter(
-                DBNFLTeamStats.nfl_team == nfl_team,
-                DBNFLTeamStats.year == year,
-                DBNFLTeamStats.week.isnot(None),
-            )
-            .all()
-        )
+        all_weeks = week_query.all()
         if not all_weeks:
             return 0.0
 
@@ -1162,34 +1464,48 @@ class ProjectionCriteriaBuilder:
         return weighted_sum / total_weight
 
     def _compute_schedule_defense_level(
-        self, player_id: int, position: str, year: int
+        self, nfl_team: Optional[str], position: str, year: int
     ) -> float:
-        """Average opponent defense level from game log opponents (0-100).
+        """Strength of schedule for *year*, as an opponent-weakness level (0-100).
 
-        Returns 50.0 (neutral) if insufficient data.
+        Reads the *upcoming* schedule from ``DBNFLGame`` and grades each
+        opponent by last season's defensive rank against this position. Higher
+        means an easier slate.
+
+        This used to average the opponents a player had *already* faced, which
+        described a season that was over rather than the one being projected.
+
+        Returns 50.0 (neutral) when the schedule or the ranks are missing.
         """
-        game_logs = (
-            self.db.query(DBPlayerGameLog)
-            .filter_by(player_id=player_id, year=year)
-            .filter(DBPlayerGameLog.opponent.isnot(None))
+        team = normalize_team(nfl_team)
+        if not team:
+            return 50.0
+
+        games = (
+            self.db.query(DBNFLGame)
+            .filter(
+                DBNFLGame.year == year,
+                or_(
+                    DBNFLGame.home_team == team,
+                    DBNFLGame.away_team == team,
+                ),
+            )
             .all()
         )
-        if not game_logs:
+        if not games:
             return 50.0
 
         pos_lower = position.lower()
         levels = []
-        for log in game_logs:
-            team_def = (
-                self.db.query(DBNFLTeamStats)
-                .filter_by(nfl_team=log.opponent, year=year, week=None)
-                .first()
+        for game in games:
+            opponent = (
+                game.away_team if game.home_team == team else game.home_team
             )
+            team_def = self._defense_row_for_rank(opponent, year)
             if team_def:
                 rank_val = getattr(team_def, f'def_rank_vs_{pos_lower}', None)
                 if rank_val:
-                    level = ((rank_val - 1) / 31) * 100
-                    levels.append(level)
+                    levels.append(((rank_val - 1) / 31) * 100)
 
         if not levels:
             return 50.0
@@ -1229,6 +1545,52 @@ class ProjectionCriteriaBuilder:
         self.db.flush()
         self._ensured_team_years.add(year)
 
+    def _get_or_create_team_stat(
+        self, nfl_team: str, year: int, week: Optional[int] = None,
+    ) -> Optional[DBNFLTeamStats]:
+        """Fetch (or create) a team-stat row for a canonical team abbreviation.
+
+        Returns ``None`` when the team can't be canonicalized — writing the raw
+        value would split one franchise across two spellings (``WSH``/``WAS``)
+        and silently break the abbreviation joins used throughout this module.
+        """
+        canonical = normalize_team(nfl_team)
+        if not canonical:
+            return None
+
+        stat = (
+            self.db.query(DBNFLTeamStats)
+            .filter_by(nfl_team=canonical, year=year, week=week)
+            .first()
+        )
+        if not stat:
+            stat = DBNFLTeamStats(nfl_team=canonical, year=year, week=week)
+            self.db.add(stat)
+            self.db.flush()
+        return stat
+
+    def _real_scores_by_team_week(self, year: int) -> Dict[tuple, tuple]:
+        """Return ``{(team, week): (scored, allowed)}`` from played games.
+
+        Real final scores replace the old ``touchdowns × 7`` approximation,
+        which ignored field goals entirely and produced season totals like
+        BUF = 0 points. Empty when the schedule has not been imported.
+        """
+        games = (
+            self.db.query(DBNFLGame)
+            .filter(
+                DBNFLGame.year == year,
+                DBNFLGame.home_score.isnot(None),
+                DBNFLGame.away_score.isnot(None),
+            )
+            .all()
+        )
+        out: Dict[tuple, tuple] = {}
+        for g in games:
+            out[(g.home_team, g.week)] = (g.home_score, g.away_score)
+            out[(g.away_team, g.week)] = (g.away_score, g.home_score)
+        return out
+
     def _populate_team_offense_stats(self, year: int) -> None:
         """Aggregate game logs into team offense stats (weekly + season)."""
         logs = (
@@ -1248,38 +1610,28 @@ class ProjectionCriteriaBuilder:
             .all()
         )
 
+        real_scores = self._real_scores_by_team_week(year)
+
         # Per-team season accumulators
         team_season: Dict[str, Dict[str, int]] = defaultdict(
             lambda: {'pass_yards': 0, 'rush_yards': 0, 'points_scored': 0}
         )
 
         for row in logs:
-            nfl_team = row.nfl_team
+            nfl_team = normalize_team(row.nfl_team)
             if not nfl_team:
                 continue
 
             pass_yds = int(row.pass_yd or 0)
             rush_yds = int(row.rush_yd or 0)
             total_yds = pass_yds + rush_yds
-            # Approximate NFL points: unique TDs × 7 (including XP).
-            # pass_td and rec_td overlap (same play), so take max.
-            pass_tds = int(row.pass_td or 0)
-            rec_tds = int(row.rec_td or 0)
-            rush_tds = int(row.rush_td or 0)
-            unique_pass_tds = max(pass_tds, rec_tds)
-            points = (unique_pass_tds + rush_tds) * 7
-
-            # Upsert weekly row
-            weekly_stat = (
-                self.db.query(DBNFLTeamStats)
-                .filter_by(nfl_team=nfl_team, year=year, week=row.week)
-                .first()
+            points = self._points_for_team_week(
+                nfl_team, row.week, real_scores, row,
             )
-            if not weekly_stat:
-                weekly_stat = DBNFLTeamStats(
-                    nfl_team=nfl_team, year=year, week=row.week
-                )
-                self.db.add(weekly_stat)
+
+            weekly_stat = self._get_or_create_team_stat(nfl_team, year, row.week)
+            if weekly_stat is None:
+                continue
 
             weekly_stat.pass_yards = pass_yds
             weekly_stat.rush_yards = rush_yds
@@ -1295,16 +1647,9 @@ class ProjectionCriteriaBuilder:
 
         # Create season aggregate rows (week=None)
         for nfl_team, totals in team_season.items():
-            season_stat = (
-                self.db.query(DBNFLTeamStats)
-                .filter_by(nfl_team=nfl_team, year=year, week=None)
-                .first()
-            )
-            if not season_stat:
-                season_stat = DBNFLTeamStats(
-                    nfl_team=nfl_team, year=year, week=None
-                )
-                self.db.add(season_stat)
+            season_stat = self._get_or_create_team_stat(nfl_team, year)
+            if season_stat is None:
+                continue
 
             season_stat.pass_yards = totals['pass_yards']
             season_stat.rush_yards = totals['rush_yards']
@@ -1312,6 +1657,25 @@ class ProjectionCriteriaBuilder:
             season_stat.points_scored = totals['points_scored']
             season_stat.source = 'computed_from_game_logs'
             season_stat.updated_at = datetime.utcnow()
+
+    @staticmethod
+    def _points_for_team_week(
+        nfl_team: str, week: int, real_scores: Dict[tuple, tuple], row,
+    ) -> int:
+        """Points scored, preferring the real final score over an estimate.
+
+        The fallback estimate is unique touchdowns × 7. It ignores field goals
+        and misses two-point conversions, so it systematically understates
+        scoring — import the schedule and this path stops being used.
+        ``pass_td`` and ``rec_td`` describe the same play, so they are
+        de-duplicated with ``max`` rather than summed.
+        """
+        real = real_scores.get((nfl_team, week))
+        if real is not None:
+            return real[0]
+
+        unique_pass_tds = max(int(row.pass_td or 0), int(row.rec_td or 0))
+        return (unique_pass_tds + int(row.rush_td or 0)) * 7
 
     def _populate_defense_allowed(self, year: int) -> None:
         """Compute what each defense allowed from game logs (weekly + season)."""
@@ -1333,35 +1697,31 @@ class ProjectionCriteriaBuilder:
             .all()
         )
 
+        real_scores = self._real_scores_by_team_week(year)
+
         # Accumulate season defense totals
         def_season: Dict[str, Dict[str, int]] = defaultdict(
             lambda: {'pass_yards_allowed': 0, 'rush_yards_allowed': 0, 'points_allowed': 0}
         )
 
         for row in logs:
-            opp = row.opponent
+            opp = normalize_team(row.opponent)
             if not opp:
                 continue
 
             pass_yds = int(row.pass_yd or 0)
             rush_yds = int(row.rush_yd or 0)
-            pass_tds = int(row.pass_td or 0)
-            rec_tds = int(row.rec_td or 0)
-            rush_tds = int(row.rush_td or 0)
-            unique_pass_tds = max(pass_tds, rec_tds)
-            points_allowed = (unique_pass_tds + rush_tds) * 7
+            real = real_scores.get((opp, row.week))
+            if real is not None:
+                # index 1 is what this team conceded
+                points_allowed = real[1]
+            else:
+                unique_pass_tds = max(int(row.pass_td or 0), int(row.rec_td or 0))
+                points_allowed = (unique_pass_tds + int(row.rush_td or 0)) * 7
 
-            # Update or create weekly defense row
-            weekly_stat = (
-                self.db.query(DBNFLTeamStats)
-                .filter_by(nfl_team=opp, year=year, week=row.week)
-                .first()
-            )
-            if not weekly_stat:
-                weekly_stat = DBNFLTeamStats(
-                    nfl_team=opp, year=year, week=row.week
-                )
-                self.db.add(weekly_stat)
+            weekly_stat = self._get_or_create_team_stat(opp, year, row.week)
+            if weekly_stat is None:
+                continue
 
             weekly_stat.pass_yards_allowed = pass_yds
             weekly_stat.rush_yards_allowed = rush_yds
@@ -1375,16 +1735,9 @@ class ProjectionCriteriaBuilder:
 
         # Update season aggregate rows
         for opp, totals in def_season.items():
-            season_stat = (
-                self.db.query(DBNFLTeamStats)
-                .filter_by(nfl_team=opp, year=year, week=None)
-                .first()
-            )
-            if not season_stat:
-                season_stat = DBNFLTeamStats(
-                    nfl_team=opp, year=year, week=None
-                )
-                self.db.add(season_stat)
+            season_stat = self._get_or_create_team_stat(opp, year)
+            if season_stat is None:
+                continue
 
             season_stat.pass_yards_allowed = totals['pass_yards_allowed']
             season_stat.rush_yards_allowed = totals['rush_yards_allowed']
@@ -1421,16 +1774,9 @@ class ProjectionCriteriaBuilder:
             sorted_opps = sorted(fpts_by_opp, key=lambda x: x.total_fpts or 0)
 
             for rank, row in enumerate(sorted_opps, 1):
-                season_stat = (
-                    self.db.query(DBNFLTeamStats)
-                    .filter_by(nfl_team=row.opponent, year=year, week=None)
-                    .first()
-                )
-                if not season_stat:
-                    season_stat = DBNFLTeamStats(
-                        nfl_team=row.opponent, year=year, week=None
-                    )
-                    self.db.add(season_stat)
+                season_stat = self._get_or_create_team_stat(row.opponent, year)
+                if season_stat is None:
+                    continue
 
                 setattr(season_stat, rank_field, rank)
                 season_stat.source = season_stat.source or 'computed_from_game_logs'
