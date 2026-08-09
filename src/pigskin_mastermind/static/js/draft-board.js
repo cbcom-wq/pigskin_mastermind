@@ -1077,32 +1077,17 @@ const DraftBoard = (() => {
     const grade = gradeData ? gradeData.grade : 'B';
     const gradeClass = grade.startsWith('A') ? 'grade-a' : grade.startsWith('B') ? 'grade-b' : grade.startsWith('C') ? 'grade-c' : 'grade-d';
 
-    let pickBreakdownHtml = '';
-    if (gradeData && gradeData.pick_analysis) {
-      pickBreakdownHtml = `
-        <div class="text-left mt-4 max-h-48 overflow-y-auto styled-scrollbar">
-          <p class="text-xs text-slate-500 uppercase mb-2 font-bold">Pick-by-Pick Analysis</p>
-          <div class="space-y-1">
-            ${gradeData.pick_analysis.map(pa => `
-              <div class="flex items-center justify-between text-xs px-2 py-1.5 rounded bg-slate-800/60">
-                <span class="text-slate-500">R${pa.round}P${pa.pick_number}</span>
-                <span class="font-semibold text-white flex-1 ml-2">${pa.player}</span>
-                <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold ${posClass(pa.position)}">${pa.position}</span>
-                <span class="ml-2 ${pa.verdict === 'steal' ? 'text-green-400' : pa.verdict === 'value' ? 'text-green-300' : pa.verdict === 'fair' ? 'text-slate-400' : 'text-yellow-400'}">${pa.label}</span>
-              </div>`).join('')}
-          </div>
-        </div>`;
-    }
-
-    let strengthsHtml = '';
-    if (gradeData && (gradeData.strengths.length || gradeData.weaknesses.length)) {
-      strengthsHtml = `
-        <div class="flex gap-4 text-left mt-3">
-          ${gradeData.strengths.length ? `<div class="flex-1"><p class="text-[10px] text-green-500 uppercase font-bold mb-1">Strengths</p>
-            ${gradeData.strengths.map(s => `<p class="text-xs text-green-300">✅ ${s}</p>`).join('')}</div>` : ''}
-          ${gradeData.weaknesses.length ? `<div class="flex-1"><p class="text-[10px] text-red-500 uppercase font-bold mb-1">Weaknesses</p>
-            ${gradeData.weaknesses.map(w => `<p class="text-xs text-red-300">⚠️ ${w}</p>`).join('')}</div>` : ''}
-        </div>`;
+    // Pick-by-pick detail, strengths and weaknesses now live on the recap
+    // page, which has the room to show them alongside real stats.
+    let headlineHtml = '';
+    if (gradeData) {
+      const steals = (gradeData.pick_analysis || []).filter(pa => pa.verdict === 'steal').length;
+      if (steals) {
+        headlineHtml = `
+          <p class="text-sm text-green-400 font-semibold">
+            ${steals} steal${steals === 1 ? '' : 's'} in this draft
+          </p>`;
+      }
     }
 
     let comparisonHtml = '';
@@ -1135,12 +1120,17 @@ const DraftBoard = (() => {
           </div>
         </div>
         ${comparisonHtml}
-        ${strengthsHtml}
-        ${pickBreakdownHtml}
-        <div class="flex gap-3 justify-center pt-3">
-          <a href="/draft" class="px-5 py-2.5 bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold hover:bg-slate-600 transition-colors">New Draft</a>
-          <button onclick="document.getElementById('complete-overlay').classList.add('hidden')"
-                  class="px-5 py-2.5 btn-enter-draft text-white rounded-xl text-sm font-semibold">View Board</button>
+        ${headlineHtml}
+        <div class="flex flex-col gap-3 pt-4">
+          <a href="/draft/recap/${state.draft_id}"
+             class="px-5 py-3 btn-enter-draft text-white rounded-xl text-sm font-bold">
+            See your team
+          </a>
+          <div class="flex gap-3 justify-center">
+            <a href="/draft" class="px-5 py-2.5 bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold hover:bg-slate-600 transition-colors">New draft</a>
+            <button onclick="document.getElementById('complete-overlay').classList.add('hidden')"
+                    class="px-5 py-2.5 bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold hover:bg-slate-600 transition-colors">View board</button>
+          </div>
         </div>
       </div>`;
   }

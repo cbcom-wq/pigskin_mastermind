@@ -3,7 +3,7 @@
 import random
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional
@@ -17,6 +17,7 @@ from pigskin_mastermind.models.database import (
     DBWeeklyTeamStats,
 )
 from pigskin_mastermind.services.adp_service import ADPService
+from pigskin_mastermind.services.draft_recap import DraftRecapService
 from pigskin_mastermind.services.player_identity import normalize_name
 from pigskin_mastermind.services.mock_draft import (
     AIProfile,
@@ -663,6 +664,87 @@ async def run_simulation(req: SimulationRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return results
+
+
+@router.get("/recap/{draft_id}")
+async def draft_recap_page(
+    request: Request, draft_id: str, db: Session = Depends(get_db)
+):
+    """Render the deep-dive recap of the team the user just drafted.
+
+    Draft state lives in memory only, so a link outlives its draft whenever the
+    server restarts.  That case renders an explanatory page rather than an
+    error.
+    """
+    from pigskin_mastermind.api.main import templates
+
+    state = draft_engine.get_draft(draft_id)
+    if not state:
+        return templates.TemplateResponse(
+            "draft/recap_expired.html",
+            {"request": request, "draft_id": draft_id},
+            status_code=404,
+        )
+
+    if state["status"] != "complete":
+        return RedirectResponse(f"/draft/board/{draft_id}")
+
+    recap = DraftRecapService(db).build(
+        state, grade=draft_engine.grade_draft(draft_id)
+    )
+    return templates.TemplateResponse(
+        "draft/recap.html",
+        {"request": request, "recap": recap, "state": state},
+    )
+
+
+@router.post("/recap/{draft_id}/simulate/{db_id}")
+async def simulate_recap_player(
+    draft_id: str, db_id: int, db: Session = Depends(get_db)
+):
+    """Run a Monte Carlo simulation for one player on the user's roster.
+
+    Costs a few seconds — it builds full weekly criteria and lazily fills in
+    team stat rows — which is why it is one player behind a button rather than
+    part of the page load.
+
+    A simulation that cannot run reports ``ok: false`` with a 200 so the card
+    can fall back to its game-log numbers instead of showing an error.
+    """
+    state = draft_engine.get_draft(draft_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    user_slot = str(state.get("user_pick_position", ""))
+    roster = state["rosters"].get(user_slot, [])
+    if not any(p.get("db_id") == db_id for p in roster):
+        raise HTTPException(status_code=404, detail="Player is not on your roster")
+
+    from pigskin_mastermind.services.monte_carlo_input_builder import (
+        MonteCarloInputBuilder,
+    )
+    from pigskin_mastermind.services.monte_carlo_service import (
+        FantasySimulationEngine,
+    )
+
+    try:
+        player_input = MonteCarloInputBuilder(db).build_for_player(
+            db_id, year=current_fantasy_season(), week=1
+        )
+        result = FantasySimulationEngine(seed=42).simulate(player_input)
+    except Exception as exc:  # noqa: BLE001 - any failure falls back to game logs
+        return {"ok": False, "error": str(exc)}
+
+    return {
+        "ok": True,
+        "expected_points": round(result.expected_points, 1),
+        "median_points": round(result.median_points, 1),
+        "floor": round(result.floor, 1),
+        "ceiling": round(result.ceiling, 1),
+        "boom_probability": round(result.boom_probability, 3),
+        "bust_probability": round(result.bust_probability, 3),
+        "std_dev": round(result.std_dev, 1),
+    }
 
 
 @router.get("/results")

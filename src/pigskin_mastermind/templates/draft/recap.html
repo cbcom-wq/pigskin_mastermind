@@ -1,0 +1,386 @@
+{% extends "base.html" %}
+{% block title %}Your Team — Draft Recap{% endblock %}
+{% block page_title %}Draft Recap{% endblock %}
+
+{% block extra_head %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/draft-recap.css">
+{% endblock %}
+
+{% macro headshot(player, size) %}
+  {% set px = size or 64 %}
+  <span class="rc-shot" style="--shot: {{ px }}px;">
+    {% if player.headshot_url %}
+      <img src="{{ player.headshot_url }}" alt="" loading="lazy"
+           onerror="this.remove()">
+    {% endif %}
+    <span class="rc-shot-fallback">{{ player.initials }}</span>
+  </span>
+{% endmacro %}
+
+{% macro pos_badge(position) %}
+  <span class="rc-badge badge-{{ position|lower }}">{{ position }}</span>
+{% endmacro %}
+
+{% block content %}
+<div class="rc">
+
+  <!-- ══ Hero ══════════════════════════════════════════════════════════ -->
+  <section class="rc-hero" aria-labelledby="rc-headline">
+    <div class="rc-hero-top">
+      {% if recap.grade %}
+      <div class="rc-grade">
+        <span class="rc-grade-letter">{{ recap.grade.grade }}</span>
+        <span class="rc-grade-label">Draft grade</span>
+      </div>
+      {% endif %}
+
+      <div class="rc-hero-copy">
+        <p class="rc-eyebrow">
+          {{ recap.num_rounds }} rounds &middot; {{ recap.num_teams }} teams &middot; pick {{ recap.user_slot }}
+        </p>
+        <h1 class="rc-headline" id="rc-headline">{{ recap.headline }}</h1>
+
+        <dl class="rc-hero-stats">
+          <div>
+            <dt>Projected points</dt>
+            <dd data-count="{{ recap.totals.total_projected }}">{{ recap.totals.total_projected }}</dd>
+          </div>
+          <div>
+            <dt>Roster rank</dt>
+            <dd>{{ recap.totals.league_rank }}<span class="rc-of">of {{ recap.totals.of }}</span></dd>
+          </div>
+          <div>
+            <dt>Best value</dt>
+            {% if recap.value.best_value %}
+              <dd class="rc-gain">{{ recap.value.best_value.player.name }}<span class="rc-of">+{{ recap.value.best_value.delta }} vs ADP</span></dd>
+            {% else %}
+              <dd class="rc-muted">Not enough ADP data</dd>
+            {% endif %}
+          </div>
+        </dl>
+      </div>
+    </div>
+
+    <!-- The starting lineup, on the field. -->
+    <div class="rc-field field-pattern">
+      <p class="rc-field-label">Week 1 starters</p>
+      <ol class="rc-lineup">
+        {% for slot in recap.starters %}
+        <li class="rc-slot{% if not slot.player %} is-empty{% endif %}"
+            style="--stagger: {{ loop.index0 * 60 }}ms">
+          {% if slot.player %}
+            {{ headshot(slot.player, 60) }}
+            <span class="rc-slot-name">{{ slot.player.name }}</span>
+            <span class="rc-slot-tag">
+              {{ slot.slot }}
+              {% if slot.player.bye_week %}<span class="rc-bye">BYE {{ slot.player.bye_week }}</span>{% endif %}
+            </span>
+          {% else %}
+            <span class="rc-shot rc-shot-empty" style="--shot: 60px;">—</span>
+            <span class="rc-slot-name rc-muted">Unfilled</span>
+            <span class="rc-slot-tag">{{ slot.slot }}</span>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ol>
+      <p class="rc-field-total">
+        <strong>{{ recap.totals.starters_projected }}</strong> projected from starters
+      </p>
+    </div>
+  </section>
+
+  <!-- ══ Position strength ═════════════════════════════════════════════ -->
+  <section class="rc-panel">
+    <h2 class="rc-h2">Where you win and lose</h2>
+    <p class="rc-sub">Each group is your required starters at that position, scored against the same group on every other team.</p>
+
+    <ul class="rc-groups">
+      {% for position, rank in recap.position_ranks.items() %}
+      <li class="rc-group">
+        <div class="rc-group-head">
+          {{ pos_badge(position) }}
+          {% if rank.ranked and not rank.your_points_missing %}
+            <span class="rc-group-rank{% if rank.rank == 1 %} is-best{% elif rank.rank == rank.of %} is-worst{% endif %}">
+              {{ rank.rank }}<span class="rc-of">of {{ rank.of }}</span>
+            </span>
+          {% else %}
+            <span class="rc-group-rank rc-muted">—<span class="rc-of">unranked</span></span>
+          {% endif %}
+        </div>
+
+        {% if rank.your_points_missing %}
+          <p class="rc-group-note rc-muted">No projection on file for your {{ position }}.</p>
+        {% elif rank.ranked %}
+          <div class="rc-meter" role="img"
+               aria-label="{{ rank.your_points }} points against a field average of {{ rank.field_average }}">
+            {% set peak = [rank.your_points, rank.field_average, 1] | max %}
+            <div class="rc-meter-bar" style="width: {{ (rank.your_points / peak * 100) | round(1) }}%"></div>
+            <div class="rc-meter-avg" style="left: {{ (rank.field_average / peak * 100) | round(1) }}%"
+                 title="Field average {{ rank.field_average }}"></div>
+          </div>
+          <p class="rc-group-note">
+            <strong>{{ rank.your_points }}</strong> pts
+            <span class="{% if rank.margin >= 0 %}rc-gain{% else %}rc-loss{% endif %}">
+              {{ '+' if rank.margin >= 0 }}{{ rank.margin }} vs field
+            </span>
+          </p>
+        {% else %}
+          <p class="rc-group-note rc-muted">No projections for any team at this position.</p>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <!-- ══ Value story ═══════════════════════════════════════════════════ -->
+  <section class="rc-panel">
+    <h2 class="rc-h2">How the board fell</h2>
+    <p class="rc-sub">
+      Picks made after a player's average draft position are value; before it, a reach.
+      {% if recap.value.judged_count < recap.value.picks | length %}
+        {{ recap.value.picks | length - recap.value.judged_count }} pick(s) had no consensus ADP and are not judged.
+      {% endif %}
+    </p>
+
+    {# Scale the bars to the 80th percentile, not the maximum: one wild reach
+       would otherwise squash every other pick into an invisible sliver.  Bars
+       past the scale pin to the end of the track; the number stays exact. #}
+    {% set deltas = recap.value.picks | map(attribute='delta') | reject('none') | map('abs') | sort | list %}
+    {% set scale = [deltas[((deltas | length - 1) * 0.8) | round | int ] if deltas else 0, 8] | max %}
+
+    <ol class="rc-timeline">
+      {% for pick in recap.value.picks %}
+      <li class="rc-tl-row">
+        <span class="rc-tl-round">R{{ pick.round }}</span>
+        {{ pos_badge(pick.player.position) }}
+        <span class="rc-tl-name">{{ pick.player.name }}</span>
+
+        <div class="rc-tl-track">
+          <span class="rc-tl-zero" aria-hidden="true"></span>
+          {% if pick.delta is not none %}
+            {% set width = [(pick.delta | abs) / scale * 50, 50] | min %}
+            <span class="rc-tl-bar {% if pick.delta >= 0 %}is-gain{% else %}is-loss{% endif %}"
+                  style="width: {{ width | round(1) }}%;
+                         {% if pick.delta >= 0 %}left: 50%{% else %}right: 50%{% endif %}"></span>
+          {% endif %}
+        </div>
+
+        {% if pick.delta is not none %}
+          <span class="rc-tl-delta {% if pick.delta >= 0 %}rc-gain{% else %}rc-loss{% endif %}">
+            {{ '+' if pick.delta >= 0 }}{{ pick.delta }}
+          </span>
+          <span class="rc-tl-verdict">{{ pick.label }}</span>
+        {% else %}
+          <span class="rc-tl-delta rc-muted">—</span>
+          <span class="rc-tl-verdict rc-muted">Unranked</span>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+
+    {% if recap.regrets %}
+    <div class="rc-regrets">
+      <h3 class="rc-h3">Players you skipped</h3>
+      <p class="rc-sub">
+        Ranked well ahead of the player you took, and gone before your next turn.
+      </p>
+      <ul>
+        {% for regret in recap.regrets %}
+        <li>
+          <span class="rc-tl-round">R{{ regret.round }}</span>
+          <strong>{{ regret.passed.name }}</strong>
+          ({{ regret.passed.position }}, ADP {{ regret.passed.adp_rank | round | int }})
+          was on the board when you took
+          <strong>{{ regret.took.name }}</strong>
+          (ADP {{ regret.took.adp_rank | round | int }}) &mdash;
+          {{ regret.adp_gap | round | int }} places later.
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </section>
+
+  <!-- ══ Risk & outlook ════════════════════════════════════════════════ -->
+  <section class="rc-panel rc-split">
+    <div>
+      <h2 class="rc-h2">Bye weeks</h2>
+      <p class="rc-sub">Starters idle each week, and any slot your bench cannot cover.</p>
+      <ul class="rc-byes">
+        {% for week in recap.byes %}
+        {% set summary %}Week {{ week.week }}: {{ week.starters_out }} starter{{ '' if week.starters_out == 1 else 's' }} out{% if week.unfillable %}, cannot fill {{ week.unfillable | join(', ') }}{% endif %}{% endset %}
+        <li class="rc-bye-cell{% if week.unfillable %} is-broken{% elif week.starters_out %} is-thin{% endif %}"
+            title="{{ summary }}" aria-label="{{ summary }}">
+          <span class="rc-bye-week" aria-hidden="true">{{ week.week }}</span>
+          <span class="rc-bye-count" aria-hidden="true">{{ week.starters_out or '·' }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% set broken = recap.byes.weeks | selectattr('unfillable') | list %}
+      {% if broken %}
+        <p class="rc-warn">
+          {% for week in broken %}Week {{ week.week }} leaves {{ week.unfillable | join(', ') }} uncovered.{% if not loop.last %} {% endif %}{% endfor %}
+        </p>
+      {% else %}
+        <p class="rc-ok">Every bye week is covered by your bench.</p>
+      {% endif %}
+
+      {% if recap.byes.unfilled_slots %}
+        {% set gaps = recap.byes.unfilled_slots %}
+        <p class="rc-warn">
+          You never drafted {{ 'a ' if gaps | length == 1 }}{{ gaps | join(', ') }}.
+          {{ 'That slot sits' if gaps | length == 1 else 'Those slots sit' }}
+          empty all season, not just on a bye.
+        </p>
+      {% endif %}
+    </div>
+
+    <div>
+      <h2 class="rc-h2">Weekly range</h2>
+      <p class="rc-sub">
+        From your starters' actual {{ recap.prior_season }} weekly scores
+        {% if recap.outlook.covered < recap.outlook.total %}
+          — based on {{ recap.outlook.covered }} of {{ recap.outlook.total }} starters with a track record.
+        {% else %}
+          — all {{ recap.outlook.total }} starters have a track record.
+        {% endif %}
+      </p>
+
+      <div class="rc-range">
+        <div class="rc-range-bar">
+          <span class="rc-range-fill"></span>
+          <span class="rc-range-mid" aria-hidden="true"></span>
+        </div>
+        <div class="rc-range-labels">
+          <span><em>{{ recap.outlook.floor }}</em>Quiet week</span>
+          <span><em>{{ recap.outlook.median }}</em>Typical</span>
+          <span><em>{{ recap.outlook.ceiling }}</em>Big week</span>
+        </div>
+      </div>
+      <p class="rc-note">
+        Each number sums the matching percentile across your starters, so the ends
+        describe how good or bad a week can look, not how likely it is.
+      </p>
+
+      {% if recap.consistency %}
+      <h3 class="rc-h3">Steadiest first</h3>
+      <p class="rc-sub">How far a typical week swung from their average in {{ recap.prior_season }}.</p>
+      {% set widest = recap.consistency | map(attribute='distribution.std_dev') | max %}
+      <ol class="rc-steady">
+        {% for player in recap.consistency %}
+        <li>
+          <span class="rc-steady-name">{{ player.name }}</span>
+          <span class="rc-steady-bar">
+            <span style="width: {{ (player.distribution.std_dev / (widest or 1) * 100) | round(1) }}%"></span>
+          </span>
+          <span class="rc-steady-num">±{{ player.distribution.std_dev | round(1) }}</span>
+        </li>
+        {% endfor %}
+      </ol>
+      {% endif %}
+    </div>
+  </section>
+
+  <!-- ══ Player cards ══════════════════════════════════════════════════ -->
+  <section class="rc-panel">
+    <h2 class="rc-h2">Your roster, player by player</h2>
+    <p class="rc-sub">{{ recap.prior_season }} production and weekly spread. Open a card's name for the full profile.</p>
+
+    <div class="rc-cards">
+      {% for player in recap.players %}
+      <article class="rc-card">
+        {% if player.logo_url %}
+          <img class="rc-card-logo" src="{{ player.logo_url }}" alt="" loading="lazy" onerror="this.remove()">
+        {% endif %}
+
+        <header class="rc-card-head">
+          {{ headshot(player, 56) }}
+          <div class="rc-card-id">
+            {% if player.db_id %}
+              <a class="rc-card-name" href="/players/{{ player.db_id }}">{{ player.name }}</a>
+            {% else %}
+              <span class="rc-card-name">{{ player.name }}</span>
+            {% endif %}
+            <span class="rc-card-meta">
+              {{ pos_badge(player.position) }}
+              <span>{{ player.nfl_team }}</span>
+              {% if player.bye_week %}<span>Bye {{ player.bye_week }}</span>{% endif %}
+            </span>
+          </div>
+        </header>
+
+        {% if player.adp_spread and player.adp_spread.times_drafted %}
+        <p class="rc-card-adp">
+          Normally goes
+          <strong>{{ player.adp_spread.high | round | int }}–{{ player.adp_spread.low | round | int }}</strong>
+          across {{ player.adp_spread.times_drafted }} drafts
+        </p>
+        {% endif %}
+
+        {% if player.stat_line %}
+        <dl class="rc-statline">
+          {% for stat in player.stat_line %}
+          <div><dt>{{ stat.label }}</dt><dd>{{ stat.value }}</dd></div>
+          {% endfor %}
+        </dl>
+        {% endif %}
+
+        {% if player.spread_reliable %}
+          {% if player.sparkline %}
+          <svg class="rc-spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">
+            <polyline points="{{ player.sparkline }}" />
+          </svg>
+          {% endif %}
+
+          <dl class="rc-spread">
+            <div><dt>Floor</dt><dd>{{ player.distribution.floor | round(1) }}</dd></div>
+            <div><dt>Typical</dt><dd>{{ player.distribution.median | round(1) }}</dd></div>
+            <div><dt>Ceiling</dt><dd>{{ player.distribution.ceiling | round(1) }}</dd></div>
+          </dl>
+          <p class="rc-card-rates">
+            Boomed <strong>{{ (player.distribution.boom_rate * 100) | round | int }}%</strong>
+            of {{ player.distribution.games }} games,
+            busted <strong>{{ (player.distribution.bust_rate * 100) | round | int }}%</strong>
+          </p>
+        {% elif player.distribution %}
+          {% set games = player.distribution.games %}
+          <p class="rc-card-empty">
+            Only {{ games }} game{{ '' if games == 1 else 's' }} logged in {{ recap.prior_season }} —
+            averaged {{ player.distribution.median | round(1) }}. Too few to call a range.
+          </p>
+
+        {% elif player.season %}
+          <p class="rc-card-empty">
+            Season totals only &mdash; no week-by-week log for {{ recap.prior_season }}.
+          </p>
+        {% else %}
+          <p class="rc-card-empty">
+            No {{ recap.prior_season }} data &mdash; rookie, or not tracked locally.
+          </p>
+        {% endif %}
+
+        {% if player.db_id %}
+        <button type="button" class="rc-sim" data-db-id="{{ player.db_id }}"
+                data-draft-id="{{ recap.draft_id }}">
+          Simulate week 1
+        </button>
+        <div class="rc-sim-out" hidden></div>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+
+  <div class="rc-actions">
+    <a class="rc-btn rc-btn-ghost" href="/draft/board/{{ recap.draft_id }}">Back to the board</a>
+    <a class="rc-btn rc-btn-solid" href="/draft">Draft another team</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/draft-recap.js"></script>
+{% endblock %}
