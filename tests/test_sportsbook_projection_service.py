@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 from pigskin_mastermind.models.database import (
     Base,
     DBLeague,
+    DBPlayer,
     DBSportsbookOdds,
     DEFAULT_SCORING_SETTINGS,
 )
@@ -368,3 +369,74 @@ class TestSkillPositionProjections:
 
         expected_total = 8.95 + 3.0 + 0.75 + 1.25
         assert result["total_projected_points"] == pytest.approx(expected_total, abs=0.02)
+
+
+# ---------------------------------------------------------------------------
+# Tests – project_player_by_id
+# ---------------------------------------------------------------------------
+
+
+class TestProjectPlayerById:
+
+    def test_project_player_by_id_resolves_through_identity(self, db):
+        """A DB player id, not a name substring, selects the props."""
+        _seed_mahomes_props(db)
+        p = DBPlayer(player_id="espn_1", name="Patrick Mahomes", position="QB",
+                     nfl_team="KC")
+        db.add(p)
+        db.commit()
+
+        result = SportsbookProjectionService(db).project_player_by_id(p.id)
+
+        assert result["player_name"] == "Patrick Mahomes"
+        assert "total_projected_points" in result
+        assert result["total_projected_points"] > 0
+
+    def test_project_player_by_id_unknown_player_returns_empty(self, db):
+        """Unknown player ID returns empty result with zero points."""
+        result = SportsbookProjectionService(db).project_player_by_id(999999)
+        assert result["player_name"] is None
+        assert result["total_projected_points"] == 0.0
+        assert result["categories"] == []
+
+    def test_project_player_by_id_with_league_id(self, db):
+        """project_player_by_id respects league scoring settings."""
+        _seed_mahomes_props(db)
+        p = DBPlayer(player_id="espn_1", name="Patrick Mahomes", position="QB",
+                     nfl_team="KC")
+        db.add(p)
+        # Create a league with 6pt pass TDs
+        league = DBLeague(
+            league_id="league_1",
+            name="Test League",
+            year=2025,
+            scoring_settings={"pass_td": 6},
+        )
+        db.add(league)
+        db.commit()
+
+        result = SportsbookProjectionService(db).project_player_by_id(
+            p.id, league_id="league_1"
+        )
+
+        cats = {c["market"]: c for c in result["categories"]}
+        # 2.5 * 6 = 15.0 (instead of 2.5 * 4 = 10.0)
+        assert cats["player_pass_tds"]["fantasy_points"] == pytest.approx(15.0, abs=0.01)
+
+    def test_project_player_by_id_with_event_filter(self, db):
+        """project_player_by_id respects event_id filter."""
+        _seed_mahomes_props(db)
+        # Add prop from a different event
+        db.add(_make_prop("Patrick Mahomes", "player_rush_tds", 0.5, "Over",
+                          event_id="event_other"))
+        p = DBPlayer(player_id="espn_1", name="Patrick Mahomes", position="QB",
+                     nfl_team="KC")
+        db.add(p)
+        db.commit()
+
+        result = SportsbookProjectionService(db).project_player_by_id(
+            p.id, event_id="event_1"
+        )
+
+        markets = {c["market"] for c in result["categories"]}
+        assert "player_rush_tds" not in markets  # belongs to other event

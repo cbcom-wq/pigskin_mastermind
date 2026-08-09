@@ -1,5 +1,8 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, JSON, Boolean, UniqueConstraint
+from sqlalchemy import (
+    Column, Integer, String, Float, DateTime, ForeignKey, JSON, Boolean,
+    UniqueConstraint, Index,
+)
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -182,6 +185,16 @@ class DBNFLTeamStats(Base):
     __tablename__ = "nfl_team_stats"
     __table_args__ = (
         UniqueConstraint('nfl_team', 'year', 'week', name='uq_nfl_team_year_week'),
+        # Season rows use week=NULL, and SQL treats NULL as distinct from NULL,
+        # so the constraint above never applied to them — every re-import
+        # appended another season row (the 2024 data had five per team).
+        # A partial index is what actually enforces one season row per team.
+        Index(
+            'uq_nfl_team_season',
+            'nfl_team', 'year',
+            unique=True,
+            sqlite_where=Column('week').is_(None),
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -209,6 +222,97 @@ class DBNFLTeamStats(Base):
     # Meta
     source = Column(String, default='nfl_data_py')
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DBNFLGame(Base):
+    """One row per NFL game, from ``nfl_data_py.import_schedules``.
+
+    This is the only forward-looking data in the schema. Game logs exist only
+    for games already played, so without a schedule a projection for an
+    upcoming week cannot name the opponent — the matchup adjustment silently
+    collapses to the neutral rank-16 default for exactly the weeks a user
+    cares about.
+
+    It also carries real final scores, which replace the
+    ``touchdowns × 7`` approximation that team offense/defense ratings used to
+    be derived from.
+    """
+    __tablename__ = "nfl_games"
+    __table_args__ = (
+        UniqueConstraint(
+            'year', 'week', 'home_team', 'away_team', name='uq_nfl_game',
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    game_id = Column(String, nullable=True, index=True)  # nflverse game_id
+    year = Column(Integer, nullable=False, index=True)
+    week = Column(Integer, nullable=False)
+    game_type = Column(String, nullable=True)  # REG, WC, DIV, CON, SB
+    home_team = Column(String, nullable=False, index=True)
+    away_team = Column(String, nullable=False, index=True)
+
+    # NULL until the game is played — this is how "upcoming" is detected.
+    home_score = Column(Integer, nullable=True)
+    away_score = Column(Integer, nullable=True)
+
+    kickoff_at = Column(DateTime, nullable=True)
+    roof = Column(String, nullable=True)  # dome, outdoors, closed, open
+    surface = Column(String, nullable=True)
+
+    source = Column(String, default='nfl_data_py')
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DBPlayerProjection(Base):
+    """One projection per player per scope per source.
+
+    ``DBPlayer.projected_points`` cannot hold this. Two importers write it in
+    two different units -- espn_sync stores a per-game scoring-period value,
+    adp_service stores the board's season-scale totalRating -- so the column
+    ranks Philip Rivers above Josh Allen. This table keeps each source
+    separate and units explicit, which also lets the UI show *why* two
+    sources disagree instead of hiding it behind one number.
+    """
+    __tablename__ = "player_projections"
+    __table_args__ = (
+        UniqueConstraint(
+            'player_id', 'year', 'week', 'source', name='uq_player_projection',
+        ),
+        # Season rows use week=NULL, and SQL treats NULL as distinct from NULL,
+        # so the constraint above never applies to them. A partial index is what
+        # actually enforces one season row per player per source.
+        Index(
+            'uq_player_projection_season',
+            'player_id', 'year', 'source',
+            unique=True,
+            sqlite_where=Column('week').is_(None),
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=False, index=True)
+    year = Column(Integer, nullable=False, index=True)
+
+    # NULL means the season scope. Season rows store season TOTALS; weekly
+    # rows store that week's points.
+    week = Column(Integer, nullable=True)
+
+    # blend | model | espn | sportsbook | adp
+    source = Column(String, nullable=False)
+
+    projected_points = Column(Float, nullable=False, default=0.0)
+    floor = Column(Float, nullable=True)
+    ceiling = Column(Float, nullable=True)
+    std_dev = Column(Float, nullable=True)
+
+    # A real column, not a components key: the draft pool converts season
+    # totals to a per-game rate and reaching into JSON for the divisor is how
+    # the mixed-unit bug comes back.
+    expected_games = Column(Float, nullable=True)
+
+    components = Column(JSON, default=dict)
+    computed_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class DBPlayerGameLog(Base):

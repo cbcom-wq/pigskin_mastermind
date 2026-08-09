@@ -40,11 +40,18 @@ class AlgorithmCoefficients:
         defense_rank_multiplier: Weight for opposing defense positional rank.
         momentum_multiplier: Weight for offensive momentum score.
         weather_multiplier: Weight for weather impact score.
+        home_field_multiplier: Points added at home / removed on the road.
 
     Yearly-specific:
         age_post_peak_multiplier: Penalty per year past peak age.
         age_pre_peak_multiplier: Adjustment per year before peak age.
         coaching_multiplier: Weight for coaching stability score.
+
+    Sample-size handling:
+        shrinkage_games: Games of evidence needed before a player's own rate
+            outweighs the positional prior. Consumed by
+            ``services/projection_baseline.py`` rather than by the formula
+            itself, but tuned alongside everything else.
     """
 
     # ── Base criteria ─────────────────────────────────────────────────
@@ -63,11 +70,15 @@ class AlgorithmCoefficients:
     defense_rank_multiplier: float = 0.15
     momentum_multiplier: float = 0.02
     weather_multiplier: float = 0.015
+    home_field_multiplier: float = 0.3
 
     # ── Yearly-specific ───────────────────────────────────────────────
     age_post_peak_multiplier: float = -0.5
     age_pre_peak_multiplier: float = -0.1
     coaching_multiplier: float = 0.04
+
+    # ── Sample-size handling ──────────────────────────────────────────
+    shrinkage_games: float = 4.0
 
     # ── Serialisation helpers ─────────────────────────────────────────
 

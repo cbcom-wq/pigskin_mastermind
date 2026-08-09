@@ -95,9 +95,20 @@ class ProjectionService(ABC):
         offense_adjustment = (criteria.team_offense_level - 50) * coeffs.offense_multiplier
         base_score += offense_adjustment
 
-        # Adjust for opponent defense level (worse defense = higher score)
-        defense_adjustment = (criteria.opponent_defense_level - 50) * coeffs.defense_multiplier
-        base_score += defense_adjustment
+        # Adjust for opponent defense level (worse defense = higher score).
+        #
+        # Skipped for weekly projections: there,
+        # ``opponent_defense_level == ((defense_rank - 1) / 31) * 100`` is a
+        # linear restatement of ``opposing_defense_vs_position_rank``, which
+        # WeeklyProjectionService already scores with its own coefficient.
+        # Applying both counted one matchup twice and made the two multipliers
+        # fight each other during tuning. For yearly the field means strength
+        # of schedule, which is a genuinely separate signal, so it stays.
+        if not isinstance(criteria, WeeklyProjectionCriteria):
+            defense_adjustment = (
+                criteria.opponent_defense_level - 50
+            ) * coeffs.defense_multiplier
+            base_score += defense_adjustment
 
         # Adjust for touch percentage (more touches = higher projection)
         touch_adjustment = criteria.positional_touch_percentage * coeffs.touch_multiplier
@@ -171,6 +182,32 @@ class YearlyProjectionService(ProjectionService):
 
         return max(0, base_score)
 
+    def calculate_season_projection(
+        self,
+        player: Player,
+        criteria: YearlyProjectionCriteria,
+    ) -> float:
+        """Calculate projected fantasy points for the whole season.
+
+        ``calculate_projection`` returns a per-game *rate* — the formula is
+        built on ``historical_average_points``, which is per-game. Multiplying
+        by expected games is what turns it into the season total that draft
+        boards, trade values, and ADP comparisons actually need.
+
+        Kept separate from ``calculate_projection`` because the tuner backtests
+        the per-game rate against a season average; changing that method's
+        units would silently invalidate every stored tuning run.
+
+        Args:
+            player: Player instance
+            criteria: Yearly projection criteria
+
+        Returns:
+            Projected fantasy points for the season
+        """
+        per_game = self.calculate_projection(player, criteria)
+        return max(0.0, per_game * criteria.expected_games)
+
     def generate_projection_report(
         self,
         player: Player,
@@ -194,6 +231,11 @@ class YearlyProjectionService(ProjectionService):
             "position": player.position,
             "team": player.team,
             "projected_points": round(projected_points, 2),
+            "projected_points_per_game": round(projected_points, 2),
+            "projected_season_points": round(
+                self.calculate_season_projection(player, criteria), 2
+            ),
+            "expected_games": criteria.expected_games,
             "projection_type": "yearly",
             "criteria_used": {
                 "player_skill_level": criteria.player_skill_level,
@@ -206,6 +248,7 @@ class YearlyProjectionService(ProjectionService):
                 "injury_risk_score": criteria.injury_risk_score,
                 "age_deviation_from_optimum": criteria.age_deviation_from_optimum,
                 "coaching_stability_score": criteria.coaching_stability_score,
+                "expected_games": criteria.expected_games,
             },
         }
 
@@ -232,6 +275,12 @@ class WeeklyProjectionService(ProjectionService):
         Returns:
             Projected fantasy points for the week
         """
+        # A player on a bye, on IR, or ruled OUT scores exactly zero. That is a
+        # fact about the week, not a risk to discount, so it short-circuits the
+        # whole formula rather than being folded into injury_risk_score.
+        if not criteria.is_available:
+            return 0.0
+
         # Start with base criteria calculation
         base_score = self._apply_base_criteria(criteria, position=player.position)
 
@@ -256,6 +305,9 @@ class WeeklyProjectionService(ProjectionService):
             criteria.weather_impact_score * coeffs.weather_multiplier
         )
         base_score += weather_adjustment
+
+        # Home field: +1 at home, -1 away, 0 when the schedule is unknown
+        base_score += criteria.home_field * coeffs.home_field_multiplier
 
         return max(0, base_score)
 
@@ -295,5 +347,7 @@ class WeeklyProjectionService(ProjectionService):
                 "opposing_defense_vs_position_rank": criteria.opposing_defense_vs_position_rank,
                 "offensive_momentum_score": criteria.offensive_momentum_score,
                 "weather_impact_score": criteria.weather_impact_score,
+                "home_field": criteria.home_field,
+                "is_available": criteria.is_available,
             },
         }

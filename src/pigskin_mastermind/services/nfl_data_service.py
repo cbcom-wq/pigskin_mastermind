@@ -13,13 +13,14 @@ except ImportError:
     nfl = None  # type: ignore[assignment]
 
 from pigskin_mastermind.models.database import (
-    DBPlayer, DBPlayerGameLog, DBPlayerSeasonStats, DBNFLTeamStats,
+    DBPlayer, DBPlayerGameLog, DBPlayerSeasonStats, DBNFLTeamStats, DBNFLGame,
     DBWeeklyPlayerStats, DBWeeklyTeamStats, DBTeam, DBLeague,
 )
 from pigskin_mastermind.services.player_identity import (
     PlayerIdentityService, is_placeholder_name,
 )
 from pigskin_mastermind.utils.positions import normalize_position
+from pigskin_mastermind.utils.nfl_teams import normalize_team
 
 # Columns to pull from the PBP dataset — keeps payload small
 _PBP_COLUMNS = [
@@ -460,8 +461,151 @@ class NFLDataService:
         self.db.commit()
         return count
 
+    def _get_or_create_team_stat(
+        self, nfl_team: str, year: int, week: Optional[int] = None,
+    ) -> DBNFLTeamStats:
+        """Fetch (or create) a team-stat row, flushing so repeat calls see it.
+
+        The session runs with ``autoflush=False``, so a row that was only
+        ``add()``-ed is invisible to the next query. Without the flush, every
+        pass that touches the same (team, year, week) appends another row —
+        which is how the 2024 season data ended up with five rows per team.
+        """
+        stat = (
+            self.db.query(DBNFLTeamStats)
+            .filter_by(nfl_team=nfl_team, year=year, week=week)
+            .first()
+        )
+        if not stat:
+            stat = DBNFLTeamStats(nfl_team=nfl_team, year=year, week=week)
+            self.db.add(stat)
+            self.db.flush()
+        return stat
+
+    def import_schedules(self, years: List[int]) -> int:
+        """Import the NFL schedule (and final scores) into ``DBNFLGame``.
+
+        This is what lets a projection for an *upcoming* week know who the
+        opponent is; game logs only cover games already played.
+
+        Returns:
+            Number of game rows created/updated.
+        """
+        if nfl is None:
+            raise ImportError("nfl_data_py is not installed. Run: pip install nfl_data_py")
+
+        sched = nfl.import_schedules(years)
+        if sched.empty:
+            return 0
+
+        count = 0
+        for _, row in sched.iterrows():
+            home = normalize_team(self._sv(row.get('home_team')))
+            away = normalize_team(self._sv(row.get('away_team')))
+            week = self._sv(row.get('week'))
+            season = self._sv(row.get('season'))
+            if not home or not away or week is None or season is None:
+                continue
+
+            game = (
+                self.db.query(DBNFLGame)
+                .filter_by(
+                    year=int(season), week=int(week),
+                    home_team=home, away_team=away,
+                )
+                .first()
+            )
+            if not game:
+                game = DBNFLGame(
+                    year=int(season), week=int(week),
+                    home_team=home, away_team=away,
+                )
+                self.db.add(game)
+                self.db.flush()
+
+            game.game_id = self._sv(row.get('game_id'))
+            game.game_type = self._sv(row.get('game_type'))
+            home_score = self._sv(row.get('home_score'))
+            away_score = self._sv(row.get('away_score'))
+            # Left NULL for unplayed games — that is how "upcoming" is detected.
+            game.home_score = int(home_score) if home_score is not None else None
+            game.away_score = int(away_score) if away_score is not None else None
+            game.kickoff_at = _parse_kickoff(
+                self._sv(row.get('gameday')), self._sv(row.get('gametime')),
+            )
+            game.roof = self._sv(row.get('roof'))
+            game.surface = self._sv(row.get('surface'))
+            game.source = 'nfl_data_py'
+            game.updated_at = datetime.utcnow()
+            count += 1
+
+        self.db.flush()
+        for year in years:
+            self.sync_team_scores_from_schedule(year)
+
+        self.db.commit()
+        return count
+
+    def sync_team_scores_from_schedule(self, year: int) -> int:
+        """Backfill points scored/allowed on ``DBNFLTeamStats`` from real scores.
+
+        Both the nfl_data_py path and the game-log aggregation path used to
+        leave ``points_scored`` at 0 or at a touchdowns × 7 estimate, which
+        made ``_compute_team_offense_level`` discard the season row entirely.
+        Runs automatically after a schedule import.
+
+        Returns:
+            Number of team-stat rows updated.
+        """
+        games = (
+            self.db.query(DBNFLGame)
+            .filter(
+                DBNFLGame.year == year,
+                DBNFLGame.home_score.isnot(None),
+                DBNFLGame.away_score.isnot(None),
+            )
+            .all()
+        )
+        if not games:
+            return 0
+
+        weekly: Dict[tuple, List[int]] = {}
+        season: Dict[str, List[int]] = {}
+        for g in games:
+            for team, scored, allowed in (
+                (g.home_team, g.home_score, g.away_score),
+                (g.away_team, g.away_score, g.home_score),
+            ):
+                weekly[(team, g.week)] = [scored, allowed]
+                totals = season.setdefault(team, [0, 0])
+                totals[0] += scored
+                totals[1] += allowed
+
+        updated = 0
+        for (team, week), (scored, allowed) in weekly.items():
+            row = self._get_or_create_team_stat(team, year, week)
+            row.points_scored = scored
+            row.points_allowed = allowed
+            row.updated_at = datetime.utcnow()
+            updated += 1
+
+        for team, (scored, allowed) in season.items():
+            row = self._get_or_create_team_stat(team, year)
+            row.points_scored = scored
+            row.points_allowed = allowed
+            row.updated_at = datetime.utcnow()
+            updated += 1
+
+        self.db.flush()
+        return updated
+
     def import_team_defense_rankings(self, years: List[int]) -> int:
-        """Import team defense stats and compute positional rankings.
+        """Import team offense/defense stats and compute positional rankings.
+
+        Points scored and allowed come from ``DBNFLGame`` (real final scores)
+        when the schedule has been imported. Without them ``points_scored``
+        stays 0, and ``_compute_team_offense_level`` treats the whole season
+        row as unusable and falls through to a much weaker fallback.
 
         Returns:
             Number of team stat rows created/updated.
@@ -474,24 +618,29 @@ class NFLDataService:
         # Compute defensive stats: points/yards allowed from opponent perspective
         for year in years:
             year_df = df[df['season'] == year]
+            scores = self._season_scores_from_schedule(year)
 
             # Get unique teams
             teams = year_df['recent_team'].dropna().unique()
 
             for team in teams:
+                nfl_team = normalize_team(team)
+                if not nfl_team:
+                    continue
+
                 # Season totals for team offense (we invert for opponent defense)
                 team_offense = year_df[year_df['recent_team'] == team]
 
-                team_stat = self.db.query(DBNFLTeamStats).filter_by(
-                    nfl_team=team, year=year, week=None
-                ).first()
-                if not team_stat:
-                    team_stat = DBNFLTeamStats(nfl_team=team, year=year, week=None)
-                    self.db.add(team_stat)
-
+                team_stat = self._get_or_create_team_stat(nfl_team, year)
                 team_stat.pass_yards = _safe_int(team_offense['passing_yards'].sum())
                 team_stat.rush_yards = _safe_int(team_offense['rushing_yards'].sum())
                 team_stat.total_yards = team_stat.pass_yards + team_stat.rush_yards
+
+                scored, allowed = scores.get(nfl_team, (0, 0))
+                if scored or allowed:
+                    team_stat.points_scored = scored
+                    team_stat.points_allowed = allowed
+
                 team_stat.source = 'nfl_data_py'
                 team_stat.updated_at = datetime.utcnow()
                 count += 1
@@ -512,19 +661,44 @@ class NFLDataService:
 
                 # Rank: 1 = fewest points allowed (best defense)
                 for rank, (opp_team, _) in enumerate(fps_allowed.items(), 1):
-                    team_stat = self.db.query(DBNFLTeamStats).filter_by(
-                        nfl_team=opp_team, year=year, week=None
-                    ).first()
-                    if not team_stat:
-                        team_stat = DBNFLTeamStats(nfl_team=opp_team, year=year, week=None)
-                        self.db.add(team_stat)
-
+                    nfl_team = normalize_team(opp_team)
+                    if not nfl_team:
+                        continue
+                    team_stat = self._get_or_create_team_stat(nfl_team, year)
                     rank_field = f'def_rank_vs_{position.lower()}'
                     setattr(team_stat, rank_field, rank)
                     team_stat.updated_at = datetime.utcnow()
 
         self.db.commit()
         return count
+
+    def _season_scores_from_schedule(
+        self, year: int,
+    ) -> Dict[str, tuple]:
+        """Return ``{team: (points_scored, points_allowed)}`` for *year*.
+
+        Sourced from played games in ``DBNFLGame``. Empty when the schedule
+        has not been imported, in which case callers leave the existing
+        values alone rather than writing zeros.
+        """
+        games = (
+            self.db.query(DBNFLGame)
+            .filter(
+                DBNFLGame.year == year,
+                DBNFLGame.home_score.isnot(None),
+                DBNFLGame.away_score.isnot(None),
+            )
+            .all()
+        )
+        totals: Dict[str, List[int]] = {}
+        for g in games:
+            totals.setdefault(g.home_team, [0, 0])
+            totals.setdefault(g.away_team, [0, 0])
+            totals[g.home_team][0] += g.home_score
+            totals[g.home_team][1] += g.away_score
+            totals[g.away_team][0] += g.away_score
+            totals[g.away_team][1] += g.home_score
+        return {team: (v[0], v[1]) for team, v in totals.items()}
 
     def import_roster_metadata(self, years: List[int]) -> int:
         """Import player bio metadata (height, weight, age, college, experience).
@@ -1074,6 +1248,31 @@ def _format_jersey(val) -> Optional[str]:
         return str(int(float(text)))
     except (TypeError, ValueError):
         return text
+
+
+def _parse_kickoff(gameday, gametime) -> Optional[datetime]:
+    """Combine nflverse's ``gameday`` + ``gametime`` into a datetime.
+
+    Both are strings and either can be missing on future games; returns None
+    rather than raising so a schedule import never fails on one odd row.
+    """
+    if not gameday:
+        return None
+    text = str(gameday).strip()
+    if not text:
+        return None
+    time_text = str(gametime).strip() if gametime else ''
+    for fmt, value in (
+        ('%Y-%m-%d %H:%M', f'{text} {time_text}' if time_text else None),
+        ('%Y-%m-%d', text),
+    ):
+        if value is None:
+            continue
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def _import_rosters(years: List[int]):

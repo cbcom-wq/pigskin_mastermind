@@ -15,20 +15,17 @@ import math
 import os
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.models.algorithm_coefficients import (
     AlgorithmCoefficients,
     PositionCoefficients,
-    TUNABLE_POSITIONS,
 )
 from pigskin_mastermind.models.database import (
     DBPlayer,
     DBPlayerGameLog,
-    DBPlayerSeasonStats,
-    DBNFLTeamStats,
 )
 from pigskin_mastermind.models.player import Player
 from pigskin_mastermind.models.projection_criteria import (
@@ -37,7 +34,9 @@ from pigskin_mastermind.models.projection_criteria import (
 from pigskin_mastermind.services.projection_criteria_builder import (
     ProjectionCriteriaBuilder,
 )
-
+from pigskin_mastermind.services.projection_service import (
+    WeeklyProjectionService,
+)
 
 # ---------------------------------------------------------------------------
 # Data containers
@@ -109,7 +108,9 @@ class TuningRunResult:
     def from_dict(cls, data: Dict[str, Any]) -> "TuningRunResult":
         payload = dict(data)
         payload["best"] = VariationResult(**payload["best"])
-        payload["top_variations"] = [VariationResult(**v) for v in payload["top_variations"]]
+        payload["top_variations"] = [
+            VariationResult(**v) for v in payload["top_variations"]
+        ]
         payload["default_result"] = VariationResult(**payload["default_result"])
         payload["run_filters"] = payload.get("run_filters", {})
         payload["sample_comparisons"] = [
@@ -142,37 +143,32 @@ class TuningRunResult:
 # ---------------------------------------------------------------------------
 
 
+# A stand-in player: WeeklyProjectionService only reads ``.position`` from it,
+# and the coefficients handed to that service are already resolved for the
+# position being evaluated, so the value here never affects the result.
+_SCORING_PLAYER = Player(
+    player_id="__tuner__",
+    name="__tuner__",
+    position="WR",
+    team="FA",
+)
+
+
 def _calculate_weekly_projection(
     criteria: WeeklyProjectionCriteria,
     coeffs: AlgorithmCoefficients,
 ) -> float:
-    """Re-implement the projection formula using the supplied coefficients.
+    """Score *criteria* with *coeffs* using the production formula.
 
-    This mirrors ``ProjectionService._apply_base_criteria`` plus
-    ``WeeklyProjectionService.calculate_projection`` but substitutes
-    hard-coded constants with the values from *coeffs*.
+    This deliberately delegates rather than re-implementing. A private copy of
+    the formula lived here and silently fell out of step with
+    ``WeeklyProjectionService`` — meaning the sweep optimised coefficients
+    against arithmetic the app never actually ran.
     """
-    base_score = criteria.historical_average_points * coeffs.baseline_weight
-
-    base_score += (criteria.player_skill_level - 50) * coeffs.skill_multiplier
-    base_score += (criteria.team_offense_level - 50) * coeffs.offense_multiplier
-    base_score += (criteria.opponent_defense_level - 50) * coeffs.defense_multiplier
-    base_score += criteria.positional_touch_percentage * coeffs.touch_multiplier
-    base_score += criteria.recent_trend_score * coeffs.trend_multiplier
-
-    if criteria.fantasy_points_per_touch != 0:
-        eff = (criteria.fantasy_points_per_touch - coeffs.efficiency_baseline) * coeffs.efficiency_multiplier
-        eff = max(-coeffs.efficiency_cap, min(coeffs.efficiency_cap, eff))
-        base_score += eff
-
-    base_score += criteria.injury_risk_score * coeffs.injury_multiplier
-
-    # Weekly-specific adjustments
-    base_score += (criteria.opposing_defense_vs_position_rank - 16) * coeffs.defense_rank_multiplier
-    base_score += criteria.offensive_momentum_score * coeffs.momentum_multiplier
-    base_score += criteria.weather_impact_score * coeffs.weather_multiplier
-
-    return max(0.0, base_score)
+    return WeeklyProjectionService(coefficients=coeffs).calculate_projection(
+        _SCORING_PLAYER,
+        criteria,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -323,9 +319,7 @@ class ProjectionAlgorithmTuner:
         # 1. Gather evaluation samples: (criteria, actual_points, position)
         samples = self._gather_samples(year, weeks, player_ids, positions)
         if not samples:
-            raise ValueError(
-                "No valid evaluation samples found for the given filters."
-            )
+            raise ValueError("No valid evaluation samples found for the given filters.")
 
         # 2. Build or receive variations
         if variations is None:
@@ -348,7 +342,9 @@ class ProjectionAlgorithmTuner:
         best_coeffs = AlgorithmCoefficients.from_dict(best_result.coefficients)
         unique_players = {s[2] for s in samples}  # player_id stored at idx 2
         simulated_weeks = sorted({s[3] for s in samples})  # week stored at idx 3
-        simulated_positions = sorted({s[4] for s in samples})  # position stored at idx 4
+        simulated_positions = sorted(
+            {s[4] for s in samples}
+        )  # position stored at idx 4
         sample_comparisons = self._build_sample_comparisons(
             samples,
             default_coeffs,
@@ -419,9 +415,7 @@ class ProjectionAlgorithmTuner:
         # 1. Gather all samples
         all_samples = self._gather_samples(year, weeks, player_ids, positions)
         if not all_samples:
-            raise ValueError(
-                "No valid evaluation samples found for the given filters."
-            )
+            raise ValueError("No valid evaluation samples found for the given filters.")
 
         # 2. Partition samples by position
         samples_by_pos: Dict[str, List] = {}
@@ -505,7 +499,9 @@ class ProjectionAlgorithmTuner:
             default_result=default_all,
             run_filters=run_filters,
             sample_comparisons=sample_comparisons,
-            per_position_results={pos: asdict(r) for pos, r in per_position_results.items()},
+            per_position_results={
+                pos: asdict(r) for pos, r in per_position_results.items()
+            },
             combined_coefficients=combined_dict,
         )
 
@@ -556,7 +552,11 @@ class ProjectionAlgorithmTuner:
                     "default": round(old_val, 6),
                     "tuned": round(new_val, 6),
                     "change_pct": round(
-                        ((new_val - old_val) / abs(old_val) * 100) if abs(old_val) > 1e-9 else 0.0,
+                        (
+                            ((new_val - old_val) / abs(old_val) * 100)
+                            if abs(old_val) > 1e-9
+                            else 0.0
+                        ),
                         2,
                     ),
                 }
@@ -568,8 +568,16 @@ class ProjectionAlgorithmTuner:
                 pos_best = ppr.best
                 pos_default = ppr.default_result
             elif isinstance(ppr, dict):
-                pos_best = VariationResult(**ppr["best"]) if isinstance(ppr["best"], dict) else ppr["best"]
-                pos_default = VariationResult(**ppr["default_result"]) if isinstance(ppr["default_result"], dict) else ppr["default_result"]
+                pos_best = (
+                    VariationResult(**ppr["best"])
+                    if isinstance(ppr["best"], dict)
+                    else ppr["best"]
+                )
+                pos_default = (
+                    VariationResult(**ppr["default_result"])
+                    if isinstance(ppr["default_result"], dict)
+                    else ppr["default_result"]
+                )
             else:
                 continue
             pos_mae_imp = pos_default.mae - pos_best.mae
@@ -585,9 +593,11 @@ class ProjectionAlgorithmTuner:
                         "default": round(old_val, 6),
                         "tuned": round(new_val, 6),
                         "change_pct": round(
-                            ((new_val - old_val) / abs(old_val) * 100)
-                            if abs(old_val) > 1e-9
-                            else 0.0,
+                            (
+                                ((new_val - old_val) / abs(old_val) * 100)
+                                if abs(old_val) > 1e-9
+                                else 0.0
+                            ),
                             2,
                         ),
                     }
@@ -654,7 +664,8 @@ class ProjectionAlgorithmTuner:
         player_ids: Optional[List[int]],
         positions: Optional[List[str]],
     ) -> List[Tuple[WeeklyProjectionCriteria, float, int, int, str, str]]:
-        """Return list of (criteria, actual_points, player_id, week, position, player_name).
+        """Return list of (criteria, actual_points, player_id, week, position,
+        player_name).
 
         Only game-log entries where the player was active and has a
         corresponding season-stats record are included.
