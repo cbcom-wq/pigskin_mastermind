@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from pigskin_mastermind.models.database import (
     DBLeague,
+    DBPlayer,
     DBSportsbookOdds,
     get_scoring_settings,
 )
@@ -96,15 +97,17 @@ class SportsbookProjectionService:
             fantasy_points = round(expected_stat * multiplier, 2)
             total += fantasy_points
 
-            categories.append({
-                "market": market_key,
-                "label": label,
-                "expected_stat": expected_stat,
-                "scoring_key": scoring_key,
-                "multiplier": multiplier,
-                "fantasy_points": fantasy_points,
-                "bookmaker_count": len(lines),
-            })
+            categories.append(
+                {
+                    "market": market_key,
+                    "label": label,
+                    "expected_stat": expected_stat,
+                    "scoring_key": scoring_key,
+                    "multiplier": multiplier,
+                    "fantasy_points": fantasy_points,
+                    "bookmaker_count": len(lines),
+                }
+            )
 
         return {
             "player_name": canonical_name,
@@ -113,6 +116,37 @@ class SportsbookProjectionService:
             "scoring_settings": scoring,
             "event_id": event_id,
         }
+
+    def project_player_by_id(
+        self,
+        player_id: int,
+        *,
+        event_id: Optional[str] = None,
+        league_id: Optional[str] = None,
+        bookmaker: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Project by ``DBPlayer.id`` rather than by name substring.
+
+        The name path matches ``description ILIKE '%name%'``, which both
+        over-matches (a suffix like "Jr." pulls in the wrong player) and
+        under-matches (books abbreviate). Resolving the player first means
+        the same identity rules every importer uses apply here too.
+        """
+        player = self.db.query(DBPlayer).filter(DBPlayer.id == player_id).first()
+        if player is None:
+            return {
+                "player_name": None,
+                "total_projected_points": 0.0,
+                "categories": [],
+                "scoring_settings": self._resolve_scoring(league_id),
+            }
+
+        return self.project_player(
+            player.name,
+            event_id=event_id,
+            league_id=league_id,
+            bookmaker=bookmaker,
+        )
 
     def project_event(
         self,
@@ -150,9 +184,7 @@ class SportsbookProjectionService:
         league = None
         if league_id:
             league = (
-                self.db.query(DBLeague)
-                .filter(DBLeague.league_id == league_id)
-                .first()
+                self.db.query(DBLeague).filter(DBLeague.league_id == league_id).first()
             )
         return get_scoring_settings(league)
 
@@ -237,6 +269,4 @@ class SportsbookProjectionService:
             if bk not in grouped[market]:
                 grouped[market][bk] = prop.point
 
-        return {
-            mkt: list(bk_map.values()) for mkt, bk_map in grouped.items()
-        }
+        return {mkt: list(bk_map.values()) for mkt, bk_map in grouped.items()}
