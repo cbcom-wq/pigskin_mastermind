@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 from pigskin_mastermind.models.database import (
     Base,
     DBPlayer,
+    DBPlayerProjection,
     DBPlayerSeasonStats,
 )
 from pigskin_mastermind.services.adp_service import ADPService
@@ -660,3 +661,72 @@ def test_import_espn_projections_is_idempotent(db, monkeypatch):
     rows = db.query(DBPlayerProjection).filter_by(source="espn").all()
     assert len(rows) == 1
     assert rows[0].projected_points == 355.0
+
+
+class TestDraftPoolProjections:
+    """The pool must serve season totals from player_projections only."""
+
+    def _seed_with_adp(self, db):
+        players = _seed_players(db)
+        for i, p in enumerate(players[:3]):
+            db.add(DBPlayerSeasonStats(
+                player_id=p.id, year=2026, adp=float(i + 1),
+                adp_source="fantasyfootballcalculator",
+            ))
+        db.commit()
+        return players
+
+    def test_prefers_blend_row(self, db):
+        players = self._seed_with_adp(db)
+        db.add(DBPlayerProjection(
+            player_id=players[0].id, year=2026, week=None, source="model",
+            projected_points=300.0,
+        ))
+        db.add(DBPlayerProjection(
+            player_id=players[0].id, year=2026, week=None, source="blend",
+            projected_points=355.0,
+        ))
+        db.commit()
+
+        pool = ADPService(db).get_adp_for_draft_pool(year=2026)
+        entry = next(p for p in pool if p["db_id"] == players[0].id)
+        assert entry["projected_points"] == pytest.approx(355.0)
+
+    def test_ignores_db_player_projected_points(self, db):
+        """The mixed-unit column must not reach the pool."""
+        players = self._seed_with_adp(db)
+        players[0].projected_points = 19.5  # a per-game value
+        db.commit()
+
+        pool = ADPService(db).get_adp_for_draft_pool(year=2026)
+        entry = next(p for p in pool if p["db_id"] == players[0].id)
+        assert entry["projected_points"] != pytest.approx(19.5)
+
+    def test_falls_back_to_last_season_total(self, db):
+        players = self._seed_with_adp(db)
+        db.add(DBPlayerSeasonStats(
+            player_id=players[0].id, year=2025, games_played=16,
+            fantasy_points_total=280.0, fantasy_points_avg=17.5,
+        ))
+        db.commit()
+
+        pool = ADPService(db).get_adp_for_draft_pool(year=2026)
+        entry = next(p for p in pool if p["db_id"] == players[0].id)
+        # The season TOTAL, not the 17.5 per-game average.
+        assert entry["projected_points"] == pytest.approx(280.0)
+
+    def test_no_entry_lands_in_the_per_game_band(self, db):
+        """A per-game leak shows up as a ~16 beside a ~300."""
+        players = self._seed_with_adp(db)
+        db.add(DBPlayerProjection(
+            player_id=players[0].id, year=2026, week=None, source="blend",
+            projected_points=355.0,
+        ))
+        db.add(DBPlayerSeasonStats(
+            player_id=players[1].id, year=2025, games_played=16,
+            fantasy_points_total=280.0, fantasy_points_avg=17.5,
+        ))
+        db.commit()
+
+        pool = ADPService(db).get_adp_for_draft_pool(year=2026)
+        assert not [p for p in pool if 0 < p["projected_points"] < 20]

@@ -290,7 +290,7 @@ def test_ffc_import_persists_the_bye_week(db):
 
 
 def test_draft_pool_falls_back_to_last_season_points(db):
-    """FFC-created rows have projected_points == 0; a pool of zeros flattens
+    """FFC-created rows have no persisted projection; a pool of zeros flattens
     the AI drafter's projection nudge and the post-draft grade."""
     svc = ADPService(db)
     svc.identity._id_map = {}
@@ -306,14 +306,17 @@ def test_draft_pool_falls_back_to_last_season_points(db):
 
     pool = svc.get_adp_for_draft_pool(year=2026)
     assert len(pool) == 1
-    # Per game, matching DBPlayer.projected_points — NOT the 281.4 season total,
-    # which would be ~17x every ESPN-projected player in the same pool.
-    assert pool[0]["projected_points"] == 16.6
+    # The season TOTAL (281.4) — not the 16.6 per-game average, and not
+    # DBPlayer.projected_points, which two importers write in two different
+    # units and is no longer consulted by the pool at all.
+    assert pool[0]["projected_points"] == 281.4
 
 
 def test_draft_pool_projection_units_stay_comparable(db):
     """A pool mixing per-game and season-total values silently breaks the AI
-    drafter's within-position normalization."""
+    drafter's within-position normalization. DBPlayer.projected_points is
+    ignored entirely, so an ESPN-sourced per-game value can no longer leak
+    into the pool."""
     svc = ADPService(db)
     svc.identity._id_map = {}
 
@@ -334,13 +337,16 @@ def test_draft_pool_projection_units_stay_comparable(db):
     db.commit()
 
     values = [p["projected_points"] for p in svc.get_adp_for_draft_pool(year=2026)]
-    assert max(values) < 40, f"a season total leaked into a per-game pool: {values}"
+    # No entry should land in the per-game band (~10-30): espn_backed's
+    # DBPlayer.projected_points (18.8) is ignored entirely, and ffc_backed's
+    # fallback resolves to the season TOTAL (331.3), not the 19.5 average.
+    assert not [v for v in values if 0 < v < 40], f"a per-game value leaked into the pool: {values}"
 
 
 def test_draft_pool_ignores_single_game_season_rows(db):
     """Some ESPN season rows carry a full-season total against games_played=1,
-    making fantasy_points_avg equal the total. Those must not become a
-    'per-game' projection."""
+    making fantasy_points_avg equal the total. Requiring a real sample keeps
+    that corrupt row out of the fallback."""
     svc = ADPService(db)
     svc.identity._id_map = {}
 
@@ -360,7 +366,8 @@ def test_draft_pool_ignores_single_game_season_rows(db):
     ])
     db.commit()
 
-    assert svc.get_adp_for_draft_pool(year=2026)[0]["projected_points"] == 22.2
+    # The season TOTAL from the healthy row (355.3), not its per-game average.
+    assert svc.get_adp_for_draft_pool(year=2026)[0]["projected_points"] == 355.3
 
 
 def test_draft_pool_carries_profile_fields_for_the_board(db):

@@ -34,6 +34,7 @@ from pigskin_mastermind.services.player_identity import (
     ESPN_TAIL_ADP_SOURCE,
     PlayerIdentityService,
 )
+from pigskin_mastermind.services.projection_refresh import season_projection_map
 from pigskin_mastermind.utils.nfl_teams import normalize_team
 from pigskin_mastermind.utils.positions import FANTASY_POSITIONS, normalize_position
 from pigskin_mastermind.utils.season import current_fantasy_season
@@ -738,6 +739,12 @@ class ADPService:
         query = query.order_by(DBPlayerSeasonStats.adp.asc())
         rows = query.all()
 
+        # One query for every player's persisted projection, rather than one
+        # per player inside the comprehension below.
+        projections = season_projection_map(
+            self.db, [player.id for player, _ in rows], year,
+        ) if year is not None else {}
+
         return [
             {
                 "id": player.player_id,
@@ -745,7 +752,7 @@ class ADPService:
                 "name": player.name,
                 "position": player.position,
                 "nfl_team": player.nfl_team,
-                "projected_points": self._pool_projection(player),
+                "projected_points": self._pool_projection(player, projections),
                 "adp_rank": season.adp,
                 # Carried into the draft so the value verdicts can tell a real
                 # consensus ADP from the synthetic espn_tail sort key.
@@ -759,26 +766,31 @@ class ADPService:
             if player.position in FANTASY_POSITIONS
         ]
 
-    def _pool_projection(self, player: DBPlayer) -> float:
-        """Projected points for the draft pool, with a last-season fallback.
+    def _pool_projection(
+        self,
+        player: DBPlayer,
+        projections: Dict[int, float],
+    ) -> float:
+        """Season-total projection for the draft pool.
 
-        Players the FFC board created have ``projected_points == 0``, and a
-        pool of zeros flattens the AI drafter's projection nudge and makes the
-        post-draft grade meaningless.
+        Resolution order is persisted blend, persisted model, then last
+        season's actual total. ``DBPlayer.projected_points`` is deliberately
+        absent: two importers write it in two different units, so it ranks
+        Philip Rivers above Josh Allen.
 
-        The fallback must match the unit of ``DBPlayer.projected_points``,
-        which ESPN populates per game — so this uses the season *average*, not
-        the total. Mixing the two would hand players with a season total a
-        ~17x advantage in the drafter's within-position normalization.
+        Everything returned here is a season TOTAL. Mixing in a per-game value
+        would hand that player a ~17x advantage in the AI drafter's
+        within-position normalization.
         """
-        if player.projected_points:
-            return player.projected_points
+        persisted = projections.get(player.id)
+        if persisted is not None:
+            return round(persisted, 1)
 
         latest = (
             self.db.query(DBPlayerSeasonStats)
             .filter(
                 DBPlayerSeasonStats.player_id == player.id,
-                DBPlayerSeasonStats.fantasy_points_avg > 0,
+                DBPlayerSeasonStats.fantasy_points_total > 0,
                 # Some ESPN-sourced season rows record a full-season total
                 # against games_played=1, which makes avg == total. Requiring a
                 # real sample keeps those out of the pool.
@@ -787,7 +799,7 @@ class ADPService:
             .order_by(DBPlayerSeasonStats.year.desc())
             .first()
         )
-        return round(latest.fantasy_points_avg, 1) if latest else 0.0
+        return round(latest.fantasy_points_total, 1) if latest else 0.0
 
     def get_adp_metadata(self, year: Optional[int] = None) -> Dict[str, Any]:
         """Return freshness info for locally stored FFC ADP data.
