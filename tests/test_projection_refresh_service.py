@@ -9,7 +9,9 @@ from pigskin_mastermind.models.database import (
     Base, DBPlayer, DBPlayerProjection, DBPlayerSeasonStats,
 )
 from pigskin_mastermind.models.projection_criteria import YearlyProjectionCriteria
-from pigskin_mastermind.services.projection_refresh import ProjectionRefreshService
+from pigskin_mastermind.services.projection_refresh import (
+    ProjectionRefreshService, get_projection, season_projection_map,
+)
 
 
 @pytest.fixture
@@ -124,3 +126,51 @@ def test_blend_weights_model_and_espn(db):
     # model 320 at 0.5/0.8, espn 400 at 0.3/0.8 => 350.0
     assert blend_row.projected_points == pytest.approx(350.0, abs=1.0)
     assert blend_row.components["weights_used"]["model"] == pytest.approx(0.625)
+
+
+def test_get_projection_prefers_blend_over_model(db):
+    player = _seed_pool_player(db)
+    db.add(DBPlayerProjection(
+        player_id=player.id, year=2026, week=None, source="model",
+        projected_points=300.0,
+    ))
+    db.add(DBPlayerProjection(
+        player_id=player.id, year=2026, week=None, source="blend",
+        projected_points=350.0,
+    ))
+    db.commit()
+
+    assert get_projection(db, player.id, 2026) == pytest.approx(350.0)
+
+
+def test_get_projection_falls_back_to_model(db):
+    player = _seed_pool_player(db)
+    db.add(DBPlayerProjection(
+        player_id=player.id, year=2026, week=None, source="model",
+        projected_points=300.0,
+    ))
+    db.commit()
+
+    assert get_projection(db, player.id, 2026) == pytest.approx(300.0)
+
+
+def test_get_projection_returns_none_when_absent(db):
+    player = _seed_pool_player(db)
+    assert get_projection(db, player.id, 2026) is None
+
+
+def test_season_projection_map_batches(db):
+    a = _seed_pool_player(db, name="Player A", adp=1.0)
+    b = _seed_pool_player(db, name="Player B", adp=2.0)
+    db.add(DBPlayerProjection(
+        player_id=a.id, year=2026, week=None, source="blend",
+        projected_points=350.0,
+    ))
+    db.add(DBPlayerProjection(
+        player_id=b.id, year=2026, week=None, source="model",
+        projected_points=200.0,
+    ))
+    db.commit()
+
+    result = season_projection_map(db, [a.id, b.id], 2026)
+    assert result == {a.id: pytest.approx(350.0), b.id: pytest.approx(200.0)}

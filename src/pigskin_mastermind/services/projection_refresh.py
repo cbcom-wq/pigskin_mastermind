@@ -212,3 +212,77 @@ class ProjectionRefreshService:
         row.expected_games = expected_games
         row.components = components or {}
         row.computed_at = now
+
+
+# ---------------------------------------------------------------------------
+# Read path
+# ---------------------------------------------------------------------------
+
+#: Preference order. The blend is the consensus; the model alone is the
+#: fallback when no blend row was written.
+_READ_PRIORITY = (BLEND_SOURCE, MODEL_SOURCE)
+
+
+def get_projection(
+    db: Session,
+    player_id: int,
+    year: int,
+    week: Optional[int] = None,
+) -> Optional[float]:
+    """Persisted projection for one player, or ``None`` when absent.
+
+    Deliberately returns ``None`` rather than falling back to
+    ``DBPlayer.projected_points``: that column mixes per-game and season units,
+    and ranking on it is what this module exists to stop. Callers decide what
+    absence means.
+    """
+    rows = (
+        db.query(DBPlayerProjection)
+        .filter(
+            DBPlayerProjection.player_id == player_id,
+            DBPlayerProjection.year == year,
+            DBPlayerProjection.week.is_(week) if week is None
+            else DBPlayerProjection.week == week,
+            DBPlayerProjection.source.in_(_READ_PRIORITY),
+        )
+        .all()
+    )
+    by_source = {r.source: r.projected_points for r in rows}
+    for source in _READ_PRIORITY:
+        if source in by_source:
+            return by_source[source]
+    return None
+
+
+def season_projection_map(
+    db: Session,
+    player_ids: List[int],
+    year: int,
+) -> Dict[int, float]:
+    """Batch form of :func:`get_projection` for season scope.
+
+    The draft pool resolves ~1000 players per page load; one query per player
+    is what this avoids.
+    """
+    if not player_ids:
+        return {}
+
+    rows = (
+        db.query(DBPlayerProjection)
+        .filter(
+            DBPlayerProjection.player_id.in_(player_ids),
+            DBPlayerProjection.year == year,
+            DBPlayerProjection.week.is_(None),
+            DBPlayerProjection.source.in_(_READ_PRIORITY),
+        )
+        .all()
+    )
+
+    best: Dict[int, tuple] = {}
+    for row in rows:
+        rank = _READ_PRIORITY.index(row.source)
+        current = best.get(row.player_id)
+        if current is None or rank < current[0]:
+            best[row.player_id] = (rank, row.projected_points)
+
+    return {pid: points for pid, (_rank, points) in best.items()}
