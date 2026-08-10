@@ -26,6 +26,7 @@ from pigskin_mastermind.services.master_coefficients import (
     get_effective_coefficients,
 )
 from pigskin_mastermind.services.player_identity import ESPN_TAIL_ADP_SOURCE
+from pigskin_mastermind.services.projection_blender import SEASON_WEIGHTS, blend
 from pigskin_mastermind.services.projection_criteria_builder import (
     ProjectionCriteriaBuilder,
 )
@@ -118,6 +119,42 @@ class ProjectionRefreshService:
                 now=now,
             )
             counts["model"] += 1
+
+            espn_row = (
+                self.db.query(DBPlayerProjection)
+                .filter_by(
+                    player_id=player.id, year=year, week=None, source=ESPN_SOURCE,
+                )
+                .first()
+            )
+            if espn_row is not None:
+                counts["espn"] += 1
+
+            # Only model and espn. ADP is already folded into the model's
+            # baseline by ProjectionBaselines.season_baseline(), so blending it
+            # again would double-count the market for exactly the players whose
+            # projection is most market-derived.
+            blended = blend(
+                {
+                    MODEL_SOURCE: total,
+                    ESPN_SOURCE: espn_row.projected_points if espn_row else None,
+                },
+                SEASON_WEIGHTS,
+            )
+            if blended is not None:
+                self._upsert(
+                    player_id=player.id,
+                    year=year,
+                    source=BLEND_SOURCE,
+                    points=blended.points,
+                    expected_games=criteria.expected_games,
+                    components={
+                        "sources": blended.sources,
+                        "weights_used": blended.weights_used,
+                    },
+                    now=now,
+                )
+                counts["blend"] += 1
 
         self.db.commit()
         return counts

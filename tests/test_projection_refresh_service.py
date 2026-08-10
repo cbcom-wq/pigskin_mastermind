@@ -90,3 +90,37 @@ def test_skips_non_fantasy_positions(db):
     assert result["model"] == 0
     assert result["skipped"] == 1
     assert db.query(DBPlayerProjection).count() == 0
+
+
+def test_blend_equals_model_when_no_espn_row(db):
+    """Renormalization, not a special case: one source blends to itself."""
+    player = _seed_pool_player(db)
+    ProjectionRefreshService(db, builder=StubBuilder(ppg=20.0, games=16.0)).refresh_season(2026)
+
+    model = db.query(DBPlayerProjection).filter_by(
+        player_id=player.id, source="model",
+    ).one()
+    blend_row = db.query(DBPlayerProjection).filter_by(
+        player_id=player.id, source="blend",
+    ).one()
+    assert blend_row.projected_points == pytest.approx(model.projected_points)
+
+
+def test_blend_weights_model_and_espn(db):
+    player = _seed_pool_player(db)
+    db.add(DBPlayerProjection(
+        player_id=player.id, year=2026, week=None, source="espn",
+        projected_points=400.0,
+    ))
+    db.commit()
+
+    svc = ProjectionRefreshService(db, builder=StubBuilder(ppg=20.0, games=16.0))
+    result = svc.refresh_season(2026)
+
+    assert result["blend"] == 1
+    blend_row = db.query(DBPlayerProjection).filter_by(
+        player_id=player.id, source="blend",
+    ).one()
+    # model 320 at 0.5/0.8, espn 400 at 0.3/0.8 => 350.0
+    assert blend_row.projected_points == pytest.approx(350.0, abs=1.0)
+    assert blend_row.components["weights_used"]["model"] == pytest.approx(0.625)
