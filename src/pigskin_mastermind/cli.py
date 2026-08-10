@@ -240,6 +240,47 @@ def players_merge_identities(dry_run, verbose, position):
         db.close()
 
 
+@main.group()
+def projections():
+    """Projection generation commands."""
+    pass
+
+
+@projections.command('refresh')
+@click.option('--year', type=int, default=None,
+              help='Season to project (defaults to the current fantasy season)')
+@click.option('--limit', type=int, default=None,
+              help='Only project the first N players by ADP')
+def projections_refresh(year, limit):
+    """Run the projection model over the draft pool and persist the results.
+
+    Writes season rows to ``player_projections``: one ``model`` row per
+    player, and a ``blend`` row combining it with ESPN's board projection
+    where one has been imported.
+
+    Roughly 117 ms per player, so a full ~1000-player pool takes ~2 minutes::
+
+        pigskin projections refresh --year 2026
+    """
+    from pigskin_mastermind.services.projection_refresh import (
+        ProjectionRefreshService,
+    )
+    from pigskin_mastermind.utils.season import current_fantasy_season
+
+    year = year or current_fantasy_season()
+    db = _get_stats_db()
+    try:
+        click.echo(f"Projecting draft pool for {year}...")
+        result = ProjectionRefreshService(db).refresh_season(year, limit=limit)
+        click.echo(f"  {result['model']} model projections written")
+        click.echo(f"  {result['espn']} matched an ESPN projection")
+        click.echo(f"  {result['blend']} blended rows written")
+        if result['skipped']:
+            click.echo(f"  {result['skipped']} skipped")
+    finally:
+        db.close()
+
+
 @stats.command('import-espn')
 @click.option('--league-id', required=True, help='ESPN league ID')
 @click.option('--team-id', required=True, type=int, help='ESPN team ID')

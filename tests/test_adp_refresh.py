@@ -179,3 +179,43 @@ class TestFreshnessMetadata:
         assert meta["ffc_count"] == 1
         assert meta["tail_count"] == 2
         assert meta["count"] == 3
+
+
+def test_refresh_draft_data_runs_projections_last(db):
+    """Projections must run after ADP rows exist, and never break the refresh."""
+    svc = ADPService(db)
+    calls = []
+
+    with patch.object(svc, "import_from_ffc", return_value={"imported": 1}), \
+         patch.object(svc, "import_espn_tail", return_value={"imported": 0}), \
+         patch.object(svc, "canonicalize_stored_teams",
+                      side_effect=lambda: calls.append("teams") or 0), \
+         patch(
+             "pigskin_mastermind.services.projection_refresh."
+             "ProjectionRefreshService.refresh_season",
+             side_effect=lambda year, **kw: calls.append("projections") or {
+                 "model": 5, "espn": 0, "blend": 5, "skipped": 0, "year": year,
+             },
+         ):
+        result = svc.refresh_draft_data(year=2026)
+
+    assert calls == ["teams", "projections"]
+    assert result["projections_model"] == 5
+    assert result["projections_blend"] == 5
+
+
+def test_refresh_draft_data_survives_projection_failure(db):
+    svc = ADPService(db)
+
+    with patch.object(svc, "import_from_ffc", return_value={"imported": 1}), \
+         patch.object(svc, "import_espn_tail", return_value={"imported": 0}), \
+         patch.object(svc, "canonicalize_stored_teams", return_value=0), \
+         patch(
+             "pigskin_mastermind.services.projection_refresh."
+             "ProjectionRefreshService.refresh_season",
+             side_effect=RuntimeError("model blew up"),
+         ):
+        result = svc.refresh_draft_data(year=2026)
+
+    assert "projections_error" in result
+    assert result["imported"] == 1
