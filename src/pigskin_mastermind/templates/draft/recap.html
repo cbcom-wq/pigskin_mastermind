@@ -55,7 +55,7 @@
           <div>
             <dt>Best value</dt>
             {% if recap.value.best_value %}
-              <dd class="rc-gain">{{ recap.value.best_value.player.name }}<span class="rc-of">+{{ recap.value.best_value.delta }} vs ADP</span></dd>
+              <dd class="rc-gain">{{ recap.value.best_value.player.name }}<span class="rc-of">+{{ recap.value.best_value.delta }} vs board</span></dd>
             {% else %}
               <dd class="rc-muted">Not enough ADP data</dd>
             {% endif %}
@@ -139,9 +139,13 @@
   <section class="rc-panel">
     <h2 class="rc-h2">How the board fell</h2>
     <p class="rc-sub">
-      Picks made after a player's average draft position are value; before it, a reach.
+      Picks made after a player's slot on the board are value; before it, a reach.
+      Measured in board positions rather than raw ADP, so a round means the same
+      thing whatever the league size.
       {% if recap.value.judged_count < recap.value.picks | length %}
-        {{ recap.value.picks | length - recap.value.judged_count }} pick(s) had no consensus ADP and are not judged.
+        {{ recap.value.picks | length - recap.value.judged_count }} pick(s) sit outside
+        what the board can price — no consensus ADP, or a slot past the end of this
+        draft — and are not judged.
       {% endif %}
     </p>
 

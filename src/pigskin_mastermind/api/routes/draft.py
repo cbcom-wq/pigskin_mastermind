@@ -590,7 +590,10 @@ async def make_pick(req: UserPickRequest):
     if state.get("picks_log"):
         latest_pick = state["picks_log"][-1]
         items = draft_engine.generate_commentary(
-            state["picks_log"], state["available_players"], latest_pick
+            state["picks_log"],
+            state["available_players"],
+            latest_pick,
+            num_teams=state.get("num_teams"),
         )
         state["commentary"] = items
 
@@ -619,7 +622,10 @@ async def advance_one_pick(req: AdvancePickRequest):
     if state.get("picks_log"):
         latest_pick = state["picks_log"][-1]
         items = draft_engine.generate_commentary(
-            state["picks_log"], state["available_players"], latest_pick
+            state["picks_log"],
+            state["available_players"],
+            latest_pick,
+            num_teams=state.get("num_teams"),
         )
         state["commentary"] = items
 

@@ -20,6 +20,11 @@ from pigskin_mastermind.models.database import (
     DBPlayerGameLog,
     DBPlayerSeasonStats,
 )
+from pigskin_mastermind.services.draft_value import (
+    BASELINE_TEAMS,
+    pick_delta,
+    verdict as _verdict,
+)
 from pigskin_mastermind.utils.season import current_fantasy_season
 
 # Slots that accept several positions.  Everything else is filled by an exact
@@ -351,40 +356,24 @@ def bye_grid(
     return ByeGrid(weeks=weeks, unfilled_slots=always_missing)
 
 
-# ADP sources whose values are real consensus draft positions.  Anything else
-# (notably ``espn_tail``, which synthesises ``max_ffc_adp + rank``) is a sort
-# key and cannot support a value verdict.
-REAL_ADP_SOURCES = frozenset({"fantasyfootballcalculator", "ffc", "espn"})
-
-# Picks later than ADP are value; earlier is a reach.  Thresholds in picks.
-_VALUE_TIERS = [
-    (10, "steal", "Great Steal"),
-    (3, "value", "Good Value"),
-    (-3, "fair", "Fair"),
-    (-10, "slight_reach", "Slight Reach"),
-]
-_WORST_TIER = ("reach", "Big Reach")
-
-
-def _verdict(delta: float) -> Tuple[str, str]:
-    for threshold, verdict, label in _VALUE_TIERS:
-        if delta >= threshold:
-            return verdict, label
-    return _WORST_TIER
-
-
 def analyze_value(
     picks_log: List[Dict[str, Any]],
     user_slot: str,
     adp_sources: Dict[int, str],
+    num_teams: int = BASELINE_TEAMS,
+    board_depth: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Judge each of the user's picks against where the player normally goes.
 
-    A pick made later than a player's ADP is value; earlier is a reach.  This
-    only holds when the ADP is a real consensus number — see
-    :data:`REAL_ADP_SOURCES`.  Players whose ADP came from the ESPN tail get no
-    verdict and are kept out of every count and callout, because their "ADP"
-    is a sort key and would manufacture enormous fake steals.
+    A pick made later than the player's position on the board is value;
+    earlier is a reach.  Both the rank-space comparison and the league-size
+    scaling live in :mod:`services.draft_value`, which the live draft grade
+    shares — the two surfaces used to judge the same pick differently.
+
+    This only holds when the ADP is a real consensus number — see
+    :data:`draft_value.REAL_ADP_SOURCES`.  Players whose ADP came from the ESPN
+    tail get no verdict and are kept out of every count and callout, because
+    their "ADP" is a sort key and would manufacture enormous fake steals.
 
     Args:
         picks_log: Every pick in order, as stored on the draft state.
@@ -392,6 +381,10 @@ def analyze_value(
         adp_sources: ``db_id`` → ``adp_source``, from the current season's
             stat rows.  A missing entry is treated as a real source, since the
             tail is the only synthetic one and it is always labelled.
+        num_teams: League size, which sets how many picks a round is worth.
+        board_depth: Total picks in the draft.  Players whose board position
+            lies past it are unjudgeable — the format forces every team to
+            take them early.
 
     Returns:
         ``{picks, steals, reaches, best_value, biggest_reach, average_delta}``.
@@ -406,10 +399,11 @@ def analyze_value(
         player = pick["player"]
         adp = player.get("adp_rank")
         source = adp_sources.get(player.get("db_id"))
-        judgeable = adp is not None and (source is None or source in REAL_ADP_SOURCES)
 
-        delta = (pick["pick_number"] - adp) if judgeable else None
-        verdict, label = _verdict(delta) if judgeable else (None, None)
+        delta = pick_delta(
+            pick["pick_number"], player, adp_source=source, board_depth=board_depth
+        )
+        verdict, label = _verdict(delta, num_teams) if delta is not None else (None, None)
 
         picks.append({
             "round": pick["round"],
@@ -609,6 +603,8 @@ class DraftRecapService:
                 state["picks_log"],
                 user_slot,
                 {pid: r.adp_source for pid, r in season_rows.items()},
+                num_teams=state["num_teams"],
+                board_depth=state["num_teams"] * state["num_rounds"],
             ),
             regrets=passed_on(
                 state["picks_log"], state.get("available_players", []), user_slot

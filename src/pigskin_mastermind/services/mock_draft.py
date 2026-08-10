@@ -10,6 +10,14 @@ from typing import Any, Dict, List, Optional
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from pigskin_mastermind.services.draft_value import (
+    BASELINE_TEAMS,
+    board_rank,
+    pick_delta,
+    rank_pool,
+    verdict as value_verdict,
+)
+
 
 # ESPN pro-team ID → NFL abbreviation (covers all 32 active franchises; unknown IDs map to "FA")
 _ESPN_TEAM_MAP: Dict[int, str] = {
@@ -423,12 +431,9 @@ class MockDraftEngine:
 
         if player_pool is None:
             raise ValueError("player_pool is required; use use_ffc_adp or use_espn_adp to load players")
-        pool = list(player_pool)
-        # Sort pool: by ADP rank (ascending) when available, else by projected_points (descending)
-        if pool and pool[0].get("adp_rank") is not None:
-            pool = sorted(pool, key=lambda p: p.get("adp_rank") or 9999)
-        else:
-            pool = sorted(pool, key=lambda p: p["projected_points"], reverse=True)
+        # Sorts by ADP ascending (else projection) and stamps each player's
+        # board rank, which is what the value verdicts are judged against.
+        pool = rank_pool(player_pool)
 
         resolved_lineup = dict(lineup_slots) if lineup_slots else dict(DEFAULT_LINEUP_SLOTS)
 
@@ -549,11 +554,7 @@ class MockDraftEngine:
 
             if player_pool is None:
                 raise ValueError("player_pool is required; use use_ffc_adp or use_espn_adp to load players")
-            pool = list(player_pool)
-            if pool and pool[0].get("adp_rank") is not None:
-                pool = sorted(pool, key=lambda p: p.get("adp_rank") or 9999)
-            else:
-                pool = sorted(pool, key=lambda p: p["projected_points"], reverse=True)
+            pool = rank_pool(player_pool)
 
             state: Dict[str, Any] = {
                 "draft_id": draft_id,
@@ -1058,41 +1059,46 @@ class MockDraftEngine:
         user_roster = state["rosters"].get(user_slot, [])
         all_picks = state["picks_log"]
 
-        # Pick-by-pick value analysis
+        # Pick-by-pick value analysis.  Judged in board-rank space and scaled
+        # by league size — see services/draft_value.py for why raw ADP cannot
+        # be compared against a pick number.
+        num_teams = state.get("num_teams") or BASELINE_TEAMS
+        board_depth = len(state.get("pick_order") or []) or None
+        _EMOJI = {
+            "steal": "🔥 Great Steal",
+            "value": "✅ Good Value",
+            "fair": "Fair",
+            "slight_reach": "⚠️ Slight Reach",
+            "reach": "⚠️ Big Reach",
+        }
         pick_analysis = []
         total_value = 0.0
+        judged_picks = 0
         for pick in all_picks:
             if str(pick["slot"]) != user_slot:
                 continue
             p = pick["player"]
-            adp = p.get("adp_rank")
             pick_num = pick["pick_number"]
-            delta = (pick_num - adp) if adp is not None else 0
-            total_value += delta
+            delta = pick_delta(pick_num, p, board_depth=board_depth)
 
-            if delta >= 10:
-                verdict = "steal"
-                label = "🔥 Great Steal"
-            elif delta >= 3:
-                verdict = "value"
-                label = "✅ Good Value"
-            elif delta >= -3:
-                verdict = "fair"
-                label = "Fair"
-            elif delta >= -10:
-                verdict = "slight_reach"
-                label = "⚠️ Slight Reach"
+            if delta is None:
+                # No consensus position to judge against (unranked, or an
+                # espn_tail sort key).  Kept in the list so the pick still
+                # shows, but excluded from every count and from the grade.
+                verdict = label = None
             else:
-                verdict = "reach"
-                label = "⚠️ Big Reach"
+                total_value += delta
+                judged_picks += 1
+                verdict, _ = value_verdict(delta, num_teams)
+                label = _EMOJI[verdict]
 
             pick_analysis.append({
                 "round": pick["round"],
                 "pick_number": pick_num,
                 "player": p["name"],
                 "position": p["position"],
-                "adp": adp,
-                "delta": round(delta, 1) if adp is not None else None,
+                "adp": p.get("adp_rank"),
+                "delta": round(delta, 1) if delta is not None else None,
                 "verdict": verdict,
                 "label": label,
             })
@@ -1109,15 +1115,23 @@ class MockDraftEngine:
                 balance_score += 1
         balance_pct = balance_score / len(required)
 
-        # Tier distribution score (20%)
-        tier1 = sum(1 for p in user_roster if (p.get("adp_rank") or 999) <= 36)
-        tier2 = sum(1 for p in user_roster if 36 < (p.get("adp_rank") or 999) <= 72)
+        # Tier distribution score (20%).  Bands are the first three and next
+        # three rounds of the board, so "elite tier" means the same share of
+        # the draft in a 10-team league as in a 14-team one.  At 12 teams they
+        # are the original top-36 / top-72 cutoffs.
+        tier1_cut = 3 * num_teams
+        tier2_cut = 6 * num_teams
+        ranks = [board_rank(p) or 9999 for p in user_roster]
+        tier1 = sum(1 for r in ranks if r <= tier1_cut)
+        tier2 = sum(1 for r in ranks if tier1_cut < r <= tier2_cut)
         tier_score = min(1.0, (tier1 * 0.15 + tier2 * 0.08))
 
-        # ADP value score (50%) — normalize to 0-1 range
-        num_picks = len(pick_analysis) or 1
-        avg_value = total_value / num_picks
-        value_pct = min(1.0, max(0.0, (avg_value + 10) / 20))
+        # Value score (50%) — normalize to 0-1 range.  Averaged over judged
+        # picks only, and the window scales with a round so the same drafting
+        # earns the same score at any league size.
+        value_window = 10 / 12 * num_teams
+        avg_value = (total_value / judged_picks) if judged_picks else 0.0
+        value_pct = min(1.0, max(0.0, (avg_value + value_window) / (2 * value_window)))
 
         # Composite score → letter grade
         composite = value_pct * 0.50 + balance_pct * 0.30 + tier_score * 0.20
@@ -1152,9 +1166,9 @@ class MockDraftEngine:
                 weaknesses.append(f"Need more {pos} depth ({cnt}/{req})")
 
         if tier1 >= 3:
-            strengths.append(f"{tier1} elite-tier players (top 36 ADP)")
+            strengths.append(f"{tier1} elite-tier players (top {tier1_cut} on the board)")
         if tier1 == 0:
-            weaknesses.append("No elite-tier talent (top 36 ADP)")
+            weaknesses.append(f"No elite-tier talent (top {tier1_cut} on the board)")
 
         steals = sum(1 for pa in pick_analysis if pa["verdict"] == "steal")
         reaches = sum(1 for pa in pick_analysis if pa["verdict"] in ("reach", "slight_reach"))
@@ -1196,6 +1210,7 @@ class MockDraftEngine:
         picks_log: List[Dict[str, Any]],
         available: List[Dict[str, Any]],
         pick: Dict[str, Any],
+        num_teams: int = BASELINE_TEAMS,
     ) -> List[Dict[str, str]]:
         """Generate commentary items for a single pick.
 
@@ -1206,16 +1221,23 @@ class MockDraftEngine:
         pick_num = pick["pick_number"]
         adp = p.get("adp_rank")
 
-        # Value assessment
-        if adp is not None:
-            delta = pick_num - adp
-            if delta >= 15:
-                items.append({"type": "steal", "text": f"🔥 Steal! {p['name']} (ADP {adp:.0f}) falls {delta:.0f} spots past ADP"})
-            elif delta >= 5:
-                items.append({"type": "steal", "text": f"✅ Value pick — {p['name']} going {delta:.0f} picks later than ADP"})
-            elif delta <= -15:
-                items.append({"type": "reach", "text": f"⚠️ Big reach — {p['name']} drafted {abs(delta):.0f} picks above ADP {adp:.0f}"})
-            elif delta <= -8:
+        # Value assessment.  Same rank-space scale as the draft grade, so the
+        # live ticker and the final grade never contradict each other.  The
+        # bars sit a little wider than the grade's so the ticker calls out only
+        # the picks worth interrupting for.
+        delta = pick_delta(pick_num, p)
+        if delta is not None:
+            round_size = max(int(num_teams or BASELINE_TEAMS), 1)
+            big = 15 / 12 * round_size
+            small = 5 / 12 * round_size
+            early = 8 / 12 * round_size
+            if delta >= big:
+                items.append({"type": "steal", "text": f"🔥 Steal! {p['name']} (ADP {adp:.0f}) falls {delta:.0f} spots past his board slot"})
+            elif delta >= small:
+                items.append({"type": "steal", "text": f"✅ Value pick — {p['name']} going {delta:.0f} picks later than expected"})
+            elif delta <= -big:
+                items.append({"type": "reach", "text": f"⚠️ Big reach — {p['name']} drafted {abs(delta):.0f} picks above his board slot"})
+            elif delta <= -early:
                 items.append({"type": "reach", "text": f"⚠️ Reach — {p['name']} going {abs(delta):.0f} picks early"})
 
         # Position run

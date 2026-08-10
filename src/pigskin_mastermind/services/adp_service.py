@@ -747,6 +747,9 @@ class ADPService:
                 "nfl_team": player.nfl_team,
                 "projected_points": self._pool_projection(player),
                 "adp_rank": season.adp,
+                # Carried into the draft so the value verdicts can tell a real
+                # consensus ADP from the synthetic espn_tail sort key.
+                "adp_source": season.adp_source,
                 "adp_stdev": season.adp_stdev,
                 "headshot_url": player.headshot_url or "",
                 "bye_week": player.bye_week,
