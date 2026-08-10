@@ -174,3 +174,24 @@ def test_season_projection_map_batches(db):
 
     result = season_projection_map(db, [a.id, b.id], 2026)
     assert result == {a.id: pytest.approx(350.0), b.id: pytest.approx(200.0)}
+
+
+def test_season_projection_map_prefers_blend_over_model_for_same_player(db):
+    """One player with both rows — the batch path must resolve preference
+    per-player, not just take whichever row the query happens to return
+    first. Covers a regression the two-different-players fixture above
+    cannot: an inverted rank comparison would still pass that one.
+    """
+    player = _seed_pool_player(db)
+    db.add(DBPlayerProjection(
+        player_id=player.id, year=2026, week=None, source="model",
+        projected_points=300.0,
+    ))
+    db.add(DBPlayerProjection(
+        player_id=player.id, year=2026, week=None, source="blend",
+        projected_points=350.0,
+    ))
+    db.commit()
+
+    result = season_projection_map(db, [player.id], 2026)
+    assert result == {player.id: pytest.approx(350.0)}
