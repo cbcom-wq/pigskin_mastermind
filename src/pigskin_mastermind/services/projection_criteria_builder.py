@@ -49,8 +49,19 @@ POSITION_PEAK_AGES = {
 class ProjectionCriteriaBuilder:
     """Builds projection criteria from stored stats data."""
 
-    def __init__(self, db: Session, shrinkage_games: Optional[float] = None):
+    def __init__(
+        self,
+        db: Session,
+        shrinkage_games: Optional[float] = None,
+        allow_network: bool = True,
+    ):
         self.db = db
+        # Bulk callers set this False. The per-player ESPN fetch below costs
+        # ~3.3s against ~35ms for a player with local data, which turns a
+        # full-pool refresh into a ~27 minute job. Players it would help are
+        # exactly those with no stats, whose baseline already falls through to
+        # the ADP-implied curve in ProjectionBaselines.season_baseline().
+        self.allow_network = allow_network
         # Track players already checked this session to avoid repeated work
         self._ensured_players: set = set()
         self._ensured_team_years: set = set()
@@ -183,7 +194,9 @@ class ProjectionCriteriaBuilder:
                 pass
 
         # ── Step 3: ESPN API fetch (requires credentials) ─────────────
-        if player.player_id and player.player_id.startswith('espn_'):
+        if (self.allow_network
+                and player.player_id
+                and player.player_id.startswith('espn_')):
             league = self.db.query(DBLeague).first()
             if league and league.espn_s2 and league.swid:
                 try:
@@ -272,7 +285,7 @@ class ProjectionCriteriaBuilder:
             else:
                 still_missing.append(pid)
 
-        if still_missing:
+        if still_missing and self.allow_network:
             league = self.db.query(DBLeague).first()
             if league and league.espn_s2 and league.swid:
                 try:

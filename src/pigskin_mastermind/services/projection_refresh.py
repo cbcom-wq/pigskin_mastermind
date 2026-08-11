@@ -64,7 +64,9 @@ class ProjectionRefreshService:
         service: Optional[YearlyProjectionService] = None,
     ) -> None:
         self.db = db
-        self.builder = builder or ProjectionCriteriaBuilder(db)
+        # Offline: a full-pool refresh with per-player ESPN fetches takes ~27
+        # minutes against ~35 seconds without them (Task 6 measurement).
+        self.builder = builder or ProjectionCriteriaBuilder(db, allow_network=False)
         self.service = service or YearlyProjectionService(
             coefficients=get_effective_coefficients(),
         )

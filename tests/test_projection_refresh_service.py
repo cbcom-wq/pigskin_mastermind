@@ -195,3 +195,44 @@ def test_season_projection_map_prefers_blend_over_model_for_same_player(db):
 
     result = season_projection_map(db, [player.id], 2026)
     assert result == {player.id: pytest.approx(350.0)}
+
+
+from unittest.mock import patch
+
+from pigskin_mastermind.models.database import DBLeague
+from pigskin_mastermind.services.projection_criteria_builder import (
+    ProjectionCriteriaBuilder,
+)
+
+
+def _seed_espn_league(db):
+    """A league with credentials — what enables the ESPN fetch path."""
+    db.add(DBLeague(
+        league_id="1", name="Test", year=2025, swid="{SWID}", espn_s2="s2cookie",
+    ))
+    db.commit()
+
+
+def test_builder_defaults_to_allowing_network(db):
+    """Existing callers (tuner, stats routes) must keep the fetch path."""
+    assert ProjectionCriteriaBuilder(db).allow_network is True
+
+
+def test_offline_builder_skips_espn_fetch(db):
+    """The bulk refresh must not make a network call per player."""
+    _seed_espn_league(db)
+    player = _seed_pool_player(db, name="No Logs Guy", position="WR")
+
+    builder = ProjectionCriteriaBuilder(db, allow_network=False)
+    with patch(
+        "pigskin_mastermind.services.espn_sync.ESPNSyncService.fetch_player_full_stats"
+    ) as mock_fetch:
+        builder.ensure_players_stats([player.id], 2025)
+
+    mock_fetch.assert_not_called()
+
+
+def test_refresh_service_builder_is_offline(db):
+    """ProjectionRefreshService must construct an offline builder by default."""
+    svc = ProjectionRefreshService(db)
+    assert svc.builder.allow_network is False
