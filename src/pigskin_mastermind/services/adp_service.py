@@ -361,22 +361,6 @@ class ADPService:
             result["tail_error"] = tail["error"]
 
         result["teams_canonicalized"] = self.canonicalize_stored_teams()
-
-        # Projections run last: they read the ADP rows the legs above write.
-        # Non-fatal for the same reason the ESPN tail is — a refresh must never
-        # leave the pool worse than it started.
-        try:
-            from pigskin_mastermind.services.projection_refresh import (
-                ProjectionRefreshService,
-            )
-
-            projections = ProjectionRefreshService(self.db).refresh_season(year)
-            result["projections_model"] = projections.get("model", 0)
-            result["projections_blend"] = projections.get("blend", 0)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.exception("Projection refresh failed for %s", year)
-            result["projections_error"] = str(exc)
-
         return result
 
     def import_espn_tail(
