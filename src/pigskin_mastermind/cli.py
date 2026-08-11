@@ -258,7 +258,14 @@ def projections_refresh(year, limit):
     player, and a ``blend`` row combining it with ESPN's board projection
     where one has been imported.
 
-    Roughly 117 ms per player, so a full ~1000-player pool takes ~2 minutes::
+    This command runs entirely offline and does not fetch ESPN projections
+    itself — ``ADPService.import_espn_projections()`` has no CLI command or
+    other production caller today, so no ``espn`` rows ever get written and
+    every ``blend`` row is currently a byte-for-byte copy of its ``model``
+    row. Import ESPN projections separately first if you want the blend to
+    combine two real sources.
+
+    Takes roughly 39 seconds for a full ~1000-player pool::
 
         pigskin projections refresh --year 2026
     """
