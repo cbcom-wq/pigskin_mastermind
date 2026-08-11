@@ -132,7 +132,9 @@ class ProjectionCriteriaBuilder:
           4. If still incomplete, try promoting any DBWeeklyPlayerStats
              rows to game logs, then aggregate.
           5. If still incomplete and ESPN credentials are configured,
-             fetch full per-week stats from the ESPN API.
+             fetch full per-week stats from the ESPN API. Skipped entirely
+             when ``self.allow_network`` is ``False``, regardless of whether
+             credentials are configured.
         """
         cache_key = (player_id, year)
         if cache_key in self._ensured_players:
@@ -224,7 +226,10 @@ class ProjectionCriteriaBuilder:
 
         Runs the offline paths (JSON parsing, WPS promotion) first as a
         single batch, then falls back to per-player ESPN fetches only for
-        players that still lack data.
+        players that still lack data. Those per-player ESPN fetches are
+        skipped entirely when ``self.allow_network`` is ``False`` — the mode
+        ``ProjectionRefreshService`` uses, since a full-pool run with network
+        fetches enabled takes ~27 minutes instead of ~35 seconds.
         """
         # Quick filter: which players actually need work?
         needs_work = []

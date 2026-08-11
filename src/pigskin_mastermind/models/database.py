@@ -306,9 +306,12 @@ class DBPlayerProjection(Base):
     ceiling = Column(Float, nullable=True)
     std_dev = Column(Float, nullable=True)
 
-    # A real column, not a components key: the draft pool converts season
-    # totals to a per-game rate and reaching into JSON for the divisor is how
-    # the mixed-unit bug comes back.
+    # A real column, not a components key. This is the games-played divisor
+    # projection_service used to turn its per-game rate into the season TOTAL
+    # stored in projected_points above — kept here for transparency/debugging,
+    # not because a consumer re-derives a rate from it. The draft pool serves
+    # projected_points as-is; reaching into JSON for this value is how the
+    # mixed-unit bug comes back.
     expected_games = Column(Float, nullable=True)
 
     components = Column(JSON, default=dict)

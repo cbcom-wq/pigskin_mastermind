@@ -337,10 +337,13 @@ def test_draft_pool_projection_units_stay_comparable(db):
     db.commit()
 
     values = [p["projected_points"] for p in svc.get_adp_for_draft_pool(year=2026)]
-    # No entry should land in the per-game band (~10-30): espn_backed's
+    # No entry should land in the per-game band (~0-40): espn_backed's
     # DBPlayer.projected_points (18.8) is ignored entirely, and ffc_backed's
     # fallback resolves to the season TOTAL (331.3), not the 19.5 average.
     assert not [v for v in values if 0 < v < 40], f"a per-game value leaked into the pool: {values}"
+    # Pin the real season-total value so an all-zeros pool can't pass this
+    # band check vacuously.
+    assert 331.3 in values
 
 
 def test_draft_pool_ignores_single_game_season_rows(db):
