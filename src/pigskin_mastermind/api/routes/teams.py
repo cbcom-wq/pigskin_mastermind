@@ -132,6 +132,8 @@ async def team_detail(
         matchups = _build_matchup_data(db, weekly_players, team_db_id, week, year)
 
     # Current roster (season view): starters sorted by position order, then projected points
+    # NOTE: legacy mixed-unit column. The draft pool reads player_projections
+    # (services/projection_refresh.py) instead; this route has not been migrated.
     players = sorted(
         db.query(DBPlayer).filter(DBPlayer.team_id == team_db_id).all(),
         key=lambda p: (_POSITION_ORDER.get(p.position, 7), -p.projected_points),

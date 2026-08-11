@@ -190,6 +190,21 @@ DB stats ──► ProjectionCriteriaBuilder ──► {Weekly,Yearly}Projection
 
 `get_effective_coefficients()` is the single call production code should use for the active set.
 
+### Two projection storage paths — only one is wired up
+
+`player_projections` (`DBPlayerProjection`, `services/projection_refresh.py`) is the canonical
+store: `get_projection()` / `season_projection_map()` read a persisted `model` or `blend` season
+row, one unit (season totals), one number per player-year. It is populated by
+`pigskin projections refresh` and is what the **mock draft pool**
+(`ADPService.get_adp_for_draft_pool()`) ranks on.
+
+`DBPlayer.projected_points` is the legacy path. It is a single mixed-unit column that two
+importers write differently, and it is still what `players.py`, `lineups.py`, `trades.py`, and
+`teams.py` read — so the same player can show two different "Projected" numbers depending which
+page you're on. Migrating those consumers onto `player_projections` is pending; each remaining
+read site has a `NOTE:` comment pointing here. Do not add a new consumer of
+`DBPlayer.projected_points` — wire it to `player_projections` instead.
+
 ### Monte Carlo simulation
 
 `src/pigskin_mastermind/.claude/monte_carlo_model.md` is the original design spec for this engine —
@@ -225,8 +240,11 @@ tagged `adp_source="espn_tail"` with a synthetic ADP of `max_ffc_adp + rank`. Th
 key, not a draft position; the `adp_source` label is what distinguishes it. The tail is ordered by
 ESPN's projection because ~789 of its players share a placeholder ADP of 170.
 
-- `refresh_draft_data()` is the one call that refreshes everything: FFC, then the tail, then
+- `refresh_draft_data()` refreshes ADP and team data: FFC, then the tail, then
   `canonicalize_stored_teams()`. **Order matters** — ESPN runs second, so it wins on team conflicts.
+  It does **not** refresh projections — that hook was removed so this call stays offline. Run
+  `pigskin projections refresh --year <year>` separately (and after `refresh_draft_data()`, since it
+  depends on the ADP-derived pool membership) to populate `player_projections`.
 - The tail applies team updates to *all* ~1000 ESPN players but writes ADP rows only for those FFC
   didn't rank. Skipping FFC-board players wholesale would leave the top ~250 on stale teams.
 - `get_adp_for_draft_pool()` reads both sources; `get_all_adp()` (the `/adp/rankings` consensus

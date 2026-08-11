@@ -54,6 +54,8 @@ async def team_players_for_trade(
     if not team:
         return _empty("Team not found or not claimed")
 
+    # NOTE: legacy mixed-unit column. The draft pool reads player_projections
+    # (services/projection_refresh.py) instead; this route has not been migrated.
     players = db.query(DBPlayer).filter(
         DBPlayer.team_id == team_id
     ).order_by(DBPlayer.position, DBPlayer.projected_points.desc()).all()
@@ -83,6 +85,8 @@ async def analyze_trade(
     gives_players = db.query(DBPlayer).filter(DBPlayer.id.in_(trade.gives)).all()
     receives_players = db.query(DBPlayer).filter(DBPlayer.id.in_(trade.receives)).all()
 
+    # NOTE: legacy mixed-unit column. The draft pool reads player_projections
+    # (services/projection_refresh.py) instead; this route has not been migrated.
     gives = [
         Player(
             player_id=p.player_id,
@@ -94,6 +98,8 @@ async def analyze_trade(
         for p in gives_players
     ]
 
+    # NOTE: legacy mixed-unit column. The draft pool reads player_projections
+    # (services/projection_refresh.py) instead; this route has not been migrated.
     receives = [
         Player(
             player_id=p.player_id,

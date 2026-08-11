@@ -188,6 +188,8 @@ async def search_players(
             | (DBPlayer.nfl_team.ilike(search))
         )
     # Order by ADP ascending (NULLs last), then by projected_points descending
+    # NOTE: legacy mixed-unit column. The draft pool reads player_projections
+    # (services/projection_refresh.py) instead; this route has not been migrated.
     query = query.order_by(DBPlayerSeasonStats.adp.asc().nullslast(), DBPlayer.projected_points.desc())
     results = query.limit(20).all()
 
@@ -234,6 +236,8 @@ async def list_players(
     if nfl_team:
         query = query.filter(DBPlayer.nfl_team == nfl_team)
 
+    # NOTE: legacy mixed-unit column. The draft pool reads player_projections
+    # (services/projection_refresh.py) instead; this route has not been migrated.
     players = query.order_by(DBPlayer.projected_points.desc()).limit(100).all()
 
     return templates.TemplateResponse(

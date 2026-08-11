@@ -33,6 +33,9 @@ def _db_team_to_domain(db_team, db_players):
                 name=p.name,
                 position=position,
                 team=p.nfl_team,
+                # NOTE: legacy mixed-unit column. The draft pool reads
+                # player_projections (services/projection_refresh.py) instead;
+                # this route has not been migrated.
                 projected_points=p.projected_points,
                 actual_points=p.actual_points,
                 stats=p.stats or {},
