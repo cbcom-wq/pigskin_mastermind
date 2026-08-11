@@ -1,16 +1,22 @@
 """Tests for ProjectionRefreshService — writing persisted projections."""
 
+from unittest.mock import patch
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from pigskin_mastermind.models.database import (
-    Base, DBPlayer, DBPlayerProjection, DBPlayerSeasonStats,
+    Base, DBLeague, DBPlayer, DBPlayerProjection, DBPlayerSeasonStats,
 )
 from pigskin_mastermind.models.projection_criteria import YearlyProjectionCriteria
+from pigskin_mastermind.services.projection_criteria_builder import (
+    ProjectionCriteriaBuilder,
+)
 from pigskin_mastermind.services.projection_refresh import (
-    ProjectionRefreshService, get_projection, season_projection_map,
+    DRAFT_POOL_SOURCES, ProjectionRefreshService, get_projection,
+    season_projection_map,
 )
 
 
@@ -86,12 +92,27 @@ def test_rerunning_updates_rather_than_duplicating(db):
 
 
 def test_skips_non_fantasy_positions(db):
-    player = _seed_pool_player(db, name="Some Guy", position="Unknown")
+    _seed_pool_player(db, name="Some Guy", position="Unknown")
     result = ProjectionRefreshService(db, builder=StubBuilder()).refresh_season(2026)
 
     assert result["model"] == 0
     assert result["skipped"] == 1
     assert db.query(DBPlayerProjection).count() == 0
+
+
+def test_skips_zero_projection_writes_no_rows(db):
+    """max(0, base_score) is a clamp meaning 'no signal', not a forecast of
+    zero. Persisting it as a model row would suppress adp_service's fallback
+    to last season's total for a player the model simply couldn't score."""
+    player = _seed_pool_player(db)
+    svc = ProjectionRefreshService(db, builder=StubBuilder(ppg=0.0, games=16.0))
+
+    result = svc.refresh_season(2026)
+
+    assert result["model"] == 0
+    assert result["blend"] == 0
+    assert result["skipped"] == 1
+    assert db.query(DBPlayerProjection).filter_by(player_id=player.id).count() == 0
 
 
 def test_blend_equals_model_when_no_espn_row(db):
@@ -197,14 +218,6 @@ def test_season_projection_map_prefers_blend_over_model_for_same_player(db):
     assert result == {player.id: pytest.approx(350.0)}
 
 
-from unittest.mock import patch
-
-from pigskin_mastermind.models.database import DBLeague
-from pigskin_mastermind.services.projection_criteria_builder import (
-    ProjectionCriteriaBuilder,
-)
-
-
 def _seed_espn_league(db):
     """A league with credentials — what enables the ESPN fetch path."""
     db.add(DBLeague(
@@ -236,3 +249,12 @@ def test_refresh_service_builder_is_offline(db):
     """ProjectionRefreshService must construct an offline builder by default."""
     svc = ProjectionRefreshService(db)
     assert svc.builder.allow_network is False
+
+
+def test_draft_pool_sources_match_adp_service():
+    """Duplicated to avoid an import cycle (see the comment on
+    DRAFT_POOL_SOURCES) — nothing else pins the two constants together, so
+    they can silently drift and new pool players stop getting projected."""
+    from pigskin_mastermind.services.adp_service import ADPService
+
+    assert DRAFT_POOL_SOURCES == ADPService.DRAFT_POOL_SOURCES

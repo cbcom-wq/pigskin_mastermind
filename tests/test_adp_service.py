@@ -676,6 +676,51 @@ class TestDraftPoolProjections:
         db.commit()
         return players
 
+    def test_persisted_zero_falls_through_to_season_total(self, db):
+        """A persisted 0.0 is projection_service's clamp for 'no signal', not
+        a real forecast of zero. It must not suppress the season-total
+        fallback."""
+        players = self._seed_with_adp(db)
+        db.add(DBPlayerProjection(
+            player_id=players[0].id, year=2026, week=None, source="blend",
+            projected_points=0.0,
+        ))
+        db.add(DBPlayerSeasonStats(
+            player_id=players[0].id, year=2025, games_played=17,
+            fantasy_points_total=104.0, fantasy_points_avg=6.1,
+        ))
+        db.commit()
+
+        pool = ADPService(db).get_adp_for_draft_pool(year=2026)
+        entry = next(p for p in pool if p["db_id"] == players[0].id)
+        assert entry["projected_points"] == pytest.approx(104.0)
+
+    def test_fallback_excludes_in_progress_target_season(self, db):
+        """order_by(year.desc()).first() with no year filter can pick the
+        target season's own partial-year total, which is not scale-stable
+        the way a per-game average was. The fallback must only look at
+        seasons strictly before the one being projected."""
+        players = self._seed_with_adp(db)
+        # _seed_with_adp already wrote the 2026 row (that's what carries the
+        # ADP that puts this player in the pool) — turn it into an
+        # in-progress season: 4 games in, so its total is a partial number
+        # that would badly understate a season projection.
+        row_2026 = db.query(DBPlayerSeasonStats).filter_by(
+            player_id=players[0].id, year=2026,
+        ).one()
+        row_2026.games_played = 4
+        row_2026.fantasy_points_total = 40.0
+        row_2026.fantasy_points_avg = 10.0
+        db.add(DBPlayerSeasonStats(
+            player_id=players[0].id, year=2025, games_played=17,
+            fantasy_points_total=300.0, fantasy_points_avg=17.6,
+        ))
+        db.commit()
+
+        pool = ADPService(db).get_adp_for_draft_pool(year=2026)
+        entry = next(p for p in pool if p["db_id"] == players[0].id)
+        assert entry["projected_points"] == pytest.approx(300.0)
+
     def test_prefers_blend_row(self, db):
         players = self._seed_with_adp(db)
         db.add(DBPlayerProjection(
@@ -729,4 +774,6 @@ class TestDraftPoolProjections:
         db.commit()
 
         pool = ADPService(db).get_adp_for_draft_pool(year=2026)
-        assert not [p for p in pool if 0 < p["projected_points"] < 20]
+        # Band kept consistent with the one in
+        # test_player_profile_import.py::test_draft_pool_projection_units_stay_comparable.
+        assert not [p for p in pool if 0 < p["projected_points"] < 40]

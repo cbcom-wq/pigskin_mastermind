@@ -752,7 +752,7 @@ class ADPService:
                 "name": player.name,
                 "position": player.position,
                 "nfl_team": player.nfl_team,
-                "projected_points": self._pool_projection(player, projections),
+                "projected_points": self._pool_projection(player, projections, year),
                 "adp_rank": season.adp,
                 # Carried into the draft so the value verdicts can tell a real
                 # consensus ADP from the synthetic espn_tail sort key.
@@ -770,6 +770,7 @@ class ADPService:
         self,
         player: DBPlayer,
         projections: Dict[int, float],
+        year: Optional[int] = None,
     ) -> float:
         """Season-total projection for the draft pool.
 
@@ -783,22 +784,27 @@ class ADPService:
         within-position normalization.
         """
         persisted = projections.get(player.id)
-        if persisted is not None:
+        # Truthy, not "is not None": a persisted 0.0 is projection_service's
+        # clamp for "no signal", not a real forecast. Falling through here
+        # lets the season-total fallback below supply a real number for rows
+        # written before refresh_season started skipping zero projections.
+        if persisted:
             return round(persisted, 1)
 
-        latest = (
-            self.db.query(DBPlayerSeasonStats)
-            .filter(
-                DBPlayerSeasonStats.player_id == player.id,
-                DBPlayerSeasonStats.fantasy_points_total > 0,
-                # Some ESPN-sourced season rows record a full-season total
-                # against games_played=1, which makes avg == total. Requiring a
-                # real sample keeps those out of the pool.
-                DBPlayerSeasonStats.games_played >= _MIN_GAMES_FOR_AVERAGE,
-            )
-            .order_by(DBPlayerSeasonStats.year.desc())
-            .first()
+        query = self.db.query(DBPlayerSeasonStats).filter(
+            DBPlayerSeasonStats.player_id == player.id,
+            DBPlayerSeasonStats.fantasy_points_total > 0,
+            # Some ESPN-sourced season rows record a full-season total
+            # against games_played=1, which makes avg == total. Requiring a
+            # real sample keeps those out of the pool.
+            DBPlayerSeasonStats.games_played >= _MIN_GAMES_FOR_AVERAGE,
         )
+        if year is not None:
+            # Excludes the in-progress target season itself: a partial-year
+            # total (e.g. 4 games in) is not a stand-in for a full season the
+            # way a per-game average was scale-stable mid-season.
+            query = query.filter(DBPlayerSeasonStats.year < year)
+        latest = query.order_by(DBPlayerSeasonStats.year.desc()).first()
         return round(latest.fantasy_points_total, 1) if latest else 0.0
 
     def get_adp_metadata(self, year: Optional[int] = None) -> Dict[str, Any]:

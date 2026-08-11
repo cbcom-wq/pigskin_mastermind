@@ -106,6 +106,15 @@ class ProjectionRefreshService:
                 counts["skipped"] += 1
                 continue
 
+            if total <= 0:
+                # ``max(0, base_score)`` in projection_service is a clamp
+                # meaning "no signal", not a forecast of zero. Writing that as
+                # a persisted 0.0 would assert a projection the model never
+                # made, and would suppress adp_service's fallback to last
+                # season's total for a player the model simply couldn't score.
+                counts["skipped"] += 1
+                continue
+
             self._upsert(
                 player_id=player.id,
                 year=year,
