@@ -259,3 +259,107 @@ def test_weekly_scope_matches_against_the_weekly_model_row(db, player, result):
     result["ceiling"] = 45.0
     with pytest.raises(ResultRejected, match="model projection"):
         validate_result(db, result)
+
+
+# --- Task 9: persisting a validated result as source='llm' ---
+
+
+def test_writes_an_llm_row_with_columns_and_components(db, player, result):
+    from pigskin_mastermind.services.agent_projection import (
+        record_llm_projection,
+    )
+
+    row = record_llm_projection(db, result)
+
+    assert row.source == "llm"
+    assert row.player_id == player.id
+    assert row.year == 2026
+    assert row.week is None
+    assert row.projected_points == 244.5
+    assert row.floor == 188.0
+    assert row.ceiling == 301.0
+    assert row.expected_games == 16.2
+
+    assert row.components["confidence"] == "medium"
+    assert row.components["rationale"].startswith("Volume held up")
+    assert row.components["key_factors"][0]["magnitude_pts"] == 8.0
+    assert row.components["evidence_hash"] == "a" * 64
+    assert row.components["web_used"] is False
+
+
+def test_rerunning_updates_rather_than_duplicating(db, player, result):
+    from pigskin_mastermind.services.agent_projection import (
+        record_llm_projection,
+    )
+
+    record_llm_projection(db, result)
+
+    second = copy.deepcopy(result)
+    second["projected_points"] = 251.0
+    second["rationale"] = "Revised after the depth chart moved."
+    record_llm_projection(db, second)
+
+    rows = (
+        db.query(DBPlayerProjection).filter_by(player_id=player.id, source="llm").all()
+    )
+    assert len(rows) == 1
+    assert rows[0].projected_points == 251.0
+    assert rows[0].components["rationale"].startswith("Revised")
+
+
+def test_season_and_weekly_rows_coexist(db, player, result):
+    from pigskin_mastermind.services.agent_projection import (
+        record_llm_projection,
+    )
+
+    record_llm_projection(db, result)
+
+    weekly = copy.deepcopy(result)
+    weekly["week"] = 5
+    weekly["projected_points"] = 15.2
+    weekly["floor"] = 6.0
+    weekly["ceiling"] = 27.0
+    record_llm_projection(db, weekly)
+
+    rows = (
+        db.query(DBPlayerProjection).filter_by(player_id=player.id, source="llm").all()
+    )
+    assert len(rows) == 2
+
+
+def test_invalid_result_writes_nothing(db, player, result):
+    from pigskin_mastermind.services.agent_projection import (
+        record_llm_projection,
+    )
+
+    result["floor"] = 999.0
+    with pytest.raises(ResultRejected):
+        record_llm_projection(db, result)
+
+    assert db.query(DBPlayerProjection).count() == 0
+
+
+def test_does_not_disturb_the_model_row(db, player, result):
+    from pigskin_mastermind.services.agent_projection import (
+        record_llm_projection,
+    )
+
+    db.add(
+        DBPlayerProjection(
+            player_id=player.id,
+            year=2026,
+            week=None,
+            source="model",
+            projected_points=240.0,
+        )
+    )
+    db.commit()
+
+    record_llm_projection(db, result)
+
+    model = (
+        db.query(DBPlayerProjection)
+        .filter_by(player_id=player.id, source="model")
+        .one()
+    )
+    assert model.projected_points == 240.0

@@ -158,3 +158,73 @@ def _check_citations(result: Dict[str, Any], *, web_allowed: bool) -> None:
                 f"key_factor {factor.get('factor')!r} is sourced from the web "
                 f"but carries no url"
             )
+
+
+LLM_SOURCE = "llm"
+
+# Fields that live in real columns; everything else in the result goes to
+# ``components``.
+_COLUMN_FIELDS = (
+    "player_id",
+    "year",
+    "week",
+    "projected_points",
+    "floor",
+    "ceiling",
+    "std_dev",
+    "expected_games",
+)
+
+
+def record_llm_projection(
+    db: Session,
+    result: Dict[str, Any],
+    *,
+    web_allowed: bool = True,
+) -> DBPlayerProjection:
+    """Validate *result* and upsert it as a ``source='llm'`` row.
+
+    Raises:
+        ResultRejected: If validation fails. Nothing is written in that case.
+    """
+    validate_result(db, result, web_allowed=web_allowed)
+
+    week = result.get("week")
+    query = db.query(DBPlayerProjection).filter(
+        DBPlayerProjection.player_id == result["player_id"],
+        DBPlayerProjection.year == result["year"],
+        DBPlayerProjection.source == LLM_SOURCE,
+    )
+    if week is None:
+        query = query.filter(DBPlayerProjection.week.is_(None))
+    else:
+        query = query.filter(DBPlayerProjection.week == week)
+
+    row = query.first()
+    if row is None:
+        row = DBPlayerProjection(
+            player_id=result["player_id"],
+            year=result["year"],
+            week=week,
+            source=LLM_SOURCE,
+        )
+        db.add(row)
+
+    row.projected_points = float(result["projected_points"])
+    row.floor = _opt_float(result.get("floor"))
+    row.ceiling = _opt_float(result.get("ceiling"))
+    row.std_dev = _opt_float(result.get("std_dev"))
+    row.expected_games = _opt_float(result.get("expected_games"))
+
+    # Everything the schema has no column for. Assigning a fresh dict rather
+    # than mutating in place is what makes SQLAlchemy notice the change on a
+    # JSON column.
+    row.components = {k: v for k, v in result.items() if k not in _COLUMN_FIELDS}
+
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def _opt_float(value: Any) -> Optional[float]:
+    return None if value is None else float(value)
