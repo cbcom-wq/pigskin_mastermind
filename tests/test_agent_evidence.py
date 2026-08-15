@@ -203,7 +203,10 @@ def test_season_projections_excluded_from_weekly_scope(db, player):
 
 
 def test_data_freshness_reports_stat_timestamps(db, player, stats):
-    ev = build_evidence(db, player.id, 2026)
+    # 2025, not 2026: the `stats` fixture's most recent season row (with ADP
+    # set) is 2025, and adp_updated_at is intentionally scoped to the exact
+    # requested year — see test_adp_freshness_is_null_for_a_season_with_no_adp_row.
+    ev = build_evidence(db, player.id, 2025)
     fresh = ev["data_freshness"]
     assert fresh["game_logs_updated_at"] is not None
     assert fresh["season_stats_updated_at"] is not None
@@ -215,3 +218,18 @@ def test_data_freshness_is_null_when_nothing_stored(db, player):
     fresh = build_evidence(db, player.id, 2026)["data_freshness"]
     assert fresh["game_logs_updated_at"] is None
     assert fresh["season_stats_updated_at"] is None
+
+
+def test_adp_freshness_is_null_for_a_season_with_no_adp_row(db, player, stats):
+    """ADP is a per-season value, not a running "most recent" figure.
+
+    The `stats` fixture only carries ADP through 2025. Asking about 2026 must
+    report None even though the player has ADP rows for earlier seasons --
+    a stale, full-season-old ADP timestamp reported as "fresh" is exactly the
+    misleading signal this block exists to prevent.
+    """
+    ev = build_evidence(db, player.id, 2026)
+    assert ev["data_freshness"]["adp_updated_at"] is None
+    # Confirm this isn't just "no ADP anywhere" -- the player does have ADP,
+    # just not for the requested year.
+    assert any(row["adp"] is not None for row in ev["season_stats"])

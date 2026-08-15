@@ -295,11 +295,14 @@ def _data_freshness_block(
         db.query(func.max(DBPlayerSeasonStats.updated_at))
         .filter(
             DBPlayerSeasonStats.player_id == player_id,
-            # <=, not ==: matches _season_stats_block's own lookback so the
-            # freshness figure reflects the most recent ADP actually known for
-            # this player, not just this exact season (which, pre-draft, has
-            # no ADP row yet).
-            DBPlayerSeasonStats.year <= year,
+            # ==, not <=: ADP is a per-season value, and this block's whole
+            # job is to tell the agent where the database is blind. A prior
+            # season's ADP is close to worthless for the requested season, so
+            # reporting its timestamp here would read as "recently written"
+            # about a number that is a full season stale. When the requested
+            # season has no ADP row yet (the normal preseason state), the
+            # honest answer is None.
+            DBPlayerSeasonStats.year == year,
             DBPlayerSeasonStats.adp.isnot(None),
         )
         .scalar()
