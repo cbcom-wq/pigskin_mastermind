@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from pigskin_mastermind.models.database import (
     Base,
+    DBNFLGame,
     DBPlayer,
     DBPlayerGameLog,
     DBPlayerProjection,
@@ -233,3 +234,53 @@ def test_adp_freshness_is_null_for_a_season_with_no_adp_row(db, player, stats):
     # Confirm this isn't just "no ADP anywhere" -- the player does have ADP,
     # just not for the requested year.
     assert any(row["adp"] is not None for row in ev["season_stats"])
+
+
+@pytest.fixture
+def schedule(db):
+    db.add(
+        DBNFLGame(
+            year=2026,
+            week=1,
+            home_team="ATL",
+            away_team="NO",
+            home_score=24,
+            away_score=17,
+            roof="dome",
+        )
+    )
+    db.add(
+        DBNFLGame(
+            year=2026,
+            week=2,
+            home_team="TB",
+            away_team="ATL",
+            roof="outdoors",
+        )
+    )
+    db.commit()
+
+
+def test_schedule_names_opponent_and_home_away(db, player, schedule):
+    ev = build_evidence(db, player.id, 2026)
+    games = ev["schedule"]
+    assert games[0] == {
+        "week": 1,
+        "opponent": "NO",
+        "home": True,
+        "played": True,
+        "roof": "dome",
+    }
+    assert games[1]["opponent"] == "TB"
+    assert games[1]["home"] is False
+    assert games[1]["played"] is False
+
+
+def test_weekly_scope_shows_only_that_week_onward(db, player, schedule):
+    ev = build_evidence(db, player.id, 2026, week=2)
+    assert [g["week"] for g in ev["schedule"]] == [2]
+
+
+def test_sportsbook_is_none_when_no_props_stored(db, player):
+    ev = build_evidence(db, player.id, 2026)
+    assert ev["sportsbook"] is None

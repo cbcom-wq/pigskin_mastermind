@@ -15,10 +15,11 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.models.database import (
+    DBNFLGame,
     DBPlayer,
     DBPlayerGameLog,
     DBPlayerProjection,
@@ -80,6 +81,8 @@ def build_evidence(
             week,
         ),
         "data_freshness": _data_freshness_block(db, player_id, year),
+        "schedule": _schedule_block(db, player, year, week),
+        "sportsbook": _sportsbook_block(db, player_id),
     }
 
 
@@ -312,4 +315,57 @@ def _data_freshness_block(
         "game_logs_updated_at": _iso(logs_at),
         "season_stats_updated_at": _iso(season_at),
         "adp_updated_at": _iso(adp_at),
+    }
+
+
+def _schedule_block(
+    db: Session,
+    player: DBPlayer,
+    year: int,
+    week: Optional[int],
+) -> list:
+    """The player's team schedule, forward-looking from *week*.
+
+    ``DBNFLGame`` is the only forward-looking table in the schema. A NULL
+    ``home_score`` is how "not yet played" is represented.
+    """
+    team = player.nfl_team
+    query = db.query(DBNFLGame).filter(
+        DBNFLGame.year == year,
+        or_(DBNFLGame.home_team == team, DBNFLGame.away_team == team),
+    )
+    if week is not None:
+        query = query.filter(DBNFLGame.week >= week)
+
+    return [
+        {
+            "week": g.week,
+            "opponent": g.away_team if g.home_team == team else g.home_team,
+            "home": g.home_team == team,
+            "played": g.home_score is not None,
+            "roof": g.roof,
+        }
+        for g in query.order_by(DBNFLGame.week).all()
+    ]
+
+
+def _sportsbook_block(db: Session, player_id: int) -> Optional[Dict[str, Any]]:
+    """Prop-derived projection, when props for this player are stored.
+
+    Resolved by ``DBPlayer.id`` rather than by name: the name path matches
+    ``description ILIKE '%name%'``, which both over- and under-matches.
+
+    Returns ``None`` rather than a zeroed structure so the agent can tell
+    "no props available" from "props say zero".
+    """
+    from pigskin_mastermind.services.sportsbook_projection_service import (
+        SportsbookProjectionService,
+    )
+
+    result = SportsbookProjectionService(db).project_player_by_id(player_id)
+    if not result.get("categories"):
+        return None
+    return {
+        "total_projected_points": result.get("total_projected_points"),
+        "categories": result.get("categories"),
     }
