@@ -1872,6 +1872,215 @@ git commit -m "feat(agent): add 'pigskin agent record-projection' and pin the re
 
 ---
 
+### Task 11: `news` block
+
+**Files:**
+- Modify: `src/pigskin_mastermind/services/agent_evidence.py`
+- Test: `tests/test_agent_evidence.py`
+
+**Interfaces:**
+- Consumes: `DBPlayerNews` from `pigskin_mastermind.models.database`.
+- Produces: `evidence["news"]` — a list of dicts ordered newest first, at most 10 entries.
+
+`DBPlayerNews` and `services/player_news_service.py` landed after this plan was first written. Cached ESPN headlines are exactly the kind of information the agent would otherwise pay for a web search to get, so the pack should hand them over for free.
+
+**Two things this block must not do:**
+
+1. **Never call `PlayerNewsService.get_player_news()`.** That method triggers a live ESPN fetch when the cache is older than `max_age_minutes`, which would turn `pigskin agent evidence` into a network call and destroy both its offline guarantee and its determinism. This block reads `DBPlayerNews` rows directly and reports how stale they are, leaving the decision to refresh with the caller.
+2. **Respect `as_of_week`.** A headline published after the backtest cutoff is exactly the kind of leakage `--as-of` exists to prevent. Since news carries a timestamp rather than a week number, the cutoff is resolved to a date via the team's `DBNFLGame` kickoff for that week.
+
+- [ ] **Step 1: Write the failing tests**
+
+Add `DBPlayerNews` to the model imports in `tests/test_agent_evidence.py`.
+
+```python
+from datetime import datetime
+
+
+@pytest.fixture
+def news(db, player):
+    db.add(DBPlayerNews(
+        player_id=player.id, espn_headline_id="h1",
+        headline="Named starter for week 1",
+        description="Coach confirmed the job is his.",
+        source_url="https://example.com/h1",
+        published_at=datetime(2026, 8, 20, 12, 0),
+        fetched_at=datetime(2026, 8, 20, 13, 0),
+    ))
+    db.add(DBPlayerNews(
+        player_id=player.id, espn_headline_id="h2",
+        headline="Limited in practice",
+        published_at=datetime(2026, 9, 18, 9, 0),
+        fetched_at=datetime(2026, 9, 18, 10, 0),
+    ))
+    db.commit()
+
+
+def test_news_block_is_newest_first(db, player, news):
+    ev = build_evidence(db, player.id, 2026)
+    headlines = [n["headline"] for n in ev["news"]]
+    assert headlines == ["Limited in practice", "Named starter for week 1"]
+    assert ev["news"][1]["source_url"] == "https://example.com/h1"
+    assert ev["news"][1]["description"].startswith("Coach confirmed")
+
+
+def test_news_block_reports_cache_age(db, player, news):
+    ev = build_evidence(db, player.id, 2026)
+    assert ev["data_freshness"]["news_fetched_at"] is not None
+
+
+def test_news_is_empty_list_when_none_cached(db, player):
+    assert build_evidence(db, player.id, 2026)["news"] == []
+
+
+def test_news_after_the_as_of_cutoff_is_excluded(db, player, news, schedule):
+    # The schedule fixture puts week 2 of 2026 on the calendar; anything
+    # published on or after that kickoff is post-cutoff.
+    db.query(DBNFLGame).filter_by(year=2026, week=2).update(
+        {"kickoff_at": datetime(2026, 9, 14, 17, 0)}
+    )
+    db.commit()
+
+    ev = build_evidence(db, player.id, 2026, week=2, as_of_week=2)
+    headlines = [n["headline"] for n in ev["news"]]
+    assert headlines == ["Named starter for week 1"]
+
+
+def test_news_unfiltered_when_cutoff_date_is_unknown(db, player, news):
+    """No schedule row means no date to compare against.
+
+    Dropping all news would be worse than keeping it: the block carries
+    published_at, so the agent can judge for itself.
+    """
+    ev = build_evidence(db, player.id, 2026, week=2, as_of_week=2)
+    assert len(ev["news"]) == 2
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Expected: FAIL with `KeyError: 'news'`
+
+- [ ] **Step 3: Write the implementation**
+
+Add `DBPlayerNews` to the imports in `agent_evidence.py` and the constant:
+
+```python
+# Enough to see a role change or an injury designation without flooding the
+# agent's context with a season of transaction wire noise.
+_NEWS_LIMIT = 10
+```
+
+Add to the evidence dict built in `build_evidence`, after `"sportsbook"`:
+
+```python
+        "news": _news_block(db, player, year, as_of_week),
+```
+
+```python
+def _news_block(
+    db: Session,
+    player: DBPlayer,
+    year: int,
+    as_of_week: Optional[int] = None,
+) -> list:
+    """Cached ESPN headlines for this player.
+
+    Reads the cache directly and never calls
+    ``PlayerNewsService.get_player_news()``, which triggers a live ESPN fetch
+    when the cache is stale. This command must stay offline and deterministic:
+    a network call here would make two runs of the same backtest disagree.
+    Staleness is reported in ``data_freshness`` so the caller can decide
+    whether to refresh out of band.
+    """
+    query = db.query(DBPlayerNews).filter(DBPlayerNews.player_id == player.id)
+
+    cutoff = _cutoff_datetime(db, player, year, as_of_week)
+    if cutoff is not None:
+        query = query.filter(
+            or_(
+                DBPlayerNews.published_at.is_(None),
+                DBPlayerNews.published_at < cutoff,
+            )
+        )
+
+    rows = (
+        query.order_by(DBPlayerNews.published_at.desc())
+        .limit(_NEWS_LIMIT)
+        .all()
+    )
+    return [
+        {
+            "headline": r.headline,
+            "description": r.description,
+            "source_url": r.source_url,
+            "published_at": _iso(r.published_at),
+        }
+        for r in rows
+    ]
+
+
+def _cutoff_datetime(
+    db: Session,
+    player: DBPlayer,
+    year: int,
+    as_of_week: Optional[int],
+) -> Optional[datetime]:
+    """Kickoff of the player's game in *as_of_week*, or ``None``.
+
+    News is timestamped, not week-numbered, so the week cutoff has to be
+    resolved to a date. Returning ``None`` when the schedule has no kickoff
+    leaves news unfiltered — the rows carry ``published_at``, so the agent can
+    still judge recency itself, which beats silently dropping everything.
+    """
+    if as_of_week is None:
+        return None
+
+    team = player.nfl_team
+    game = (
+        db.query(DBNFLGame)
+        .filter(
+            DBNFLGame.year == year,
+            DBNFLGame.week == as_of_week,
+            or_(DBNFLGame.home_team == team, DBNFLGame.away_team == team),
+        )
+        .first()
+    )
+    return game.kickoff_at if game else None
+```
+
+Add the news timestamp to `_data_freshness_block`, alongside the existing lookups:
+
+```python
+    news_at = (
+        db.query(func.max(DBPlayerNews.fetched_at))
+        .filter(DBPlayerNews.player_id == player_id)
+        .scalar()
+    )
+```
+
+and add to its returned dict:
+
+```python
+        "news_fetched_at": _iso(news_at),
+```
+
+`_data_freshness_block` already takes `(db, player_id, year)`, so its signature does not change.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Expected: 30 passed
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/pigskin_mastermind/services/agent_evidence.py tests/test_agent_evidence.py
+git commit -m "feat(agent): add cached player news to the evidence pack"
+```
+
+---
+
 ## Done when
 
 - `pigskin agent evidence --player-id N --year Y` prints a complete JSON document for a real player in the local database.
@@ -1879,6 +2088,7 @@ git commit -m "feat(agent): add 'pigskin agent record-projection' and pin the re
 - `pigskin agent record-projection --result-file tests/fixtures/agent_result_season.json` stores a row and prints a confirmation.
 - The same command run twice updates one row rather than creating two.
 - A result with a web-sourced factor and no URL exits non-zero with a readable reason.
+- The evidence pack carries cached ESPN headlines without ever making a network call.
 - `pytest tests/` shows no new failures against the documented baseline.
 
 ## Next phase
