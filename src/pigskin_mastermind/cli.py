@@ -337,6 +337,45 @@ def agent_evidence(player_id, year, week, as_of_week):
         db.close()
 
 
+@agent.command('record-projection')
+@click.option('--result-file', required=True,
+              type=click.Path(exists=True, dir_okay=False),
+              help='Path to the agent result JSON')
+@click.option('--web/--no-web', 'web_allowed', default=True,
+              help='Whether this run was permitted to use the web. '
+                   '--no-web rejects a result claiming web sources.')
+def agent_record_projection(result_file, web_allowed):
+    """Validate an agent result and store it as a source='llm' projection.
+
+    Exits non-zero with the reason on stderr when a result is rejected, so the
+    agent can see what was wrong and correct it::
+
+        pigskin agent record-projection --result-file out.json
+    """
+    import json as _json
+
+    from pigskin_mastermind.services.agent_projection import (
+        ResultRejected, record_llm_projection,
+    )
+
+    with open(result_file, 'r', encoding='utf-8') as fh:
+        payload = _json.load(fh)
+
+    db = _get_stats_db()
+    try:
+        row = record_llm_projection(db, payload, web_allowed=web_allowed)
+    except ResultRejected as exc:
+        raise click.ClickException(f"Result rejected: {exc}")
+    finally:
+        db.close()
+
+    scope = "season" if row.week is None else f"week {row.week}"
+    click.echo(
+        f"Stored llm projection for player {row.player_id} "
+        f"({row.year} {scope}): {row.projected_points:.1f} pts"
+    )
+
+
 @stats.command('import-espn')
 @click.option('--league-id', required=True, help='ESPN league ID')
 @click.option('--team-id', required=True, type=int, help='ESPN team ID')

@@ -1,6 +1,8 @@
 """Validation and persistence of agent-produced projections."""
 
 import copy
+import json
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine
@@ -17,6 +19,8 @@ from pigskin_mastermind.services.agent_projection import (
     ResultRejected,
     validate_result,
 )
+
+FIXTURE = Path(__file__).parent / "fixtures" / "agent_result_season.json"
 
 
 @pytest.fixture
@@ -363,3 +367,24 @@ def test_does_not_disturb_the_model_row(db, player, result):
         .one()
     )
     assert model.projected_points == 240.0
+
+
+def test_checked_in_fixture_satisfies_the_contract(db, player):
+    """The canned result is what Phase 2's skill will be written against.
+
+    If this breaks, the documented output contract and the validator have
+    drifted apart — fix one of them deliberately rather than editing the
+    fixture to make the test green.
+    """
+    from pigskin_mastermind.services.agent_projection import (
+        record_llm_projection,
+    )
+
+    payload = json.loads(FIXTURE.read_text())
+    payload["player_id"] = player.id
+
+    row = record_llm_projection(db, payload, web_allowed=True)
+    assert row.source == "llm"
+    assert row.components["web_used"] is True
+    web_factors = [f for f in row.components["key_factors"] if f["source"] == "web"]
+    assert web_factors and all(f.get("url") for f in web_factors)
