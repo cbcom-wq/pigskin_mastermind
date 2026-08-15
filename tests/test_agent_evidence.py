@@ -9,6 +9,7 @@ from pigskin_mastermind.models.database import (
     Base,
     DBPlayer,
     DBPlayerGameLog,
+    DBPlayerProjection,
     DBPlayerSeasonStats,
 )
 from pigskin_mastermind.services.agent_evidence import build_evidence
@@ -154,3 +155,63 @@ def test_criteria_values_are_json_serializable(db, player, stats):
 
     ev = build_evidence(db, player.id, 2026, week=5)
     json.dumps(ev["criteria"])  # raises TypeError if not
+
+
+def test_existing_projections_keyed_by_source(db, player):
+    db.add(
+        DBPlayerProjection(
+            player_id=player.id,
+            year=2026,
+            week=None,
+            source="model",
+            projected_points=248.0,
+            expected_games=16.0,
+        )
+    )
+    db.add(
+        DBPlayerProjection(
+            player_id=player.id,
+            year=2026,
+            week=None,
+            source="espn",
+            projected_points=231.5,
+        )
+    )
+    db.commit()
+
+    ev = build_evidence(db, player.id, 2026)
+    assert ev["existing_projections"]["model"]["projected_points"] == 248.0
+    assert ev["existing_projections"]["model"]["expected_games"] == 16.0
+    assert ev["existing_projections"]["espn"]["projected_points"] == 231.5
+    assert ev["existing_projections"]["model"]["computed_at"] is not None
+
+
+def test_season_projections_excluded_from_weekly_scope(db, player):
+    db.add(
+        DBPlayerProjection(
+            player_id=player.id,
+            year=2026,
+            week=None,
+            source="model",
+            projected_points=248.0,
+        )
+    )
+    db.commit()
+
+    ev = build_evidence(db, player.id, 2026, week=5)
+    assert ev["existing_projections"] == {}
+
+
+def test_data_freshness_reports_stat_timestamps(db, player, stats):
+    ev = build_evidence(db, player.id, 2026)
+    fresh = ev["data_freshness"]
+    assert fresh["game_logs_updated_at"] is not None
+    assert fresh["season_stats_updated_at"] is not None
+    assert fresh["adp_updated_at"] is not None
+    assert fresh["generated_at"] is not None
+
+
+def test_data_freshness_is_null_when_nothing_stored(db, player):
+    fresh = build_evidence(db, player.id, 2026)["data_freshness"]
+    assert fresh["game_logs_updated_at"] is None
+    assert fresh["season_stats_updated_at"] is None

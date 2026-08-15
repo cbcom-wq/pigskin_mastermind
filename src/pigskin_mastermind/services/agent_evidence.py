@@ -12,13 +12,16 @@ Nothing here calls an LLM. The output of this module is the contract that the
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.models.database import (
     DBPlayer,
     DBPlayerGameLog,
+    DBPlayerProjection,
     DBPlayerSeasonStats,
 )
 
@@ -70,6 +73,13 @@ def build_evidence(
         "season_stats": _season_stats_block(db, player_id, year),
         "game_logs": _game_logs_block(db, player_id, year),
         "criteria": _criteria_block(db, player_id, year, week),
+        "existing_projections": _existing_projections_block(
+            db,
+            player_id,
+            year,
+            week,
+        ),
+        "data_freshness": _data_freshness_block(db, player_id, year),
     }
 
 
@@ -220,3 +230,83 @@ def _game_logs_block(db: Session, player_id: int, year: int) -> list:
         }
         for r in rows
     ]
+
+
+def _iso(value: Optional[datetime]) -> Optional[str]:
+    return value.isoformat() if value is not None else None
+
+
+def _existing_projections_block(
+    db: Session,
+    player_id: int,
+    year: int,
+    week: Optional[int],
+) -> Dict[str, Any]:
+    """Every stored projection for this scope, by source.
+
+    Unfiltered by source on purpose: the agent should see that ``espn`` and
+    ``model`` disagree, and by how much, before forming its own view.
+    """
+    query = db.query(DBPlayerProjection).filter(
+        DBPlayerProjection.player_id == player_id,
+        DBPlayerProjection.year == year,
+    )
+    if week is None:
+        query = query.filter(DBPlayerProjection.week.is_(None))
+    else:
+        query = query.filter(DBPlayerProjection.week == week)
+
+    return {
+        row.source: {
+            "projected_points": row.projected_points,
+            "floor": row.floor,
+            "ceiling": row.ceiling,
+            "std_dev": row.std_dev,
+            "expected_games": row.expected_games,
+            "computed_at": _iso(row.computed_at),
+        }
+        for row in query.all()
+    }
+
+
+def _data_freshness_block(
+    db: Session,
+    player_id: int,
+    year: int,
+) -> Dict[str, Any]:
+    """When each underlying data source was last written.
+
+    This block is what tells the agent where the database is *blind*, and so
+    whether a web lookup is worth its cost. Without it the agent has no way to
+    distinguish "this player has no recent news" from "nobody has synced stats
+    since March".
+    """
+    logs_at = (
+        db.query(func.max(DBPlayerGameLog.updated_at))
+        .filter(DBPlayerGameLog.player_id == player_id)
+        .scalar()
+    )
+    season_at = (
+        db.query(func.max(DBPlayerSeasonStats.updated_at))
+        .filter(DBPlayerSeasonStats.player_id == player_id)
+        .scalar()
+    )
+    adp_at = (
+        db.query(func.max(DBPlayerSeasonStats.updated_at))
+        .filter(
+            DBPlayerSeasonStats.player_id == player_id,
+            # <=, not ==: matches _season_stats_block's own lookback so the
+            # freshness figure reflects the most recent ADP actually known for
+            # this player, not just this exact season (which, pre-draft, has
+            # no ADP row yet).
+            DBPlayerSeasonStats.year <= year,
+            DBPlayerSeasonStats.adp.isnot(None),
+        )
+        .scalar()
+    )
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "game_logs_updated_at": _iso(logs_at),
+        "season_stats_updated_at": _iso(season_at),
+        "adp_updated_at": _iso(adp_at),
+    }
