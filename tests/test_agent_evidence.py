@@ -284,3 +284,44 @@ def test_weekly_scope_shows_only_that_week_onward(db, player, schedule):
 def test_sportsbook_is_none_when_no_props_stored(db, player):
     ev = build_evidence(db, player.id, 2026)
     assert ev["sportsbook"] is None
+
+
+def test_as_of_excludes_the_cutoff_week_and_later(db, player, stats):
+    ev = build_evidence(db, player.id, 2025, week=3, as_of_week=3)
+    weeks = [g["week"] for g in ev["game_logs"] if g["year"] == 2025]
+    assert weeks == [1, 2]
+
+
+def test_as_of_keeps_prior_seasons_intact(db, player, stats):
+    for wk in (1, 2, 3):
+        db.add(
+            DBPlayerGameLog(
+                player_id=player.id,
+                year=2024,
+                week=wk,
+                fantasy_points=10.0,
+            )
+        )
+    db.commit()
+
+    ev = build_evidence(db, player.id, 2025, week=2, as_of_week=2)
+    prior = [g["week"] for g in ev["game_logs"] if g["year"] == 2024]
+    assert prior == [1, 2, 3]
+
+
+def test_as_of_hides_results_of_games_at_or_after_cutoff(db, player, schedule):
+    ev = build_evidence(db, player.id, 2026, week=1, as_of_week=1)
+    assert ev["schedule"][0]["week"] == 1
+    assert ev["schedule"][0]["played"] is False
+
+
+def test_as_of_omits_criteria_with_a_stated_reason(db, player, stats):
+    ev = build_evidence(db, player.id, 2025, week=3, as_of_week=3)
+    assert ev["criteria"] is None
+    assert "cutoff" in ev["criteria_omitted_reason"]
+
+
+def test_criteria_reason_absent_when_not_backtesting(db, player, stats):
+    ev = build_evidence(db, player.id, 2026, week=3)
+    assert ev["criteria"] is not None
+    assert ev["criteria_omitted_reason"] is None

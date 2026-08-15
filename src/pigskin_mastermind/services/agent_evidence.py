@@ -34,6 +34,12 @@ _SEASON_HISTORY_YEARS = 3
 # burning the agent's context on ancient games.
 _GAME_LOG_LIMIT = 34
 
+_CRITERIA_OMITTED_UNDER_AS_OF = (
+    "ProjectionCriteriaBuilder has no as-of cutoff, so its output reflects the "
+    "full season. Including it here would leak post-cutoff data into a "
+    "backtest, so the block is omitted instead."
+)
+
 
 def build_evidence(
     db: Session,
@@ -68,21 +74,29 @@ def build_evidence(
     if player is None:
         raise ValueError(f"Player {player_id} not found")
 
+    criteria = None
+    criteria_reason = None
+    if as_of_week is None:
+        criteria = _criteria_block(db, player_id, year, week)
+    else:
+        criteria_reason = _CRITERIA_OMITTED_UNDER_AS_OF
+
     return {
         "player": _player_block(player),
         "context": _context_block(year, week),
         "season_stats": _season_stats_block(db, player_id, year),
-        "game_logs": _game_logs_block(db, player_id, year),
-        "criteria": _criteria_block(db, player_id, year, week),
+        "game_logs": _game_logs_block(db, player_id, year, as_of_week),
+        "criteria": criteria,
+        "criteria_omitted_reason": criteria_reason,
         "existing_projections": _existing_projections_block(
             db,
             player_id,
             year,
             week,
         ),
-        "data_freshness": _data_freshness_block(db, player_id, year),
-        "schedule": _schedule_block(db, player, year, week),
+        "schedule": _schedule_block(db, player, year, week, as_of_week),
         "sportsbook": _sportsbook_block(db, player_id),
+        "data_freshness": _data_freshness_block(db, player_id, year),
     }
 
 
@@ -194,14 +208,28 @@ def _criteria_block(
     return {"scope": scope, "fields": asdict(criteria)}
 
 
-def _game_logs_block(db: Session, player_id: int, year: int) -> list:
-    rows = (
-        db.query(DBPlayerGameLog)
-        .filter(
-            DBPlayerGameLog.player_id == player_id,
-            DBPlayerGameLog.year <= year,
+def _game_logs_block(
+    db: Session,
+    player_id: int,
+    year: int,
+    as_of_week: Optional[int] = None,
+) -> list:
+    query = db.query(DBPlayerGameLog).filter(
+        DBPlayerGameLog.player_id == player_id,
+        DBPlayerGameLog.year <= year,
+    )
+    if as_of_week is not None:
+        # Only the target season is truncated. Prior seasons are entirely in
+        # the past relative to the cutoff and stay whole.
+        query = query.filter(
+            or_(
+                DBPlayerGameLog.year < year,
+                DBPlayerGameLog.week < as_of_week,
+            )
         )
-        .order_by(
+
+    rows = (
+        query.order_by(
             DBPlayerGameLog.year.desc(),
             DBPlayerGameLog.week.desc(),
         )
@@ -323,6 +351,7 @@ def _schedule_block(
     player: DBPlayer,
     year: int,
     week: Optional[int],
+    as_of_week: Optional[int] = None,
 ) -> list:
     """The player's team schedule, forward-looking from *week*.
 
@@ -337,16 +366,23 @@ def _schedule_block(
     if week is not None:
         query = query.filter(DBNFLGame.week >= week)
 
-    return [
-        {
-            "week": g.week,
-            "opponent": g.away_team if g.home_team == team else g.home_team,
-            "home": g.home_team == team,
-            "played": g.home_score is not None,
-            "roof": g.roof,
-        }
-        for g in query.order_by(DBNFLGame.week).all()
-    ]
+    games = []
+    for g in query.order_by(DBNFLGame.week).all():
+        played = g.home_score is not None
+        if as_of_week is not None and g.week >= as_of_week:
+            # The score exists in the database but had not happened yet at the
+            # cutoff. Reporting it would hand a backtest the answer.
+            played = False
+        games.append(
+            {
+                "week": g.week,
+                "opponent": g.away_team if g.home_team == team else g.home_team,
+                "home": g.home_team == team,
+                "played": played,
+                "roof": g.roof,
+            }
+        )
+    return games
 
 
 def _sportsbook_block(db: Session, player_id: int) -> Optional[Dict[str, Any]]:
