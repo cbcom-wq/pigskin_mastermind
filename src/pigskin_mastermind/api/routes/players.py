@@ -8,6 +8,7 @@ from typing import Optional
 from pigskin_mastermind.api.database import get_db
 from pigskin_mastermind.models.database import DBPlayer, DBTeam, DBPlayerSeasonStats, DBPlayerGameLog
 from pigskin_mastermind.services.stats_service import StatsService
+from pigskin_mastermind.services.player_news_service import PlayerNewsService
 
 router = APIRouter(tags=["players"])
 
@@ -87,6 +88,10 @@ async def player_detail_page(
     # Fantasy team name (if rostered)
     fantasy_team = player.team.name if player.team else None
 
+    # On-demand player news (ESPN)
+    news_svc = PlayerNewsService(db)
+    news_items = news_svc.get_player_news(player)
+
     # Most recent season carries the headline rates and the ADP block; the most
     # recent season that actually has an ADP may be a different (future) one.
     latest_season = seasons[0] if seasons else None
@@ -103,6 +108,7 @@ async def player_detail_page(
             "game_logs": game_logs,
             "trend": trend,
             "fantasy_team": fantasy_team,
+            "news_items": news_items,
             "back_url": back,
         },
     )

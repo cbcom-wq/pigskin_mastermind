@@ -31,6 +31,36 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 # Setup Jinja2 templates
 templates = Jinja2Templates(directory=TEMPLATE_DIR)
 
+from datetime import datetime as _dt, timedelta as _td
+
+
+def _timeago(value) -> str:
+    """Jinja2 filter: convert a datetime to a relative string like '3 hours ago'."""
+    if value is None:
+        return ""
+    now = _dt.utcnow()
+    # Handle timezone-aware datetimes by comparing as naive UTC
+    if hasattr(value, 'tzinfo') and value.tzinfo is not None:
+        value = value.replace(tzinfo=None)
+    diff = now - value
+    seconds = int(diff.total_seconds())
+    if seconds < 60:
+        return "just now"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = hours // 24
+    if days < 30:
+        return f"{days} day{'s' if days != 1 else ''} ago"
+    months = days // 30
+    return f"{months} month{'s' if months != 1 else ''} ago"
+
+
+templates.env.filters["timeago"] = _timeago
+
 # Create tables on startup
 Base.metadata.create_all(bind=engine)
 

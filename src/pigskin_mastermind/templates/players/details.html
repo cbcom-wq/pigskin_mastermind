@@ -119,6 +119,42 @@
         </div>
     </div>
 
+    <!-- Recent News -->
+    {% if news_items %}
+    <div class="bg-gradient-to-r from-slate-800 to-slate-700 rounded-xl shadow-md border border-slate-600 p-5 mb-6">
+        <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Recent News</h3>
+            {% if news_items[0].fetched_at %}
+            <span class="text-xs text-slate-500">Updated {{ news_items[0].fetched_at | timeago }}</span>
+            {% endif %}
+        </div>
+        <div class="space-y-4 max-h-[28rem] overflow-y-auto pr-1">
+            {% for item in news_items %}
+            <div class="{% if not loop.last %}border-b border-white/10 pb-4{% endif %}">
+                <div class="flex items-start justify-between gap-3">
+                    <h4 class="text-sm font-bold text-white leading-snug">{{ item.headline }}</h4>
+                    {% if item.published_at %}
+                    <span class="text-xs text-slate-400 whitespace-nowrap flex-shrink-0">{{ item.published_at | timeago }}</span>
+                    {% endif %}
+                </div>
+                {% if item.description %}
+                <p class="text-sm text-slate-300 mt-1 leading-relaxed">{{ item.description }}</p>
+                {% endif %}
+                {% if item.source_url %}
+                <a href="{{ item.source_url }}" target="_blank" rel="noopener noreferrer"
+                   class="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 mt-1.5 transition-colors">
+                    Read on ESPN
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+                    </svg>
+                </a>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Season at a glance -->
     {% if latest_season %}
     <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 mb-6">
