@@ -15,7 +15,19 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
-from pigskin_mastermind.models.database import DBPlayer
+from pigskin_mastermind.models.database import (
+    DBPlayer,
+    DBPlayerGameLog,
+    DBPlayerSeasonStats,
+)
+
+# Three seasons is what the criteria builder's trend and year-over-year
+# calculations look back over; more would be noise in the agent's context.
+_SEASON_HISTORY_YEARS = 3
+
+# Two seasons of weeks. Enough to see a role change from last year without
+# burning the agent's context on ancient games.
+_GAME_LOG_LIMIT = 34
 
 
 def build_evidence(
@@ -48,6 +60,8 @@ def build_evidence(
     return {
         "player": _player_block(player),
         "context": _context_block(year, week),
+        "season_stats": _season_stats_block(db, player_id, year),
+        "game_logs": _game_logs_block(db, player_id, year),
     }
 
 
@@ -77,3 +91,87 @@ def _context_block(year: int, week: Optional[int]) -> Dict[str, Any]:
         "week": week,
         "scope": "season" if week is None else "weekly",
     }
+
+
+def _season_stats_block(db: Session, player_id: int, year: int) -> list:
+    rows = (
+        db.query(DBPlayerSeasonStats)
+        .filter(
+            DBPlayerSeasonStats.player_id == player_id,
+            DBPlayerSeasonStats.year <= year,
+        )
+        .order_by(DBPlayerSeasonStats.year.desc())
+        .limit(_SEASON_HISTORY_YEARS)
+        .all()
+    )
+    return [
+        {
+            "year": r.year,
+            "games_played": r.games_played,
+            "pass_att": r.pass_att,
+            "pass_yd": r.pass_yd,
+            "pass_td": r.pass_td,
+            "pass_int": r.pass_int,
+            "rush_att": r.rush_att,
+            "rush_yd": r.rush_yd,
+            "rush_td": r.rush_td,
+            "targets": r.targets,
+            "rec": r.rec,
+            "rec_yd": r.rec_yd,
+            "rec_td": r.rec_td,
+            "fantasy_points_total": r.fantasy_points_total,
+            "fantasy_points_avg": r.fantasy_points_avg,
+            "fantasy_points_per_touch": r.fantasy_points_per_touch,
+            # snap_pct is canonically 0-100 in this schema, not 0-1.
+            "snap_pct": r.snap_pct,
+            "air_yards": r.air_yards,
+            "yac": r.yac,
+            "wopr": r.wopr,
+            "adp": r.adp,
+            "adp_source": r.adp_source,
+            "adp_times_drafted": r.adp_times_drafted,
+            "source": r.source,
+        }
+        for r in rows
+    ]
+
+
+def _game_logs_block(db: Session, player_id: int, year: int) -> list:
+    rows = (
+        db.query(DBPlayerGameLog)
+        .filter(
+            DBPlayerGameLog.player_id == player_id,
+            DBPlayerGameLog.year <= year,
+        )
+        .order_by(
+            DBPlayerGameLog.year.desc(),
+            DBPlayerGameLog.week.desc(),
+        )
+        .limit(_GAME_LOG_LIMIT)
+        .all()
+    )
+    # Queried newest-first so the limit keeps recent games; the agent reads
+    # them chronologically.
+    rows.reverse()
+    return [
+        {
+            "year": r.year,
+            "week": r.week,
+            "opponent": r.opponent,
+            "pass_att": r.pass_att,
+            "pass_yd": r.pass_yd,
+            "pass_td": r.pass_td,
+            "pass_int": r.pass_int,
+            "rush_att": r.rush_att,
+            "rush_yd": r.rush_yd,
+            "rush_td": r.rush_td,
+            "targets": r.targets,
+            "rec": r.rec,
+            "rec_yd": r.rec_yd,
+            "rec_td": r.rec_td,
+            "fumbles_lost": r.fumbles_lost,
+            "fantasy_points": r.fantasy_points,
+            "source": r.source,
+        }
+        for r in rows
+    ]
