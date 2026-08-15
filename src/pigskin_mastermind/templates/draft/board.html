@@ -110,6 +110,25 @@
     <!-- rendered by JS -->
   </div>
 
+  <!-- Player Profile Modal -->
+  <div id="player-modal-backdrop" class="hidden fixed inset-0 z-[60]"
+       style="background: rgba(15, 23, 42, 0.80); backdrop-filter: blur(4px);"
+       onclick="DraftBoard.closePlayerModal(event)">
+    <div class="flex items-start justify-center pt-[5vh] px-4 h-full overflow-y-auto">
+      <div class="w-full max-w-2xl relative" onclick="event.stopPropagation()">
+        <button onclick="DraftBoard.closePlayerModal()"
+                class="absolute -top-2 -right-2 z-10 w-8 h-8 rounded-full bg-slate-700 border border-slate-500 text-slate-300 hover:text-white hover:bg-slate-600 flex items-center justify-center text-lg transition-colors shadow-lg">&times;</button>
+        <div id="player-modal-content" class="pb-6">
+          <!-- loaded via HTMX -->
+          <div class="text-center py-12">
+            <div class="inline-block w-6 h-6 border-2 border-slate-500 border-t-pigskin-400 rounded-full animate-spin"></div>
+            <p class="text-xs text-slate-500 mt-2">Loading player profile…</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Draft Complete Overlay -->
   <div id="complete-overlay" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4"
        style="background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(8px);">

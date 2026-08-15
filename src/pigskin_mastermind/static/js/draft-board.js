@@ -556,7 +556,7 @@ const DraftBoard = (() => {
               ${injuryBadge(player.injury_status)}
               ${byeBadge(player.bye_week, byeConflict)}
             </div>
-            ${profileHref ? `<a href="${profileHref}" class="text-[11px] text-pigskin-400 hover:text-pigskin-300 hover:underline">View full profile →</a>` : ''}
+            ${player.db_id != null ? `<button onclick="DraftBoard.openPlayerModal(${player.db_id})" class="text-[11px] text-pigskin-400 hover:text-pigskin-300 hover:underline bg-transparent border-0 cursor-pointer p-0">View full profile →</button>` : ''}
           </div>
         </div>
 
@@ -1207,6 +1207,51 @@ const DraftBoard = (() => {
   }
 
   // ============================================================
+  // Player Profile Modal
+  // ============================================================
+  function openPlayerModal(dbId) {
+    const backdrop = document.getElementById('player-modal-backdrop');
+    const content  = document.getElementById('player-modal-content');
+    if (!backdrop || !content) return;
+
+    // Show modal with loading spinner
+    backdrop.classList.remove('hidden');
+    content.innerHTML = `
+      <div class="text-center py-12">
+        <div class="inline-block w-6 h-6 border-2 border-slate-500 border-t-pigskin-400 rounded-full animate-spin"></div>
+        <p class="text-xs text-slate-500 mt-2">Loading player profile…</p>
+      </div>`;
+    document.body.style.overflow = 'hidden';
+
+    // Fetch the modal fragment
+    fetch(`/api/players/${dbId}/modal`)
+      .then(r => r.ok ? r.text() : Promise.reject(r.status))
+      .then(html => { content.innerHTML = html; })
+      .catch(() => {
+        content.innerHTML = `<p class="text-slate-400 text-sm p-4">Failed to load player profile.</p>`;
+      });
+  }
+
+  function closePlayerModal(event) {
+    // If called from the backdrop click, only close if the backdrop itself was clicked
+    if (event && event.target !== document.getElementById('player-modal-backdrop')) return;
+    const backdrop = document.getElementById('player-modal-backdrop');
+    if (backdrop) backdrop.classList.add('hidden');
+    document.body.style.overflow = '';
+  }
+
+  // Close modal on Escape
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+      const backdrop = document.getElementById('player-modal-backdrop');
+      if (backdrop && !backdrop.classList.contains('hidden')) {
+        closePlayerModal();
+        e.stopPropagation();
+      }
+    }
+  });
+
+  // ============================================================
   // Public API
   // ============================================================
   return {
@@ -1215,6 +1260,8 @@ const DraftBoard = (() => {
     makePick,
     openSpotlight,
     closeSpotlight,
+    openPlayerModal,
+    closePlayerModal,
     toggleQueue,
     removeFromQueue,
     toggleQueuePanel,

@@ -114,6 +114,50 @@ async def player_detail_page(
     )
 
 
+@router.get("/api/players/{player_id}/modal")
+async def player_modal_fragment(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+):
+    """HTMX fragment: player header, season stats, and news for a modal overlay.
+
+    Lighter than the full detail page — skips the ESPN stats import and
+    game logs so the modal opens fast.
+    """
+    from pigskin_mastermind.api.main import templates
+    from fastapi.responses import HTMLResponse
+
+    player = db.query(DBPlayer).filter_by(id=player_id).first()
+    if not player:
+        return HTMLResponse("<p class='text-slate-400 text-sm p-4'>Player not found.</p>")
+
+    stats_svc = StatsService(db)
+
+    # Season stats (no on-demand ESPN import — keep it fast)
+    player_stats = stats_svc.get_player_stats(player_id)
+    seasons = player_stats.get("seasons", [])
+    latest_season = seasons[0] if seasons else None
+
+    # Fantasy team name
+    fantasy_team = player.team.name if player.team else None
+
+    # On-demand news (cached, fast after first fetch)
+    news_svc = PlayerNewsService(db)
+    news_items = news_svc.get_player_news(player)
+
+    return templates.TemplateResponse(
+        "players/_modal.html",
+        {
+            "request": request,
+            "player": player,
+            "latest_season": latest_season,
+            "fantasy_team": fantasy_team,
+            "news_items": news_items,
+        },
+    )
+
+
 @router.get("/players/{player_id}/simulation")
 async def player_simulation_page(
     request: Request,
