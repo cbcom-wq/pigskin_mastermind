@@ -186,3 +186,26 @@ def test_get_player_news_network_error_returns_cached(mock_get, db, player):
 
     assert len(news) == 1
     assert news[0].headline == "Stale but usable"
+
+
+from pigskin_mastermind.api.main import _timeago
+
+
+def test_timeago_minutes():
+    assert _timeago(datetime.utcnow() - timedelta(minutes=5)) == "5 minutes ago"
+
+
+def test_timeago_hours():
+    assert _timeago(datetime.utcnow() - timedelta(hours=3)) == "3 hours ago"
+
+
+def test_timeago_days():
+    assert _timeago(datetime.utcnow() - timedelta(days=2)) == "2 days ago"
+
+
+def test_timeago_just_now():
+    assert _timeago(datetime.utcnow() - timedelta(seconds=30)) == "just now"
+
+
+def test_timeago_none():
+    assert _timeago(None) == ""
