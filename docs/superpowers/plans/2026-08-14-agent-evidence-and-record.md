@@ -13,7 +13,21 @@
 ## Global Constraints
 
 - **Always scope pytest to `tests/`** — bare `pytest` dies collecting the vendored `src/pigskin_mastermind/lib/espn-api/tests/` tree.
-- On Windows the venv interpreter is `.venv/Scripts/python`.
+- **This work happens in a git worktree, so the test command is not the usual one.** The venv's editable install resolves `pigskin_mastermind` to the *main* repo's `src/`, so plain `pytest` here would test code you did not write and pass while proving nothing. Every test step in this plan means exactly this command, run from the worktree root:
+
+  ```bash
+  PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/ -q
+  ```
+
+  Substitute a single test file or node id for `tests/` where a step names one. Sanity-check the wiring at any time with:
+
+  ```bash
+  PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -c "import pigskin_mastermind.services.projection_refresh as m; print(m.__file__)"
+  ```
+
+  It must print a path under `.claude/worktrees/agent-evidence`. If it prints `D:\git\pigskin_mastermind\src\...`, the PYTHONPATH is missing and every result you have is meaningless.
+- **Baseline: 17 failed, 875 passed.** These failures pre-date this work and are documented in `docs/PROJECT_STATUS.md`. Judge a full-suite run by diffing the failure list against that baseline, never by expecting green.
+- Black and flake8 are invoked the same way: `/d/git/pigskin_mastermind/.venv/Scripts/python -m black src/ tests/`.
 - **No new dependencies.** Everything needed is already installed.
 - New DB reads only — **no Alembic migration in this phase.** `DBPlayerProjection.components` is already a `JSON` column and is where all agent metadata goes.
 - The projection source string is exactly `"llm"`, lowercase.
@@ -119,7 +133,7 @@ def test_unknown_player_raises(db):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'pigskin_mastermind.services.agent_evidence'`
 
 - [ ] **Step 3: Write the minimal implementation**
@@ -210,7 +224,7 @@ def _context_block(year: int, week: Optional[int]) -> Dict[str, Any]:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
 Expected: 4 passed
 
 - [ ] **Step 5: Commit**
@@ -284,7 +298,7 @@ def test_blocks_are_empty_lists_when_player_has_no_data(db, player):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
 Expected: FAIL with `KeyError: 'season_stats'`
 
 - [ ] **Step 3: Write the implementation**
@@ -381,7 +395,7 @@ def _game_logs_block(db: Session, player_id: int, year: int) -> list:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
 Expected: 7 passed
 
 - [ ] **Step 5: Commit**
@@ -433,7 +447,7 @@ def test_criteria_values_are_json_serializable(db, player, stats):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
 Expected: FAIL with `KeyError: 'criteria'`
 
 - [ ] **Step 3: Write the implementation**
@@ -478,7 +492,7 @@ def _criteria_block(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
 Expected: 10 passed
 
 **If the builder raises on the sparse fixture database** (it derives team offense and defense levels and lazily creates the rows it needs), extend the `stats` fixture with the rows it asks for — a `DBNFLTeamStats` row for `ATL`, or `DBNFLGame` rows for the season. Do **not** wrap `_criteria_block` in `try/except` to make the test green: an exception here is a real failure mode the agent would hit on a thin database, and swallowing it would hide that until a live run.
@@ -552,7 +566,7 @@ def test_data_freshness_is_null_when_nothing_stored(db, player):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
 Expected: FAIL with `KeyError: 'existing_projections'`
 
 - [ ] **Step 3: Write the implementation**
@@ -652,7 +666,7 @@ def _data_freshness_block(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
 Expected: 14 passed
 
 - [ ] **Step 5: Commit**
@@ -715,7 +729,7 @@ def test_sportsbook_is_none_when_no_props_stored(db, player):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
 Expected: FAIL with `KeyError: 'schedule'`
 
 - [ ] **Step 3: Write the implementation**
@@ -791,7 +805,7 @@ def _sportsbook_block(db: Session, player_id: int) -> Optional[Dict[str, Any]]:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
 Expected: 17 passed
 
 - [ ] **Step 5: Commit**
@@ -857,7 +871,7 @@ Note the `schedule` fixture builds 2026 games and the `stats` fixture builds 202
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
 Expected: FAIL — logs at and after the cutoff are still present, and `KeyError: 'criteria_omitted_reason'`
 
 - [ ] **Step 3: Write the implementation**
@@ -982,7 +996,7 @@ def _schedule_block(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
 Expected: 22 passed
 
 - [ ] **Step 5: Commit**
@@ -1039,7 +1053,7 @@ def test_hash_ignores_the_generated_at_timestamp(db, player, stats):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
 Expected: FAIL with `ImportError: cannot import name 'evidence_hash'`
 
 - [ ] **Step 3: Write the implementation**
@@ -1139,10 +1153,10 @@ def agent_evidence(player_id, year, week, as_of_week):
 
 - [ ] **Step 4: Run tests and exercise the command**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
 Expected: 25 passed
 
-Run: `.venv/Scripts/python -m pigskin_mastermind.cli agent evidence --help`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pigskin_mastermind.cli agent evidence --help`
 Expected: usage text listing `--player-id`, `--year`, `--week`, `--as-of`
 
 - [ ] **Step 5: Commit**
@@ -1335,7 +1349,7 @@ def test_weekly_scope_uses_the_weekly_ceiling(db, result):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_projection.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_projection.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'pigskin_mastermind.services.agent_projection'`
 
 - [ ] **Step 3: Write the implementation**
@@ -1504,7 +1518,7 @@ def _check_citations(result: Dict[str, Any], *, web_allowed: bool) -> None:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_projection.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_projection.py -v`
 Expected: 13 passed
 
 - [ ] **Step 5: Commit**
@@ -1628,7 +1642,7 @@ def test_does_not_disturb_the_model_row(db, player, result):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_projection.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_projection.py -v`
 Expected: FAIL with `ImportError: cannot import name 'record_llm_projection'`
 
 - [ ] **Step 3: Write the implementation**
@@ -1704,7 +1718,7 @@ def _opt_float(value: Any) -> Optional[float]:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_projection.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_projection.py -v`
 Expected: 18 passed
 
 - [ ] **Step 5: Commit**
@@ -1800,7 +1814,7 @@ def test_checked_in_fixture_satisfies_the_contract(db, player):
 
 - [ ] **Step 2: Run the test**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_projection.py::test_checked_in_fixture_satisfies_the_contract -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_projection.py::test_checked_in_fixture_satisfies_the_contract -v`
 Expected: **PASS.** This is the one test in the plan that does not start red, and that is correct — it is a regression pin over behavior Task 9 already built, not a driver for new behavior. Its job is to fail *later*, if the documented contract and the validator ever drift apart. If it fails now, the fixture and the validator already disagree; fix whichever is wrong rather than editing the fixture until the test goes green.
 
 - [ ] **Step 3: Add the CLI command**
@@ -1849,20 +1863,20 @@ def agent_record_projection(result_file, web_allowed):
 
 - [ ] **Step 4: Run the full suite and exercise the command**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_projection.py tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_projection.py tests/test_agent_evidence.py -v`
 Expected: 44 passed
 
-Run: `.venv/Scripts/python -m pigskin_mastermind.cli agent record-projection --help`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pigskin_mastermind.cli agent record-projection --help`
 Expected: usage text listing `--result-file` and `--web/--no-web`
 
-Run: `.venv/Scripts/python -m pytest tests/`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/`
 Expected: no *new* failures. The suite has 17 known pre-existing failures documented in `docs/PROJECT_STATUS.md`; compare against that baseline rather than expecting green.
 
 - [ ] **Step 5: Format, lint, and commit**
 
 ```bash
-.venv/Scripts/python -m black src/ tests/
-.venv/Scripts/python -m flake8 src/ tests/
+/d/git/pigskin_mastermind/.venv/Scripts/python -m black src/ tests/
+/d/git/pigskin_mastermind/.venv/Scripts/python -m flake8 src/ tests/
 ```
 
 ```bash
@@ -1958,7 +1972,7 @@ def test_news_unfiltered_when_cutoff_date_is_unknown(db, player, news):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
 Expected: FAIL with `KeyError: 'news'`
 
 - [ ] **Step 3: Write the implementation**
@@ -2069,7 +2083,7 @@ and add to its returned dict:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
+Run: `PYTHONPATH="D:/git/pigskin_mastermind/.claude/worktrees/agent-evidence/src" /d/git/pigskin_mastermind/.venv/Scripts/python -m pytest tests/test_agent_evidence.py -v`
 Expected: 30 passed
 
 - [ ] **Step 5: Commit**
