@@ -288,6 +288,52 @@ def projections_refresh(year, limit):
         db.close()
 
 
+@main.group()
+def agent():
+    """Commands that serve the Claude Code projection agents.
+
+    These exist so an agent can obtain everything known about a player in one
+    call, and write its conclusion back through a validated path. Nothing here
+    invokes an LLM.
+    """
+    pass
+
+
+@agent.command('evidence')
+@click.option('--player-id', required=True, type=int,
+              help='Database player ID (DBPlayer.id, not the prefixed string)')
+@click.option('--year', type=int, default=None,
+              help='Season year (defaults to the current fantasy season)')
+@click.option('--week', type=int, default=None,
+              help='Target week. Omit for season scope.')
+@click.option('--as-of', 'as_of_week', type=int, default=None,
+              help='Backtest cutoff: exclude all data from this week onward')
+def agent_evidence(player_id, year, week, as_of_week):
+    """Print everything known about one player as a single JSON document.
+
+    This is the input contract for the player-analyst agent::
+
+        pigskin agent evidence --player-id 412 --year 2026 --week 5
+    """
+    import json as _json
+
+    from pigskin_mastermind.services.agent_evidence import build_evidence
+    from pigskin_mastermind.utils.season import current_fantasy_season
+
+    year = year or current_fantasy_season()
+    db = _get_stats_db()
+    try:
+        evidence = build_evidence(
+            db, player_id, year, week=week, as_of_week=as_of_week,
+        )
+        # The criteria builder lazily creates missing team/defense stat rows as
+        # a side effect, so this read path has writes to flush.
+        db.commit()
+        click.echo(_json.dumps(evidence, indent=2, default=str))
+    finally:
+        db.close()
+
+
 @stats.command('import-espn')
 @click.option('--league-id', required=True, help='ESPN league ID')
 @click.option('--team-id', required=True, type=int, help='ESPN team ID')

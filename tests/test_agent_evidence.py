@@ -422,3 +422,37 @@ def test_as_of_suppresses_sportsbook(db, player, props):
     ev = build_evidence(db, player.id, 2026, week=1, as_of_week=1)
     assert ev["sportsbook"] is None
     assert "cutoff" in ev["sportsbook_omitted_reason"]
+
+
+def test_hash_is_stable_across_identical_calls(db, player, stats):
+    from pigskin_mastermind.services.agent_evidence import evidence_hash
+
+    first = build_evidence(db, player.id, 2026)
+    second = build_evidence(db, player.id, 2026)
+    assert first["evidence_hash"] == second["evidence_hash"]
+    assert len(first["evidence_hash"]) == 64
+
+
+def test_hash_changes_when_underlying_data_changes(db, player, stats):
+    before = build_evidence(db, player.id, 2026)["evidence_hash"]
+    db.add(
+        DBPlayerGameLog(
+            player_id=player.id,
+            year=2025,
+            week=6,
+            fantasy_points=31.0,
+        )
+    )
+    db.commit()
+    after = build_evidence(db, player.id, 2026)["evidence_hash"]
+    assert before != after
+
+
+def test_hash_ignores_the_generated_at_timestamp(db, player, stats):
+    from pigskin_mastermind.services.agent_evidence import evidence_hash
+
+    ev = build_evidence(db, player.id, 2026)
+    mutated = dict(ev)
+    mutated["data_freshness"] = dict(ev["data_freshness"])
+    mutated["data_freshness"]["generated_at"] = "1999-01-01T00:00:00+00:00"
+    assert evidence_hash(mutated) == evidence_hash(ev)

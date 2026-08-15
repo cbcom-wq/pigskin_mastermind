@@ -11,6 +11,8 @@ Nothing here calls an LLM. The output of this module is the contract that the
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -56,6 +58,26 @@ _SPORTSBOOK_OMITTED_UNDER_AS_OF = (
 )
 
 
+def evidence_hash(evidence: Dict[str, Any]) -> str:
+    """Stable fingerprint of the *data* in an evidence document.
+
+    A stored projection records the hash of the evidence it was derived from,
+    which is what makes a disagreement between two runs diagnosable: same hash
+    means the agent changed its mind, different hash means the data moved.
+
+    ``generated_at`` and the hash field itself are excluded — both change on
+    every call and neither is data about the player.
+    """
+    payload = {k: v for k, v in evidence.items() if k != "evidence_hash"}
+    freshness = payload.get("data_freshness")
+    if isinstance(freshness, dict):
+        payload["data_freshness"] = {
+            k: v for k, v in freshness.items() if k != "generated_at"
+        }
+    blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
 def build_evidence(
     db: Session,
     player_id: int,
@@ -91,12 +113,13 @@ def build_evidence(
             None of that reaches the columns the schema keeps no historical
             snapshot for, so a backtest still sees present-day values there
             regardless of the cutoff: the ``player`` block's
-            ``injury_status``, ``injured``, ``nfl_team``, and ``age`` are
-            read live — a same-season backtest sees today's injury status,
-            and a player traded mid-season shows the post-trade team, which
-            is also why ``schedule`` (looked up by current ``nfl_team``) can
-            show the wrong opponent for an early-season backtest run after a
-            later trade. ``existing_projections`` rows carry a
+            ``injury_status``, ``injured``, ``nfl_team``, ``age``,
+            ``years_exp``, and ``bye_week`` are read live — a same-season
+            backtest sees today's injury status, and a player traded
+            mid-season shows the post-trade team, which is also why
+            ``schedule`` (looked up by current ``nfl_team``) can show the
+            wrong opponent for an early-season backtest run after a later
+            trade. ``existing_projections`` rows carry a
             ``computed_at`` but are not filtered by it, so a projection
             computed after the cutoff can still appear; the consumer can
             compare ``computed_at`` against the cutoff itself if that
@@ -122,7 +145,7 @@ def build_evidence(
     else:
         criteria_reason = _CRITERIA_OMITTED_UNDER_AS_OF
 
-    return {
+    evidence = {
         "player": _player_block(player),
         "context": _context_block(year, week),
         "season_stats": _season_stats_block(db, player_id, year, as_of_week),
@@ -145,6 +168,8 @@ def build_evidence(
         ),
         "data_freshness": _data_freshness_block(db, player_id, year),
     }
+    evidence["evidence_hash"] = evidence_hash(evidence)
+    return evidence
 
 
 def _player_block(player: DBPlayer) -> Dict[str, Any]:
