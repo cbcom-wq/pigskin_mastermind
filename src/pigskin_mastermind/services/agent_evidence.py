@@ -40,6 +40,12 @@ def build_evidence(
 ) -> Dict[str, Any]:
     """Build the evidence document for one player.
 
+    Not read-only: the ``criteria`` block's ``ProjectionCriteriaBuilder`` lazily
+    creates missing team/defense stat rows as a side effect of computing the
+    criteria it returns. Callers must commit (and close the session) before
+    handing control to a subprocess, or those writes are lost and a second
+    SQLite connection can deadlock against this one.
+
     Args:
         db: Open session.
         player_id: ``DBPlayer.id`` (not the prefixed string ``player_id``).
@@ -152,6 +158,9 @@ def _criteria_block(
 
     Imported lazily because ``projection_criteria_builder`` is a heavy module
     and most callers of this file do not need it.
+
+    This is what makes ``build_evidence`` a writer, not a reader: the builder
+    below lazily creates missing team/defense stat rows as it computes.
     """
     from pigskin_mastermind.services.projection_criteria_builder import (
         ProjectionCriteriaBuilder,
