@@ -54,6 +54,7 @@ class DBPlayer(Base):
     weekly_stats = relationship("DBWeeklyPlayerStats", back_populates="player", cascade="all, delete-orphan")
     season_stats = relationship("DBPlayerSeasonStats", back_populates="player", cascade="all, delete-orphan")
     game_logs = relationship("DBPlayerGameLog", back_populates="player", cascade="all, delete-orphan")
+    news = relationship("DBPlayerNews", back_populates="player", cascade="all, delete-orphan")
 
 
 class DBTeam(Base):
@@ -411,6 +412,33 @@ class DBSportsbookOdds(Base):
     description = Column(String, nullable=True)
     fetched_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DBPlayerNews(Base):
+    """Cached player news articles from ESPN's public API.
+
+    Fetched on-demand when viewing a player detail page, with a TTL-based
+    cache so repeated views within ``max_age_minutes`` serve from the DB
+    instead of re-hitting the API.
+    """
+    __tablename__ = "player_news"
+    __table_args__ = (
+        UniqueConstraint(
+            'player_id', 'espn_headline_id',
+            name='uq_player_news_headline',
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=False, index=True)
+    espn_headline_id = Column(String, nullable=False)
+    headline = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    source_url = Column(String, nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    fetched_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    player = relationship("DBPlayer", back_populates="news")
 
 
 DEFAULT_SCORING_SETTINGS = {
