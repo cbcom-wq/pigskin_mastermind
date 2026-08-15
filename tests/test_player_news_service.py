@@ -57,9 +57,16 @@ def test_db_player_news_roundtrip(db, player):
     assert rows[0].espn_headline_id == "art_001"
 
 
-# Sample ESPN API response payload for mocking
+# Sample ESPN athlete overview response payload for mocking.
+# The /athletes/{id}/overview endpoint returns both a rotowire blurb
+# and a news list of player-related articles.
 ESPN_RESPONSE = {
-    "articles": [
+    "rotowire": {
+        "headline": "Mahomes (knee) progressing well in recovery.",
+        "story": "The Chiefs QB has been cleared for 11-on-11 drills.",
+        "published": "Thu Aug 13 09:00:42 PDT 2026",
+    },
+    "news": [
         {
             "id": 99001,
             "headline": "Mahomes leads Chiefs to victory",
@@ -74,7 +81,7 @@ ESPN_RESPONSE = {
             "published": "2026-08-09T10:00:00Z",
             "links": {"web": {"href": "https://www.espn.com/nfl/story/_/id/99002"}},
         },
-    ]
+    ],
 }
 
 
@@ -89,13 +96,16 @@ def test_get_player_news_fetches_on_cache_miss(mock_get, db, player):
     svc = PlayerNewsService(db)
     news = svc.get_player_news(player)
 
-    assert len(news) == 2
-    assert news[0].headline == "Mahomes leads Chiefs to victory"
-    assert news[1].headline == "Chiefs prep for Week 2"
+    # 1 rotowire blurb + 2 news articles = 3 items
+    assert len(news) == 3
+    # Ordered by published_at DESC — rotowire is Aug 13, articles Aug 10/09
+    assert news[0].headline == "Mahomes (knee) progressing well in recovery."
+    assert news[1].headline == "Mahomes leads Chiefs to victory"
+    assert news[2].headline == "Chiefs prep for Week 2"
     mock_get.assert_called_once()
 
     # Verify persisted in DB
-    assert db.query(DBPlayerNews).filter_by(player_id=player.id).count() == 2
+    assert db.query(DBPlayerNews).filter_by(player_id=player.id).count() == 3
 
 
 @patch("pigskin_mastermind.services.player_news_service.requests.get")
@@ -143,8 +153,8 @@ def test_get_player_news_refetches_when_stale(mock_get, db, player):
     svc = PlayerNewsService(db)
     news = svc.get_player_news(player, max_age_minutes=30)
 
-    # Old row still exists, plus 2 new ones
-    assert len(news) >= 2
+    # Old row still exists, plus 3 new ones (1 rotowire + 2 articles)
+    assert len(news) >= 3
     mock_get.assert_called_once()
 
 

@@ -12,7 +12,9 @@ from pigskin_mastermind.models.database import DBPlayer, DBPlayerNews
 
 logger = logging.getLogger(__name__)
 
-_ESPN_NEWS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/news"
+_ESPN_OVERVIEW_URL = (
+    "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes"
+)
 _REQUEST_TIMEOUT = 10  # seconds
 
 
@@ -111,15 +113,19 @@ class PlayerNewsService:
             self.db.rollback()
 
     def _fetch_from_espn(self, espn_id: str) -> list:
-        """Hit ESPN's public news endpoint and return parsed dicts.
+        """Hit ESPN's athlete overview endpoint and return parsed dicts.
+
+        Uses ``/athletes/{id}/overview`` which returns both a ``rotowire``
+        blurb (the short Rotoworld-style update) and a ``news`` list of
+        player-related articles.  The older ``/news?player=`` endpoint
+        ignores the player parameter and returns the generic NFL feed.
 
         Never raises — returns ``[]`` on any failure so the caller falls
         back to whatever is cached.
         """
         try:
             resp = requests.get(
-                _ESPN_NEWS_URL,
-                params={"player": espn_id},
+                f"{_ESPN_OVERVIEW_URL}/{espn_id}/overview",
                 timeout=_REQUEST_TIMEOUT,
             )
             resp.raise_for_status()
@@ -133,16 +139,34 @@ class PlayerNewsService:
             return []
 
         articles = []
-        for item in data.get("articles", []):
+
+        # Rotowire blurb — the single most valuable item (short, player-
+        # specific, injury/status focused).  Stored with a synthetic ID
+        # so it upserts cleanly alongside regular articles.
+        rotowire = data.get("rotowire")
+        if isinstance(rotowire, dict) and rotowire.get("headline"):
+            articles.append(
+                {
+                    "espn_headline_id": f"rotowire_{espn_id}",
+                    "headline": rotowire["headline"],
+                    "description": rotowire.get("story"),
+                    "source_url": None,
+                    "published_at": _parse_espn_date(rotowire.get("published")),
+                }
+            )
+
+        # News articles — ESPN articles that mention this player.
+        for item in data.get("news", []):
             try:
+                links = item.get("links", {})
+                web = links.get("web", links.get("api", {}))
+                href = web.get("href") if isinstance(web, dict) else None
                 articles.append(
                     {
                         "espn_headline_id": str(item["id"]),
                         "headline": item["headline"],
                         "description": item.get("description"),
-                        "source_url": (
-                            item.get("links", {}).get("web", {}).get("href")
-                        ),
+                        "source_url": href,
                         "published_at": _parse_iso(item.get("published")),
                     }
                 )
@@ -158,7 +182,28 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
     try:
-        # ESPN uses "2026-08-10T14:30:00Z" format
+        # ESPN uses "2026-08-10T14:30:00Z" or "2026-08-15T16:06:28.000+00:00"
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except (ValueError, TypeError):
+        return None
+
+
+def _parse_espn_date(value: Optional[str]) -> Optional[datetime]:
+    """Parse the ``rotowire`` date format, e.g. 'Thu Aug 13 09:00:42 PDT 2026'.
+
+    The timezone abbreviation (PDT, EST, …) is not reliably parseable by
+    strptime, so we strip it and treat the result as a naive timestamp.
+    Close enough for a "3 days ago" display.
+    """
+    if not value:
+        return None
+    try:
+        # Drop the three-letter timezone abbreviation before the year
+        parts = value.split()
+        if len(parts) == 6:
+            # "Thu Aug 13 09:00:42 PDT 2026" -> "Thu Aug 13 09:00:42 2026"
+            parts.pop(4)
+        cleaned = " ".join(parts)
+        return datetime.strptime(cleaned, "%a %b %d %H:%M:%S %Y")
+    except (ValueError, TypeError, IndexError):
         return None
