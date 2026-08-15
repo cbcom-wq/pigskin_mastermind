@@ -13,6 +13,7 @@ from pigskin_mastermind.models.database import (
     DBPlayerProjection,
 )
 from pigskin_mastermind.services.agent_projection import (
+    _REQUIRED_FIELDS,
     ResultRejected,
     validate_result,
 )
@@ -187,4 +188,74 @@ def test_weekly_scope_uses_the_weekly_ceiling(db, result):
     result["floor"] = 90.0
     result["ceiling"] = 130.0
     with pytest.raises(ResultRejected, match="ceiling for RB"):
+        validate_result(db, result)
+
+
+# --- Coverage added in response to review: the confidence enum, the full
+# required-fields set, and the weekly branch of _model_projection were not
+# pinned by any of the original 13 cases. Each addition below was confirmed
+# to fail red under the mutation it targets before being left in place. ---
+
+
+def test_rejects_invalid_confidence(db, result):
+    result["confidence"] = "very high"
+    with pytest.raises(ResultRejected, match="confidence"):
+        validate_result(db, result)
+
+
+@pytest.mark.parametrize("confidence", ["low", "medium", "high"])
+def test_accepts_valid_confidence_values(db, result, confidence):
+    result["confidence"] = confidence
+    assert validate_result(db, result)["confidence"] == confidence
+
+
+# Mirrors _REQUIRED_FIELDS as a literal, not a reference to it. Parametrizing
+# directly off the module's tuple would make the shrink-to-one-field mutation
+# invisible: if the source tuple shrinks, `parametrize` collects fewer cases
+# instead of failing any of them, and the test run goes green with less
+# coverage rather than red. The assertion below pins the tuple's actual
+# membership, so a shrink (or an unnoticed addition) fails loudly here, and
+# the parametrize list is what a developer must deliberately update.
+_EXPECTED_REQUIRED_FIELDS = (
+    "player_id",
+    "year",
+    "projected_points",
+    "rationale",
+    "confidence",
+)
+
+
+def test_required_fields_tuple_has_not_drifted(db, result):
+    assert _REQUIRED_FIELDS == _EXPECTED_REQUIRED_FIELDS
+
+
+@pytest.mark.parametrize("field", _EXPECTED_REQUIRED_FIELDS)
+def test_rejects_each_missing_required_field(db, result, field):
+    del result[field]
+    with pytest.raises(ResultRejected, match=f"Missing required field: {field}"):
+        validate_result(db, result)
+
+
+def test_weekly_scope_matches_against_the_weekly_model_row(db, player, result):
+    # A model row scoped to week=5, distinct from the season-scope rows used
+    # elsewhere in this file. Its band ([2.5, 30.0]) and the RB weekly
+    # position ceiling (50.0) disagree about whether 40.0 is acceptable, so
+    # this can only pass if the week filter in _model_projection actually
+    # found this row -- a bug there would silently fall through to the
+    # (looser) ceiling check and let 40.0 pass.
+    db.add(
+        DBPlayerProjection(
+            player_id=player.id,
+            year=2026,
+            week=5,
+            source="model",
+            projected_points=10.0,
+        )
+    )
+    db.commit()
+    result["week"] = 5
+    result["projected_points"] = 40.0
+    result["floor"] = 35.0
+    result["ceiling"] = 45.0
+    with pytest.raises(ResultRejected, match="model projection"):
         validate_result(db, result)
