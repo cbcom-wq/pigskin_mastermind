@@ -40,6 +40,21 @@ _CRITERIA_OMITTED_UNDER_AS_OF = (
     "backtest, so the block is omitted instead."
 )
 
+_SEASON_STATS_OMITTED_UNDER_AS_OF = (
+    "Season aggregates for the target year include the post-cutoff weeks "
+    "themselves — fantasy_points_avg over a full season is close to the "
+    "answer for any single week in it. An aggregate cannot be partially "
+    "truncated without recomputing it from game logs, so the target season "
+    "is withheld instead. Prior seasons are unaffected."
+)
+
+_SPORTSBOOK_OMITTED_UNDER_AS_OF = (
+    "Sportsbook lines price upcoming games and carry no as-of history, so "
+    "under a cutoff the stored props describe a game that had not been "
+    "played yet — or a different season entirely. Withheld rather than "
+    "served as if contemporaneous."
+)
+
 
 def build_evidence(
     db: Session,
@@ -61,8 +76,34 @@ def build_evidence(
         player_id: ``DBPlayer.id`` (not the prefixed string ``player_id``).
         year: Season year.
         week: Target week, or ``None`` for season scope.
-        as_of_week: Backtest cutoff. When set, no data from this week or later
-            appears in the document.
+        as_of_week: Backtest cutoff. When set: ``game_logs`` for the target
+            season are truncated to weeks before it, ``schedule`` reports
+            games at or after it as unplayed regardless of the stored score,
+            ``criteria`` is withheld entirely (the builder it wraps has no
+            cutoff of its own), the target season's row is dropped from
+            ``season_stats`` (an aggregate can't be partially truncated, and
+            its ``fantasy_points_avg`` is close to the answer for any single
+            week inside it — prior seasons are unaffected), and
+            ``sportsbook`` is withheld (books price upcoming games, so a
+            stored prop under a cutoff either hasn't happened yet or belongs
+            to a different season).
+
+            None of that reaches the columns the schema keeps no historical
+            snapshot for, so a backtest still sees present-day values there
+            regardless of the cutoff: the ``player`` block's
+            ``injury_status``, ``injured``, ``nfl_team``, and ``age`` are
+            read live — a same-season backtest sees today's injury status,
+            and a player traded mid-season shows the post-trade team, which
+            is also why ``schedule`` (looked up by current ``nfl_team``) can
+            show the wrong opponent for an early-season backtest run after a
+            later trade. ``existing_projections`` rows carry a
+            ``computed_at`` but are not filtered by it, so a projection
+            computed after the cutoff can still appear; the consumer can
+            compare ``computed_at`` against the cutoff itself if that
+            matters. ``data_freshness`` timestamps are likewise unfiltered,
+            plus its own wall-clock ``generated_at`` — enough to reveal that
+            the season is over even though no stat value crosses the
+            cutoff.
 
     Returns:
         A JSON-serializable dict.
@@ -84,7 +125,10 @@ def build_evidence(
     return {
         "player": _player_block(player),
         "context": _context_block(year, week),
-        "season_stats": _season_stats_block(db, player_id, year),
+        "season_stats": _season_stats_block(db, player_id, year, as_of_week),
+        "season_stats_omitted_reason": (
+            _SEASON_STATS_OMITTED_UNDER_AS_OF if as_of_week is not None else None
+        ),
         "game_logs": _game_logs_block(db, player_id, year, as_of_week),
         "criteria": criteria,
         "criteria_omitted_reason": criteria_reason,
@@ -95,7 +139,10 @@ def build_evidence(
             week,
         ),
         "schedule": _schedule_block(db, player, year, week, as_of_week),
-        "sportsbook": _sportsbook_block(db, player_id),
+        "sportsbook": _sportsbook_block(db, player_id, as_of_week),
+        "sportsbook_omitted_reason": (
+            _SPORTSBOOK_OMITTED_UNDER_AS_OF if as_of_week is not None else None
+        ),
         "data_freshness": _data_freshness_block(db, player_id, year),
     }
 
@@ -128,14 +175,23 @@ def _context_block(year: int, week: Optional[int]) -> Dict[str, Any]:
     }
 
 
-def _season_stats_block(db: Session, player_id: int, year: int) -> list:
+def _season_stats_block(
+    db: Session,
+    player_id: int,
+    year: int,
+    as_of_week: Optional[int] = None,
+) -> list:
+    query = db.query(DBPlayerSeasonStats).filter(
+        DBPlayerSeasonStats.player_id == player_id,
+        DBPlayerSeasonStats.year <= year,
+    )
+    if as_of_week is not None:
+        # The target season's aggregate covers the post-cutoff weeks; only
+        # completed prior seasons are safe to serve.
+        query = query.filter(DBPlayerSeasonStats.year < year)
+
     rows = (
-        db.query(DBPlayerSeasonStats)
-        .filter(
-            DBPlayerSeasonStats.player_id == player_id,
-            DBPlayerSeasonStats.year <= year,
-        )
-        .order_by(DBPlayerSeasonStats.year.desc())
+        query.order_by(DBPlayerSeasonStats.year.desc())
         .limit(_SEASON_HISTORY_YEARS)
         .all()
     )
@@ -385,7 +441,11 @@ def _schedule_block(
     return games
 
 
-def _sportsbook_block(db: Session, player_id: int) -> Optional[Dict[str, Any]]:
+def _sportsbook_block(
+    db: Session,
+    player_id: int,
+    as_of_week: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
     """Prop-derived projection, when props for this player are stored.
 
     Resolved by ``DBPlayer.id`` rather than by name: the name path matches
@@ -393,7 +453,17 @@ def _sportsbook_block(db: Session, player_id: int) -> Optional[Dict[str, Any]]:
 
     Returns ``None`` rather than a zeroed structure so the agent can tell
     "no props available" from "props say zero".
+
+    Under a cutoff there is no historical line to serve: books price
+    upcoming games, so stored props either belong to a game that had not
+    been played yet at the cutoff or to a different season entirely (the
+    only table involved here, ``DBSportsbookOdds``, is never checked against
+    ``commence_time`` elsewhere in this module). Bail before doing any query
+    work.
     """
+    if as_of_week is not None:
+        return None
+
     from pigskin_mastermind.services.sportsbook_projection_service import (
         SportsbookProjectionService,
     )

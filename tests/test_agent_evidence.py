@@ -1,5 +1,7 @@
 """Assembly of the agent evidence pack."""
 
+from datetime import datetime, timezone
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -12,6 +14,7 @@ from pigskin_mastermind.models.database import (
     DBPlayerGameLog,
     DBPlayerProjection,
     DBPlayerSeasonStats,
+    DBSportsbookOdds,
 )
 from pigskin_mastermind.services.agent_evidence import build_evidence
 
@@ -325,3 +328,97 @@ def test_criteria_reason_absent_when_not_backtesting(db, player, stats):
     ev = build_evidence(db, player.id, 2026, week=3)
     assert ev["criteria"] is not None
     assert ev["criteria_omitted_reason"] is None
+
+
+def test_as_of_drops_the_target_season_aggregate(db, player, stats):
+    """A season total includes the very weeks the cutoff is hiding.
+
+    fantasy_points_avg over the full season is a near-optimal estimator for
+    the week being predicted, so emitting it defeats the backtest that the
+    game-log truncation exists to make possible.
+    """
+    ev = build_evidence(db, player.id, 2025, week=3, as_of_week=3)
+    assert [row["year"] for row in ev["season_stats"]] == [2024, 2023]
+    assert "cutoff" in ev["season_stats_omitted_reason"]
+
+
+def test_season_stats_reason_absent_when_not_backtesting(db, player, stats):
+    ev = build_evidence(db, player.id, 2025, week=3)
+    assert [row["year"] for row in ev["season_stats"]] == [2025, 2024, 2023]
+    assert ev["season_stats_omitted_reason"] is None
+
+
+def test_schedule_cutoff_keeps_earlier_results_visible(db, player, schedule):
+    """Pins the boundary comparison, not just the presence of a cutoff.
+
+    Without this, an implementation that blanks `played` for every game
+    whenever as_of_week is set passes the whole suite.
+    """
+    ev = build_evidence(db, player.id, 2026, week=1, as_of_week=2)
+    assert ev["schedule"][0]["week"] == 1
+    assert ev["schedule"][0]["played"] is True
+    assert ev["schedule"][1]["week"] == 2
+    assert ev["schedule"][1]["played"] is False
+
+
+@pytest.fixture
+def props(db, player):
+    """Sportsbook lines the projection service will actually resolve.
+
+    ``_fetch_props`` filters on ``market IN MARKET_TO_SCORING`` and
+    ``description ILIKE '%<player_name>%'`` -- the name path, not the FK --
+    so ``description`` must contain "Test Back" verbatim. ``_group_lines_by_
+    market`` then drops any row with a NULL ``point`` and skips
+    ``outcome_name == "under"`` (case-insensitive) so the Over/Under pair
+    for one bookmaker doesn't double count. Two markets, two bookmakers each,
+    gives the median() call in ``project_player`` more than one point to
+    resolve and keeps ``categories`` non-trivial.
+    """
+    event_id = "evt_test_back_wk1"
+    commence = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    rows = [
+        # player_rush_yds: two bookmakers, Over + Under each.
+        ("draftkings", "player_rush_yds", "Over", 64.5),
+        ("draftkings", "player_rush_yds", "Under", 64.5),
+        ("fanduel", "player_rush_yds", "Over", 61.5),
+        ("fanduel", "player_rush_yds", "Under", 61.5),
+        # player_receptions: two bookmakers, Over only.
+        ("draftkings", "player_receptions", "Over", 3.5),
+        ("fanduel", "player_receptions", "Over", 4.5),
+    ]
+    for bookmaker, market, outcome, point in rows:
+        db.add(
+            DBSportsbookOdds(
+                event_id=event_id,
+                sport_key="americanfootball_nfl",
+                sport_title="NFL",
+                commence_time=commence,
+                home_team="ATL",
+                away_team="NO",
+                bookmaker=bookmaker,
+                market=market,
+                outcome_name=outcome,
+                price=-110,
+                point=point,
+                description="Test Back",
+            )
+        )
+    db.commit()
+
+
+def test_sportsbook_present_without_a_cutoff(db, player, props):
+    ev = build_evidence(db, player.id, 2026, week=1)
+    assert ev["sportsbook"] is not None
+    assert ev["sportsbook"]["categories"]
+    assert ev["sportsbook_omitted_reason"] is None
+
+
+def test_as_of_suppresses_sportsbook(db, player, props):
+    """Books price upcoming games; there is no historical line to serve.
+
+    The probe that motivated this task pulled September 2026 props into a
+    2025 week-3 backtest.
+    """
+    ev = build_evidence(db, player.id, 2026, week=1, as_of_week=1)
+    assert ev["sportsbook"] is None
+    assert "cutoff" in ev["sportsbook_omitted_reason"]
