@@ -130,3 +130,27 @@ def test_blocks_are_empty_lists_when_player_has_no_data(db, player):
     ev = build_evidence(db, player.id, 2026)
     assert ev["season_stats"] == []
     assert ev["game_logs"] == []
+
+
+def test_yearly_criteria_present_for_season_scope(db, player, stats):
+    ev = build_evidence(db, player.id, 2026)
+    assert ev["criteria"]["scope"] == "yearly"
+    fields = ev["criteria"]["fields"]
+    assert "expected_games" in fields
+    assert "player_skill_level" in fields
+    assert "age_deviation_from_optimum" in fields
+
+
+def test_weekly_criteria_present_for_weekly_scope(db, player, stats):
+    ev = build_evidence(db, player.id, 2026, week=5)
+    assert ev["criteria"]["scope"] == "weekly"
+    fields = ev["criteria"]["fields"]
+    assert "opposing_defense_vs_position_rank" in fields
+    assert "offensive_momentum_score" in fields
+
+
+def test_criteria_values_are_json_serializable(db, player, stats):
+    import json
+
+    ev = build_evidence(db, player.id, 2026, week=5)
+    json.dumps(ev["criteria"])  # raises TypeError if not

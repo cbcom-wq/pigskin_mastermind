@@ -11,6 +11,7 @@ Nothing here calls an LLM. The output of this module is the contract that the
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
@@ -62,6 +63,7 @@ def build_evidence(
         "context": _context_block(year, week),
         "season_stats": _season_stats_block(db, player_id, year),
         "game_logs": _game_logs_block(db, player_id, year),
+        "criteria": _criteria_block(db, player_id, year, week),
     }
 
 
@@ -134,6 +136,40 @@ def _season_stats_block(db: Session, player_id: int, year: int) -> list:
         }
         for r in rows
     ]
+
+
+def _criteria_block(
+    db: Session,
+    player_id: int,
+    year: int,
+    week: Optional[int],
+) -> Optional[Dict[str, Any]]:
+    """The exact criteria the deterministic model would use for this scope.
+
+    This is the single most useful block in the pack: it lets the agent see
+    what the formula sees, and therefore reason about where the formula is
+    likely to be wrong rather than re-deriving it badly.
+
+    Imported lazily because ``projection_criteria_builder`` is a heavy module
+    and most callers of this file do not need it.
+    """
+    from pigskin_mastermind.services.projection_criteria_builder import (
+        ProjectionCriteriaBuilder,
+    )
+
+    # allow_network=False: the per-player ESPN fetch costs ~3.3s against ~35ms
+    # for a player with local data, and the agent already has web access for
+    # anything the network path would add.
+    builder = ProjectionCriteriaBuilder(db, allow_network=False)
+
+    if week is None:
+        criteria = builder.build_yearly_criteria(player_id, year)
+        scope = "yearly"
+    else:
+        criteria = builder.build_weekly_criteria(player_id, week, year)
+        scope = "weekly"
+
+    return {"scope": scope, "fields": asdict(criteria)}
 
 
 def _game_logs_block(db: Session, player_id: int, year: int) -> list:
