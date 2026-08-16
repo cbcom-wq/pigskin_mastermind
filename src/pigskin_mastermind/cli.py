@@ -308,9 +308,11 @@ def agent():
               help='Target week. Omit for season scope.')
 @click.option('--as-of', 'as_of_week', type=int, default=None,
               help='Backtest cutoff: truncates game logs, schedule results, '
-                   'criteria, season totals, props, existing projections, '
-                   'and news from this week onward. Player bio/injury/team '
-                   'and freshness stay current-state -- see build_evidence.')
+                   'criteria, season totals, and props from this week onward. '
+                   'Existing projections and news are filtered too, but only '
+                   'when schedule data for that week is available -- '
+                   'otherwise served unfiltered. Player bio/injury/team and '
+                   'freshness stay current-state -- see build_evidence.')
 def agent_evidence(player_id, year, week, as_of_week):
     """Print everything known about one player as a single JSON document.
 

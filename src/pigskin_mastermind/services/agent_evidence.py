@@ -144,9 +144,14 @@ def build_evidence(
             mid-season shows the post-trade team, which is also why
             ``schedule`` (looked up by current ``nfl_team``) can show the
             wrong opponent for an early-season backtest run after a later
-            trade. ``data_freshness`` timestamps are unfiltered, plus its
-            own wall-clock ``generated_at`` — enough to reveal that the
-            season is over even though no stat value crosses the cutoff.
+            trade. ``existing_projections`` and ``news`` resolve their
+            cutoff the same way, through ``_cutoff_datetime``'s lookup on
+            the player's current ``nfl_team``, so a traded player can
+            silently fall back to unfiltered there too — not just a wrong
+            opponent, but a missed cutoff. ``data_freshness`` timestamps are
+            unfiltered, plus its own wall-clock ``generated_at`` — enough to
+            reveal that the season is over even though no stat value
+            crosses the cutoff.
 
     Returns:
         A JSON-serializable dict.
