@@ -204,6 +204,34 @@ Procedure (in the `projection-evidence` skill):
 6. Return a short summary: the number, the two or three factors that moved it, and the size of the
    disagreement with the model.
 
+### What Phase 1 learned that Phase 2 must act on
+
+Phase 1 shipped. Five things came out of building and reviewing it that the `projection-evidence`
+skill has to state explicitly, because the code cannot enforce them:
+
+1. **`--as-of` is a partial, schedule-dependent cutoff, not a time machine.** Five blocks truncate
+   unconditionally. `existing_projections` and `news` filter only when a `DBNFLGame.kickoff_at`
+   resolves for the player's week and team, and pass through unfiltered otherwise. The `player` bio
+   fields and `data_freshness` are always current-state. The document now reports this itself, in
+   `context.as_of_week`, `context.as_of_cutoff_at`, and the `*_filtered_reason` keys — **the skill
+   must instruct the agent to read them** rather than assuming isolation.
+2. **Under a cutoff there is no matchup signal at all.** Opponent and positional-defense ranks live
+   inside the `criteria` block, which is withheld entirely under `--as-of`. An agent backtesting a
+   past week is projecting without knowing the opponent. Accepted for Phase 1; the skill must say so
+   rather than let the agent silently assume a neutral matchup.
+3. **`evidence_hash` must be the real hash from `agent evidence`.** Nothing validates its format, so
+   an agent that invents one will be accepted. The checked-in fixture uses an obvious placeholder
+   (`"a" * 64`), which teaches the wrong lesson on its own. Consider a 64-hex-char format check in
+   `validate_result` to make the tripwire self-enforcing instead of prose-dependent.
+4. **Citations must be live sources.** `validate_result` only checks that a web-sourced factor's
+   `url` is non-empty — never that it resolves or is plausible. The fixture's `example.com` link is
+   a stand-in; the skill's prose has to make clear a real source is required.
+5. **`build_evidence` writes.** The criteria builder lazily creates team/defense stat rows, so the
+   read path is not read-only and the CLI commits. When Phase 5 adds a FastAPI route that
+   subprocesses the CLI, the handler must hold no session while waiting — this is the two-writer
+   SQLite hazard CLAUDE.md already flags for the desktop app, and nothing yet exercises two writers
+   concurrently.
+
 ### Evaluating it honestly
 
 A 2024 backtest is contaminated — the model may simply know how the season ended, and web search
