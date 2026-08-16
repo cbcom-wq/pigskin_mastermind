@@ -1,0 +1,29 @@
+{
+  "player_id": 1,
+  "year": 2026,
+  "week": null,
+  "projected_points": 244.5,
+  "floor": 188.0,
+  "ceiling": 301.0,
+  "expected_games": 16.2,
+  "confidence": "medium",
+  "rationale": "Target share climbed four points after the week 6 bye and held. The model's touch-share criterion is built on the full season and therefore understates the second-half role.",
+  "key_factors": [
+    {
+      "factor": "Post-bye target share up 4 points",
+      "direction": "+",
+      "magnitude_pts": 8.0,
+      "source": "db"
+    },
+    {
+      "factor": "Offensive coordinator retained",
+      "direction": "+",
+      "magnitude_pts": 3.0,
+      "source": "web",
+      "url": "https://example.com/coordinator-retained"
+    }
+  ],
+  "disagreement_with_model": "Model projects 231; the gap is almost entirely the second-half receiving role.",
+  "web_used": true,
+  "evidence_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

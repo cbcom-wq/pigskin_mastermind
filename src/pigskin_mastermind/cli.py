@@ -288,6 +288,102 @@ def projections_refresh(year, limit):
         db.close()
 
 
+@main.group()
+def agent():
+    """Commands that serve the Claude Code projection agents.
+
+    These exist so an agent can obtain everything known about a player in one
+    call, and write its conclusion back through a validated path. Nothing here
+    invokes an LLM.
+    """
+    pass
+
+
+@agent.command('evidence')
+@click.option('--player-id', required=True, type=int,
+              help='Database player ID (DBPlayer.id, not the prefixed string)')
+@click.option('--year', type=int, default=None,
+              help='Season year (defaults to the current fantasy season)')
+@click.option('--week', type=int, default=None,
+              help='Target week. Omit for season scope.')
+@click.option('--as-of', 'as_of_week', type=int, default=None,
+              help='Backtest cutoff: truncates game logs, schedule results, '
+                   'criteria, season totals, and props from this week onward. '
+                   'Existing projections and news are filtered too, but only '
+                   'when schedule data for that week is available -- '
+                   'otherwise served unfiltered. Player bio/injury/team and '
+                   'freshness stay current-state -- see build_evidence.')
+def agent_evidence(player_id, year, week, as_of_week):
+    """Print everything known about one player as a single JSON document.
+
+    Not read-only: the criteria block's ProjectionCriteriaBuilder lazily
+    creates missing team/defense stat rows as a side effect of computing it,
+    so this command writes to the database it reads from. Do not run it
+    against a database the desktop app currently has open -- two writers on
+    one SQLite file produce "database is locked".
+
+    This is the input contract for the player-analyst agent::
+
+        pigskin agent evidence --player-id 412 --year 2026 --week 5
+    """
+    import json as _json
+
+    from pigskin_mastermind.services.agent_evidence import build_evidence
+    from pigskin_mastermind.utils.season import current_fantasy_season
+
+    year = year or current_fantasy_season()
+    db = _get_stats_db()
+    try:
+        evidence = build_evidence(
+            db, player_id, year, week=week, as_of_week=as_of_week,
+        )
+        # The criteria builder lazily creates missing team/defense stat rows as
+        # a side effect, so this read path has writes to flush.
+        db.commit()
+        click.echo(_json.dumps(evidence, indent=2, default=str))
+    finally:
+        db.close()
+
+
+@agent.command('record-projection')
+@click.option('--result-file', required=True,
+              type=click.Path(exists=True, dir_okay=False),
+              help='Path to the agent result JSON')
+@click.option('--web/--no-web', 'web_allowed', default=True,
+              help='Whether this run was permitted to use the web. '
+                   '--no-web rejects a result claiming web sources.')
+def agent_record_projection(result_file, web_allowed):
+    """Validate an agent result and store it as a source='llm' projection.
+
+    Exits non-zero with the reason on stderr when a result is rejected, so the
+    agent can see what was wrong and correct it::
+
+        pigskin agent record-projection --result-file out.json
+    """
+    import json as _json
+
+    from pigskin_mastermind.services.agent_projection import (
+        ResultRejected, record_llm_projection,
+    )
+
+    with open(result_file, 'r', encoding='utf-8') as fh:
+        payload = _json.load(fh)
+
+    db = _get_stats_db()
+    try:
+        row = record_llm_projection(db, payload, web_allowed=web_allowed)
+    except ResultRejected as exc:
+        raise click.ClickException(f"Result rejected: {exc}")
+    finally:
+        db.close()
+
+    scope = "season" if row.week is None else f"week {row.week}"
+    click.echo(
+        f"Stored llm projection for player {row.player_id} "
+        f"({row.year} {scope}): {row.projected_points:.1f} pts"
+    )
+
+
 @stats.command('import-espn')
 @click.option('--league-id', required=True, help='ESPN league ID')
 @click.option('--team-id', required=True, type=int, help='ESPN team ID')

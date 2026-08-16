@@ -205,6 +205,26 @@ page you're on. Migrating those consumers onto `player_projections` is pending; 
 read site has a `NOTE:` comment pointing here. Do not add a new consumer of
 `DBPlayer.projected_points` — wire it to `player_projections` instead.
 
+`player_projections.source` also has an `llm` value, written by `pigskin agent record-projection`
+(see below). It is display-only: `_READ_PRIORITY` and `DRAFT_POOL_SOURCES` in
+`projection_refresh.py` never include it, so an `llm` row cannot become the `blend` row and never
+reaches the mock draft pool.
+
+### Agent evidence and recorded projections
+
+`services/agent_evidence.py::build_evidence()` assembles everything known about one player — bio,
+season stats, game logs, criteria, existing projections, schedule, sportsbook props, news, data
+freshness — into one JSON document, for a Claude Code agent to read instead of discovering it
+endpoint by endpoint. `services/agent_projection.py::record_llm_projection()` validates what that
+agent returns (required fields, a sanity band around the `model` projection, citation rules) and
+upserts it as `source='llm'`. Both are exposed via `pigskin agent evidence` and
+`pigskin agent record-projection`. Nothing in either module calls an LLM.
+
+`--as-of` turns `agent evidence` into a backtest: several blocks are withheld or truncated so the
+document doesn't leak data past the cutoff. `context.as_of_week` and `context.as_of_cutoff_at`
+report whether the cutoff was requested and whether it actually resolved to a kickoff — read those
+before trusting a `_filtered_reason` key, since an unresolvable cutoff serves rows unfiltered.
+
 ### Monte Carlo simulation
 
 `src/pigskin_mastermind/.claude/monte_carlo_model.md` is the original design spec for this engine —
