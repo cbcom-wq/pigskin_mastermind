@@ -84,10 +84,11 @@ player**. Four places it usually is:
 
 **A sample too small for the criteria to mean anything.** `historical_average_points` is shrunk
 toward a positional prior with k = 4 games, so it degrades gracefully. Nothing else does.
-`player_skill_level` is a raw percentile against peers with as few as four games;
-`positional_touch_percentage` and `fantasy_points_per_touch` are raw ratios. A player with five
-games gets a skill percentile that reads exactly like a seventeen-game one, and the `criteria` block
-reports no sample size at all. Count the `game_logs` rows yourself.
+`player_skill_level` is a weighted composite of percentiles against peers with as few as four games;
+`positional_touch_percentage` and `fantasy_points_per_touch` are raw ratios. None of the three is
+adjusted for how many games backed it, so a player with five games gets a skill composite that reads
+exactly like a seventeen-game one, and the `criteria` block reports no sample size at all. Count the
+`game_logs` rows yourself.
 
 **A criterion pinned at its default.** A default is not a measurement — it is the *absence* of one,
 and the block carries no flag telling them apart. `coaching_stability_score: 50.0` and
@@ -121,27 +122,41 @@ criteria is now worth checking individually. **The coefficients are not in the p
 you run exposes them, so you can decompose to "baseline versus total adjustment" and no further.
 Do not invent a per-term attribution.**
 
-**Reconcile the game logs against the schedule.** Count the `game_logs` rows for the season, compare
-to `season_stats.games_played`, and look for week numbers present in one and absent from the other.
-A 0.0-point game log for a week with no `schedule` entry is a bye recorded as a played game — which
-inflates `games_played`, deflates `fantasy_points_avg`, and propagates straight into the baseline.
+**Count the game logs against the games that season could contain.** The modern regular season is
+17 games. Count the `game_logs` rows for a single season and compare to that and to
+`season_stats.games_played`. **More than 17 means at least one row is not a real game** — a bye
+recorded as a played game is the usual cause, and a 0.0-point row is the candidate. That inflates
+`games_played`, which deflates `fantasy_points_avg`, which propagates straight into the projection
+baseline.
+
+Do **not** try to find the bye by looking for a log week missing from `schedule`. `schedule` covers
+the **requested year only**, so in a preseason season-scope pack the logs are all prior-season and
+the schedule is all requested-season — the two never overlap and every log week looks "missing".
+Confirming which week is the bye in a prior season takes a second call:
+`agent evidence --player-id N --year <prior>` returns that season's schedule, where the bye is the
+gap in the week numbers.
 
 ### Worked example: player 123, 2026 season
 
-Real numbers from a real pack. They will drift as the database updates — re-derive from your own
-pack, never from these.
+Real numbers, and everything below came from **one** call —
+`agent evidence --player-id 123 --year 2026`. Every step of the reasoning that follows is
+reproducible from this single pack, except one explicitly-flagged second call. The numbers will
+drift as the database updates; re-derive from your own pack, never from these.
 
 ```
-player.name = "Drake Maye"  position QB  team NE  age null
-existing_projections.model.projected_points = 540.86   expected_games 17.0
+player.name = "Drake Maye"  position QB  team NE  age null  bye_week 11
+existing_projections.model.projected_points  = 540.86   expected_games 17.0
+existing_projections.blend.projected_points  = 540.86
 criteria.fields: historical_average_points 21.83  player_skill_level 84.66
                  team_offense_level 90.63  positional_touch_percentage 100
                  recent_trend_score 0.0  fantasy_points_per_touch 0.69
                  injury_risk_score 17.62  age_deviation_from_optimum 0.0
                  coaching_stability_score 50.0  expected_games 17.0
-season_stats[2025]: games_played 18  fantasy_points_total 413.46  fantasy_points_avg 22.97
-game_logs: 18 rows, 2025 weeks 1–18, one of them 0.0 (week 14)
-schedule (2025): weeks 5–22, no week 14
+season_stats: two rows — 2026 (games_played 0, all counting stats 0, adp 50.3)
+                         2025 (games_played 18, fantasy_points_total 413.46,
+                               fantasy_points_avg 22.97, rush_att 103)
+game_logs: 18 rows, all from 2025, weeks 1–18, one of them 0.0 (week 14)
+schedule: 2026 only — weeks [1..10, 12..18]; the gap at 11 is the 2026 bye
 news: []   data_freshness.news_fetched_at: null
 ```
 
@@ -174,19 +189,22 @@ Every sentence is true. It is still worthless, for five reasons:
 > `historical_average_points` baseline of 21.83. The adjustment terms therefore contribute 10.0
 > points per game on their own — 46% on top of the baseline, and just under a third of the projected
 > total comes from something other than observed production. The pack does not expose the
-> coefficients, so I cannot
-> attribute that gap term by term, but the criteria large enough to drive it are
-> `player_skill_level` (84.7) and `team_offense_level` (90.6), both computed from 2025 and both raw
-> percentiles with no shrinkage. As a *ranking* — third among stored QB season projections — that is
+> coefficients, so I cannot attribute that gap term by term, but the criteria large enough to drive
+> it are `player_skill_level` (84.7) and `team_offense_level` (90.6), both computed from 2025 and
+> neither adjusted for sample size. As a *ranking* — third among stored QB season projections — that is
 > arguable. As a *level* it is not: 31.8 ppg over a full season would be the best quarterback season
 > on record by a wide margin, and nothing in this pack is evidence for that.
 >
 > **The baseline is understated, in the opposite direction.** `season_stats` reports
-> `games_played: 18` for 2025, in a 17-game season. There are 18 game logs, weeks 1–18, and week 14
-> is a 0.0 — and the 2025 schedule has no week 14 entry. That is the bye, stored as a played game.
+> `games_played: 18` for 2025, and there are 18 game logs for that season — one more than a 17-game
+> regular season can contain. Week 14 is a 0.0, so that is the row that is not a real game.
 > `fantasy_points_avg` is therefore 413.46 / 18 = 22.97 where the average over the 17 real games is
-> 24.32, a 5.6% understatement flowing into the baseline the whole projection is built on. So the
-> model is simultaneously too low on its anchor and far too high on its adjustments.
+> 24.32: a 5.6% understatement flowing into the baseline the whole projection is built on. I cannot
+> tell from this pack whether week 14 was a bye or a did-not-play — `schedule` here covers 2026 only,
+> and its gap at week 11 is the *2026* bye, not a 2025 one. A second call,
+> `agent evidence --player-id 123 --year 2025`, would settle it; either way the denominator is wrong
+> by one game. So the model is simultaneously too low on its anchor and far too high on its
+> adjustments.
 >
 > **Three criteria are absences, not measurements.** `age_deviation_from_optimum: 0.0` with
 > `player.age: null` means the age term is switched off entirely — not that he is at peak age, and I
@@ -196,21 +214,44 @@ Every sentence is true. It is still worthless, for five reasons:
 > cannot see a coordinator change in either direction — and that is precisely the class of fact worth
 > spending a web search on. [Web findings and citations go here.]
 >
-> **The number.** Correcting the bye-inflated denominator gives 24.32 ppg observed. I allow a modest
-> third-year step and set 24.5 ppg, against 16.5 expected games rather than 17.0 — `expected_games`
-> was computed from a `games_played` figure I have just shown to be inflated. That is 404 points.
-> Floor 300 assumes a mid-season injury or a scheme that reduces his rushing volume; ceiling 480
-> assumes the passing efficiency step-up that his skill percentile implies actually lands.
+> **The number.** Correcting the inflated denominator gives 24.32 ppg observed. I allow a modest
+> third-year step and set 24.5 ppg. On availability: `expected_games` is 17.0, the maximum the model
+> can return, and `season_stats` contains exactly one season with games played — so that 17.0 rests
+> on a single year of observed availability. One healthy season is thin evidence for a full 17 from
+> a quarterback who took 103 rushing attempts, so I use 16.5. That is 24.5 × 16.5 = **404.25**.
+> Floor 300 assumes a mid-season injury or a scheme change that cuts his rushing volume; ceiling 480
+> assumes the passing-efficiency step-up his skill composite implies actually lands.
 > Confidence medium: the game-log evidence is solid and one full season deep, but three of the
 > model's inputs are absences, and I have no coaching or depth-chart information from the database
 > at all — `news` is empty and `news_fetched_at` is null, so that emptiness is an absence of
 > fetching, not an absence of news.
 
+The `key_factors` that go with it. Signed magnitudes sum to −136.6, against an actual disagreement
+of 404.25 − 540.86 = −136.61:
+
+```json
+"key_factors": [
+  {"factor": "Model's adjustment stack adds 10.0 ppg over its own baseline with nothing in the pack supporting a rate above the corrected 24.32 observed",
+   "direction": "-", "magnitude_pts": 127.4, "source": "db"},
+  {"factor": "Third-year step-up allowance over the corrected 2025 rate (24.32 -> 24.5 ppg)",
+   "direction": "+", "magnitude_pts": 3.0, "source": "db"},
+  {"factor": "expected_games cut 17.0 -> 16.5; the model's 17.0 rests on one season of availability history for a QB with 103 carries",
+   "direction": "-", "magnitude_pts": 12.2, "source": "db"}
+],
+"disagreement_with_model": "Model 540.86, mine 404.25 — a 136.6-point (25%) reduction. Almost all of it is the model's adjustment stack, which carries its per-game rate to 31.8 against a 21.83 baseline and a corrected 24.32 observed. The inflated games_played denominator pushes the other way and is already priced into the corrected rate."
+```
+
+Note what the denominator finding did: it did not become its own factor. It corrected the *anchor* the first
+factor is measured against, which is why that factor's magnitude is right. A finding that changes
+your reference point belongs in the rationale and in the arithmetic, not necessarily as a separate
+line item.
+
 What separates them: **every paragraph of the good one contains a claim that could be wrong, and
-says how it was checked.** The decomposition is arithmetic on the pack. The bye finding is a
-reconciliation of three blocks that disagree. The three absences are each named as an absence with
+says how it was checked.** The decomposition is arithmetic on the pack. The denominator finding is a
+row count that contradicts a reported total. The three absences are each named as an absence with
 the field that proves it. The number moves because of those findings, in a stated direction, by a
-stated amount — and it says what it does *not* know as plainly as what it does.
+stated amount that sums to the stated disagreement — and it says what it does *not* know as plainly
+as what it does, including the one thing that would take a second call to settle.
 
 ### Calibration
 
@@ -220,7 +261,7 @@ stated amount — and it says what it does *not* know as plainly as what it does
   absences that matter, and any web claim well sourced.
 - **medium** — the default. Solid evidence with identified gaps, as in the example above.
 - **low** — thin sample, several criteria at defaults, a role in flux, or a projection made under
-  `--as-of` with no matchup signal.
+  `--as-of` with no defense-quality signal.
 
 `floor` and `ceiling` should describe scenarios you can name, not a fixed percentage band around
 your point estimate. If you cannot say what the floor case *is*, you have not found a floor.
@@ -259,6 +300,12 @@ Notes:
 - Season-scope `projected_points`, `floor`, and `ceiling` are **season totals**, not per-game rates.
   This is the most likely place to make a 17× error.
 - `url` is required on a `key_factor` with `"source": "web"` and omitted on `"source": "db"`.
+- **`magnitude_pts` is in the same unit as `projected_points`** — season totals at season scope,
+  week points at weekly scope. Nothing validates this, and it is the same 17× trap as above.
+  `direction` carries the sign; `magnitude_pts` is the size. The direction-signed magnitudes should
+  sum to approximately `projected_points − existing_projections.model.projected_points`, and
+  `disagreement_with_model` should state that total explicitly. If they do not sum, either you have
+  a factor you have not named or one of your magnitudes is a guess.
 - `player_id`, `year`, `week`, `projected_points`, `floor`, `ceiling`, `std_dev`, and
   `expected_games` go to real columns. Everything else — rationale, confidence, key_factors,
   disagreement_with_model, web_used, evidence_hash — is stored in the row's `components` JSON.
@@ -280,12 +327,14 @@ The rules:
    `confidence must be one of ('low', 'medium', 'high'), got …`
 3. **`floor <= projected_points <= ceiling`.** Both bounds are optional; each is checked only if
    present. → `floor … is above projected_points …` / `ceiling … is below projected_points …`
-4. **The sanity band.** When a `model` row exists for the same player, year, and week, and is
-   greater than zero, `projected_points` must fall within **`[0.25×, 3.0×]`** of it. →
+4. **The sanity band.** When a `model` row exists for the same player, year, and week, and its
+   `projected_points` is greater than zero, your `projected_points` must fall within
+   **`[0.25×, 3.0×]`** of it. →
    `projected_points … is outside […, …], the sanity band around the model projection of …`
-   When no such row exists, a per-position absolute ceiling applies instead — season scope QB 600,
-   RB 500, WR 500, TE 400, K 250, DEF 250, and **one tenth of those** for weekly scope. →
-   `projected_points … exceeds the absolute ceiling for … at this scope (…)`
+   When that row is **absent or ≤ 0**, a per-position absolute ceiling applies instead — season
+   scope QB 600, RB 500, WR 500, TE 400, K 250, DEF 250, and **one tenth of those** for weekly
+   scope. → `projected_points … exceeds the absolute ceiling for … at this scope (…)`
+   If the position is not one of those six, neither check runs and any non-negative number passes.
 5. **Web-sourced factors need a URL.** Any `key_factor` with `"source": "web"` must carry a
    non-empty `url`. → `key_factor '…' is sourced from the web but carries no url`
 
@@ -300,9 +349,10 @@ Three more checks that also reject:
 
 - Outside the sanity band → you almost certainly have a unit error. The band is `[0.25×, 3.0×]`; a
   disagreement that wide is not an opinion. Check season totals versus per-game rates first.
-- Absolute ceiling exceeded → same, and it also tells you no `model` row exists for this scope, so
-  `disagreement_with_model` has nothing to disagree with. Say that rather than inventing a
-  comparison.
+- Absolute ceiling exceeded → same, and it also tells you the `model` row for this scope is absent
+  or non-positive, so `disagreement_with_model` has nothing to disagree with. Say that rather than
+  inventing a comparison, and leave `key_factors` magnitudes as absolute contributions rather than
+  pretending they sum to a difference that does not exist.
 - Missing url → either find the source or drop the factor. Re-labelling a web claim as `"db"` to get
   past the check is falsifying the record.
 
@@ -337,10 +387,13 @@ Say so in the rationale when it happens. The five reason keys —
 say what actually happened for that call; `_omitted_` means the block is absent, `_filtered_` means
 it is present but truncated.
 
-**Under a cutoff there is no matchup signal at all.** Opponent identity and positional defense rank
-live only inside the `criteria` block, which is withheld entirely under `--as-of`. Do not assume a
-neutral matchup — that is an assumption, and the model's own default (rank 16) is not evidence. State
-plainly that the projection was made without matchup information.
+**Under a cutoff there is no defense-quality signal.** `opposing_defense_vs_position_rank` and
+`opponent_defense_level` live only inside the `criteria` block, which is withheld entirely under
+`--as-of`. `schedule` still runs under a cutoff, so you *do* have opponent identity, home/away, and
+roof — what you have lost is any measure of how good that opponent is. Do not assume a neutral
+matchup to fill the gap; the model's own default (rank 16) is a placeholder, not evidence. State
+plainly that the projection was made without knowing the quality of the defense faced, and do not
+overstate it as knowing nothing about the matchup.
 
 **Positional defense rank runs 1–32 where 1 is the best defense.** A *high* rank is a *good*
 matchup. Getting this backwards inverts every matchup claim you make.

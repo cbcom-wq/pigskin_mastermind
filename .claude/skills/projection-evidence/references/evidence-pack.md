@@ -126,9 +126,15 @@ three games of one number and fourteen of another, a zero.
 
 - **`opponent` is frequently `null`.** In the reference sample all 18 rows have `opponent: null`, so
   no opponent-adjusted split can be computed from this block. Do not claim one.
-- **A 0.0 row may be a bye, not a bad game.** Cross-reference `schedule`: a week number that appears
-  in `game_logs` but has no `schedule` entry is the bye. In the reference sample, 2025 week 14 has a
-  0.0 game log and no scheduled game — the bye, recorded as a played game.
+- **A 0.0 row may be a bye, not a bad game — and `schedule` usually cannot tell you which.**
+  `schedule` is scoped to the **requested year only**, while `game_logs` in a preseason pack are all
+  from prior seasons. The two do not overlap, so "a log week missing from `schedule`" is a false
+  test on exactly the pack where you would most want it. Use the row count instead: more than 17
+  rows for one season, or a `season_stats.games_played` above 17, means at least one row is not a
+  real game, and the 0.0 row is the candidate. In the reference sample, 2025 has 18 game logs and
+  `games_played: 18` in a 17-game season, with week 14 at 0.0. Confirming a *prior* season's bye
+  needs a second call — `agent evidence --player-id N --year <prior>` returns that season's
+  schedule, where the bye is the missing week number.
 - **The 34 is a row cap, not a season cap.** Two full seasons is 34–36 rows, so a two-season window
   can be silently clipped at the old end. Count the rows before saying "two seasons of data".
 - Under `--as-of` only the target season is truncated (to `week < as_of_week`); prior seasons stay
@@ -148,8 +154,8 @@ this is where you find out whether the formula's inputs mean anything for this p
 | Field | Scale | Notes |
 |---|---|---|
 | `historical_average_points` | fantasy points **per game** | The anchor. Already shrunk toward a positional prior with k = 4 games, and toward what ADP implies when there is no usable history. |
-| `player_skill_level` | 0–100 | Percentile against same-position peers with ≥ 4 games. **Not shrunk.** |
-| `team_offense_level` | 0–100 | Team scoring strength. |
+| `player_skill_level` | 0–100 | Weighted composite: points-per-game percentile 40%, efficiency percentile 20%, consistency (inverse coefficient of variation) 20%, volume percentile 20%. Peers are same-position players with ≥ 4 games. **Not adjusted for sample size.** |
+| `team_offense_level` | 0–100 | Percentile rank of team points scored per game, with a three-tier data-source fallback. **Not adjusted for sample size.** |
 | `opponent_defense_level` | 0–100 | **Higher = worse defense = better for the player.** For season scope this is strength of the *upcoming* schedule. For weekly scope it is a linear restatement of `opposing_defense_vs_position_rank` and the weekly formula deliberately does **not** score it, to avoid counting the matchup twice. |
 | `positional_touch_percentage` | 0–100 | Share of the same-position team pool: QB share of team pass attempts, RB share of carries+targets, WR/TE share of the combined WR+TE target pool. **Not shrunk.** |
 | `recent_trend_score` | −100 to 100 | Season scope: percent change in per-game scoring between the last two seasons. Weekly scope: within-season recent form. |
@@ -188,14 +194,17 @@ this is where you find out whether the formula's inputs mean anything for this p
 - **No sample size is reported.** Nothing in `fields` says how many games backed
   `player_skill_level` or `positional_touch_percentage`. Get that from `game_logs` and
   `season_stats.games_played` yourself. Only `historical_average_points` is shrunk for small
-  samples; the percentile and share fields are raw ratios, so a four-game sample produces a number
-  that reads exactly as confidently as a seventeen-game one.
+  samples; every other field is computed from whatever games exist without any sample-size
+  adjustment, so a four-game sample produces a number that reads exactly as confidently as a
+  seventeen-game one.
 - **The coefficients are not in the pack**, and no CLI command the analyst runs exposes them. You
   can decompose the model number into "baseline versus total adjustment"
   (`projected_points / expected_games` compared against `historical_average_points`), but you
   **cannot** attribute the gap to individual terms. Do not invent that attribution.
-- Under `--as-of` this block is `null` — and opponent identity and defensive rank live *only* here,
-  so a backtest document carries **no matchup signal at all**.
+- Under `--as-of` this block is `null`, which removes the **defense-quality** signal entirely:
+  `opposing_defense_vs_position_rank` and `opponent_defense_level` live only here. `schedule` still
+  runs under a cutoff, so opponent identity, home/away, and roof remain available — what you lose is
+  any measure of how good that opponent is.
 
 ## `criteria_omitted_reason`
 
@@ -205,17 +214,22 @@ this is where you find out whether the formula's inputs mean anything for this p
 ## `existing_projections`
 
 An object keyed by source, each with `projected_points`, `floor`, `ceiling`, `std_dev`,
-`expected_games`, `computed_at`. Sources you may see: `model`, `blend`, `espn`, `sportsbook`, `llm`.
-Season-scope values are **season totals**, not per-game rates. `{}` when nothing is stored for the
-scope.
+`expected_games`, `computed_at`. Only four writers exist, so the sources you can actually see are
+`model` and `blend` (both from `pigskin projections refresh`), `espn` (from the ADP service's ESPN
+board import), and `llm` (your own output). `sportsbook` and `adp` appear in the blender's weight
+tables but nothing writes a projection row under either name. Season-scope values are **season
+totals**, not per-game rates. `{}` when nothing is stored for the scope.
 
 **Good for:** knowing what you are disagreeing with, and by how much. The `model` row is also what
 the record-projection sanity band is computed against.
 
 **Do not trust:**
 
-- `blend` frequently equals `model` exactly, because `model` is its only input. Two agreeing numbers
-  here are usually one number reported twice, not corroboration.
+- **`blend` equalling `model` is not corroboration.** At season scope `blend` is a renormalized
+  weighted average of `model` (0.50) and `espn` (0.30) only — ADP carries a weight in the table but
+  is deliberately excluded, because it is already folded into the model's own baseline. When no
+  `espn` row exists the weights renormalize to model-only and `blend` comes out exactly equal to
+  `model`. Two identical numbers here usually mean one source, not two agreeing ones.
 - `llm` is **your own previous output**. It is excluded from `evidence_hash` on purpose, so
   re-running `agent evidence` after recording a projection does not change the hash. Never treat it
   as independent evidence.
@@ -240,12 +254,19 @@ Rows with a `null` `computed_at` are kept in both cases — there is nothing to 
 One entry per game, ordered by week: `week`, `opponent`, `home` (bool), `played` (bool), `roof`.
 Season scope returns the whole season; weekly scope filters to `week >= ` the requested week.
 
-**Good for:** remaining opponents, home/away, dome-vs-outdoors, and locating the bye.
+**Good for:** remaining opponents, home/away, dome-vs-outdoors, and locating the requested year's
+bye. It is also the one block that survives `--as-of` intact enough to tell you *who* the opponent
+is when `criteria` has been withheld.
 
 **Do not trust:**
 
+- **It covers the requested year only** (`DBNFLGame.year == year`), while `game_logs` and
+  `season_stats` reach back three seasons. In a preseason pack the two do not overlap at all, so
+  never cross-reference a prior season's game logs against this block. Getting a prior season's
+  schedule takes a separate `agent evidence --year <prior>` call.
 - **The bye is a gap, not a row.** The reference sample's 2026 schedule runs
-  `[1..10, 12..18]` — the missing 11 is the bye, and it matches `player.bye_week`.
+  `[1..10, 12..18]` — the missing 11 is the 2026 bye, and it matches `player.bye_week`. It says
+  nothing about where the bye fell in 2025.
 - **Past seasons include the postseason.** The 2025 weekly sample returns weeks 5–22; weeks 19–22
   are playoff games, not fantasy weeks.
 - `played` is derived from a non-null home score. Under `--as-of`, every game at or after the cutoff

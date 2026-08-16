@@ -204,10 +204,13 @@ def build_evidence(
            during week 8 returns whatever props are currently stored (in
            practice, week 8's). Not fixed here; there is nothing in the
            schema to filter against.
-        2. Under a cutoff the ``criteria`` block is omitted, and opponent
-           identity and positional-defense rank live only inside it, so a
-           backtest document carries **no matchup signal at all**. Accepted
-           gap for Phase 1, not an oversight.
+        2. Under a cutoff the ``criteria`` block is omitted, and
+           ``opposing_defense_vs_position_rank`` /
+           ``opponent_defense_level`` live only inside it, so a backtest
+           document carries **no defense-quality signal**. ``schedule``
+           still runs under a cutoff, so opponent identity, home/away and
+           roof remain available — what is lost is any measure of how good
+           that opponent is. Accepted gap for Phase 1, not an oversight.
         3. Under a cutoff, ``existing_projections`` and ``news`` rows with a
            NULL ``computed_at`` / ``published_at`` are kept rather than
            withheld — there is no timestamp to compare against the cutoff,
