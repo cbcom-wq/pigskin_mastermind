@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.models.database import DBPlayer, DBPlayerProjection
+from pigskin_mastermind.services.projection_refresh import MODEL_SOURCE
 
 
 class ResultRejected(ValueError):
@@ -136,7 +137,7 @@ def _model_projection(
     query = db.query(DBPlayerProjection).filter(
         DBPlayerProjection.player_id == player_id,
         DBPlayerProjection.year == year,
-        DBPlayerProjection.source == "model",
+        DBPlayerProjection.source == MODEL_SOURCE,
     )
     if week is None:
         query = query.filter(DBPlayerProjection.week.is_(None))
@@ -163,7 +164,11 @@ def _check_citations(result: Dict[str, Any], *, web_allowed: bool) -> None:
 LLM_SOURCE = "llm"
 
 # Fields that live in real columns; everything else in the result goes to
-# ``components``.
+# ``components``. Includes "source" even though no validated result field is
+# named that today: without it here, a result that happened to carry a
+# "source" key would land in ``components`` right next to the row's actual
+# ``source`` column (always "llm" for this path), which reads as a
+# contradiction no future debugger should have to puzzle through.
 _COLUMN_FIELDS = (
     "player_id",
     "year",
@@ -173,6 +178,7 @@ _COLUMN_FIELDS = (
     "ceiling",
     "std_dev",
     "expected_games",
+    "source",
 )
 
 

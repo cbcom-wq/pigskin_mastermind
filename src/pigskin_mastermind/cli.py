@@ -316,6 +316,12 @@ def agent():
 def agent_evidence(player_id, year, week, as_of_week):
     """Print everything known about one player as a single JSON document.
 
+    Not read-only: the criteria block's ProjectionCriteriaBuilder lazily
+    creates missing team/defense stat rows as a side effect of computing it,
+    so this command writes to the database it reads from. Do not run it
+    against a database the desktop app currently has open -- two writers on
+    one SQLite file produce "database is locked".
+
     This is the input contract for the player-analyst agent::
 
         pigskin agent evidence --player-id 412 --year 2026 --week 5

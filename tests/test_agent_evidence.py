@@ -140,7 +140,12 @@ def test_blocks_are_empty_lists_when_player_has_no_data(db, player):
 
 def test_yearly_criteria_present_for_season_scope(db, player, stats):
     ev = build_evidence(db, player.id, 2026)
-    assert ev["criteria"]["scope"] == "yearly"
+    # "season", not the builder's own "yearly" -- context.scope reports
+    # "season" for this identical request, and the document should use one
+    # word for one concept rather than leaking ProjectionCriteriaBuilder's
+    # internal method-naming vocabulary into the contract.
+    assert ev["criteria"]["scope"] == "season"
+    assert ev["context"]["scope"] == "season"
     fields = ev["criteria"]["fields"]
     assert "expected_games" in fields
     assert "player_skill_level" in fields
@@ -340,13 +345,13 @@ def test_as_of_drops_the_target_season_aggregate(db, player, stats):
     """
     ev = build_evidence(db, player.id, 2025, week=3, as_of_week=3)
     assert [row["year"] for row in ev["season_stats"]] == [2024, 2023]
-    assert "cutoff" in ev["season_stats_omitted_reason"]
+    assert "cutoff" in ev["season_stats_filtered_reason"]
 
 
 def test_season_stats_reason_absent_when_not_backtesting(db, player, stats):
     ev = build_evidence(db, player.id, 2025, week=3)
     assert [row["year"] for row in ev["season_stats"]] == [2025, 2024, 2023]
-    assert ev["season_stats_omitted_reason"] is None
+    assert ev["season_stats_filtered_reason"] is None
 
 
 def test_schedule_cutoff_keeps_earlier_results_visible(db, player, schedule):
@@ -426,8 +431,6 @@ def test_as_of_suppresses_sportsbook(db, player, props):
 
 
 def test_hash_is_stable_across_identical_calls(db, player, stats):
-    from pigskin_mastermind.services.agent_evidence import evidence_hash
-
     first = build_evidence(db, player.id, 2026)
     second = build_evidence(db, player.id, 2026)
     assert first["evidence_hash"] == second["evidence_hash"]
@@ -617,3 +620,168 @@ def test_existing_projections_unfiltered_when_cutoff_date_is_unknown(db, player)
 
     ev = build_evidence(db, player.id, 2026, week=2, as_of_week=2)
     assert "model" in ev["existing_projections"]
+
+
+# --- Whole-branch review fixes ---
+
+
+def test_recording_an_llm_projection_does_not_change_the_hash(db, player, stats):
+    """`evidence_hash` exists to diagnose disagreement between two runs:
+
+    same hash means the agent changed its mind, different hash means the
+    data moved. Writing an `llm` row via `record-projection` is not the data
+    moving -- it's the agent's own prior output becoming visible to it -- so
+    it must not perturb the fingerprint.
+    """
+    from pigskin_mastermind.services.agent_projection import record_llm_projection
+
+    before = build_evidence(db, player.id, 2026)["evidence_hash"]
+
+    record_llm_projection(
+        db,
+        {
+            "player_id": player.id,
+            "year": 2026,
+            "week": None,
+            "projected_points": 250.0,
+            "floor": 200.0,
+            "ceiling": 300.0,
+            "confidence": "medium",
+            "rationale": "Volume held steady after the bye.",
+        },
+    )
+
+    after_evidence = build_evidence(db, player.id, 2026)
+    assert "llm" in after_evidence["existing_projections"]
+    assert after_evidence["evidence_hash"] == before
+
+
+def test_context_reports_as_of_week_and_the_resolved_cutoff(db, player, schedule):
+    db.query(DBNFLGame).filter_by(year=2026, week=2).update(
+        {"kickoff_at": datetime(2026, 9, 14, 17, 0)}
+    )
+    db.commit()
+
+    ev = build_evidence(db, player.id, 2026, week=2, as_of_week=2)
+    assert ev["context"]["as_of_week"] == 2
+    assert ev["context"]["as_of_cutoff_at"] == "2026-09-14T17:00:00"
+
+
+def test_context_as_of_fields_are_null_without_a_cutoff(db, player):
+    ev = build_evidence(db, player.id, 2026)
+    assert ev["context"]["as_of_week"] is None
+    assert ev["context"]["as_of_cutoff_at"] is None
+
+
+def test_context_cutoff_at_is_null_when_the_cutoff_is_unresolvable(db, player):
+    ev = build_evidence(db, player.id, 2026, week=2, as_of_week=2)
+    assert ev["context"]["as_of_week"] == 2
+    assert ev["context"]["as_of_cutoff_at"] is None
+
+
+def test_existing_projections_reason_differs_for_resolved_vs_unresolved_cutoff(
+    db, player, schedule
+):
+    """The reason string must describe what happened for *this* call.
+
+    Without this, an implementation that sets the reason purely off
+    `as_of_week is not None` (ignoring whether the filter actually engaged)
+    passes every other existing_projections test while stating something
+    false whenever the cutoff fails to resolve.
+    """
+    db.query(DBNFLGame).filter_by(year=2026, week=2).update(
+        {"kickoff_at": datetime(2026, 9, 14, 17, 0)}
+    )
+    db.commit()
+
+    resolved = build_evidence(db, player.id, 2026, week=2, as_of_week=2)
+    unresolved = build_evidence(db, player.id, 2026, week=99, as_of_week=99)
+
+    resolved_reason = resolved["existing_projections_filtered_reason"]
+    unresolved_reason = unresolved["existing_projections_filtered_reason"]
+    assert resolved_reason != unresolved_reason
+    assert "2026-09-14T17:00:00" in resolved_reason
+    assert "as_of_week=99" in unresolved_reason
+
+
+def test_news_filtered_reason_differs_for_resolved_vs_unresolved_cutoff(
+    db, player, schedule
+):
+    db.query(DBNFLGame).filter_by(year=2026, week=2).update(
+        {"kickoff_at": datetime(2026, 9, 14, 17, 0)}
+    )
+    db.commit()
+
+    resolved = build_evidence(db, player.id, 2026, week=2, as_of_week=2)
+    unresolved = build_evidence(db, player.id, 2026, week=99, as_of_week=99)
+
+    resolved_reason = resolved["news_filtered_reason"]
+    unresolved_reason = unresolved["news_filtered_reason"]
+    assert resolved_reason != unresolved_reason
+    assert "2026-09-14T17:00:00" in resolved_reason
+    assert "as_of_week=99" in unresolved_reason
+
+
+def test_news_filtered_reason_absent_without_a_cutoff(db, player):
+    ev = build_evidence(db, player.id, 2026)
+    assert ev["news_filtered_reason"] is None
+
+
+@pytest.fixture
+def wsh_player(db):
+    """ESPN spells Washington's abbreviation ``WSH``; DBNFLGame rows use ``WAS``."""
+    p = DBPlayer(
+        player_id="espn_99",
+        name="Wash Back",
+        position="RB",
+        nfl_team="WSH",
+    )
+    db.add(p)
+    db.commit()
+    return p
+
+
+def test_cutoff_resolves_despite_the_espn_team_spelling(db, wsh_player):
+    """`_cutoff_datetime` must normalize before joining DBNFLGame.
+
+    Without it, `player.nfl_team == "WSH"` never matches a row stored as
+    `"WAS"`, the cutoff silently fails to resolve, and the --as-of filter on
+    both existing_projections and news silently disables itself.
+    """
+    db.add(
+        DBNFLGame(
+            year=2026,
+            week=2,
+            home_team="WAS",
+            away_team="DAL",
+            kickoff_at=datetime(2026, 9, 14, 17, 0),
+        )
+    )
+    db.commit()
+
+    ev = build_evidence(db, wsh_player.id, 2026, week=2, as_of_week=2)
+    assert ev["context"]["as_of_cutoff_at"] == "2026-09-14T17:00:00"
+
+
+def test_schedule_resolves_despite_the_espn_team_spelling(db, wsh_player):
+    db.add(
+        DBNFLGame(
+            year=2026,
+            week=2,
+            home_team="WAS",
+            away_team="DAL",
+            roof="outdoors",
+        )
+    )
+    db.commit()
+
+    ev = build_evidence(db, wsh_player.id, 2026)
+    assert ev["schedule"] == [
+        {
+            "week": 2,
+            "opponent": "DAL",
+            "home": True,
+            "played": False,
+            "roof": "outdoors",
+        }
+    ]
