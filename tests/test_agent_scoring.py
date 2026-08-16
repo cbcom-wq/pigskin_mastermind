@@ -140,6 +140,35 @@ def test_head_to_head_restricts_to_players_all_sources_projected(db):
     assert h2h["sources"]["llm"]["mae"] == pytest.approx(0.5)
 
 
+def test_head_to_head_zero_players_when_sources_dont_overlap(db):
+    """Two sources with disjoint player sets: no ZeroDivisionError, zeros instead.
+
+    This is an entirely ordinary situation once ``llm`` rows exist for
+    players ``model`` skipped (or vice versa) -- the intersection can land
+    on the empty set. ``_metrics`` must handle an empty pair list rather
+    than dividing by zero.
+    """
+    a, b = _player(db, "A"), _player(db, "B")
+    _proj(db, a, "model", 12.0, week=5)
+    _proj(db, b, "llm", 20.0, week=5)
+    _weekly_actual(db, a, 10.0)
+    _weekly_actual(db, b, 26.0)
+
+    result = score_projections(db, 2025, week=5, sources=["model", "llm"])
+
+    # Own coverage: each source scored on its one player.
+    assert result["per_source"]["model"]["n"] == 1
+    assert result["per_source"]["llm"]["n"] == 1
+
+    # Head to head: two sources were scored, so the block exists, but the
+    # intersection of their players is empty.
+    h2h = result["head_to_head"]
+    assert h2h is not None
+    assert h2h["players"] == 0
+    assert h2h["sources"]["model"] == {"n": 0, "mae": 0.0, "bias": 0.0, "rmse": 0.0}
+    assert h2h["sources"]["llm"] == {"n": 0, "mae": 0.0, "bias": 0.0, "rmse": 0.0}
+
+
 def test_head_to_head_is_absent_with_fewer_than_two_sources(db):
     a = _player(db, "A")
     _proj(db, a, "model", 12.0, week=5)
