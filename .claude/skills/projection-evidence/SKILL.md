@@ -136,6 +136,18 @@ Confirming which week is the bye in a prior season takes a second call:
 `agent evidence --player-id N --year <prior>` returns that season's schedule, where the bye is the
 gap in the week numbers.
 
+### Name the source before you write the claim
+
+Both checks above work because every step points at a field. Hold the rest of your analysis to the
+same standard: **before any sentence that moves the number, name the block and field it rests on, or
+the URL you read it in.** If you can name neither, you are about to state a prior as a finding.
+
+This is easy to violate without noticing, because the sentences that violate it are the ones that
+feel most obviously true — "he is entering his third year", "that offense throws a lot", "the
+starter ahead of him is 30". Some of those may be correct about the real person. None of them is
+evidence unless the pack or a citation carries it. Say them as assumptions, in the `rationale`, and
+keep them out of `key_factors` and out of the arithmetic.
+
 ### Worked example: player 123, 2026 season
 
 Real numbers, and everything below came from **one** call —
@@ -209,42 +221,59 @@ Every sentence is true. It is still worthless, for five reasons:
 > **Three criteria are absences, not measurements.** `age_deviation_from_optimum: 0.0` with
 > `player.age: null` means the age term is switched off entirely — not that he is at peak age, and I
 > cannot tell the sign of the correction from this pack. `recent_trend_score: 0.0` needs two prior
-> seasons and only 2025 is present, so the model has no view on whether a second-year quarterback is
-> ascending. `coaching_stability_score: 50.0` is hardcoded and never measured, which means the model
+> seasons and only 2025 is on file, so the model has no view on whether this player is ascending or
+> declining. `coaching_stability_score: 50.0` is hardcoded and never measured, which means the model
 > cannot see a coordinator change in either direction — and that is precisely the class of fact worth
 > spending a web search on. [Web findings and citations go here.]
 >
-> **The number.** Correcting the inflated denominator gives 24.32 ppg observed. I allow a modest
-> third-year step and set 24.5 ppg. On availability: `expected_games` is 17.0, the maximum the model
-> can return, and `season_stats` contains exactly one season with games played — so that 17.0 rests
-> on a single year of observed availability. One healthy season is thin evidence for a full 17 from
-> a quarterback who took 103 rushing attempts, so I use 16.5. That is 24.5 × 16.5 = **404.25**.
+> **The number.** Correcting the inflated denominator gives 24.32 ppg observed, and I carry that
+> forward unchanged. My instinct was to add a young-quarterback improvement allowance on top, but I
+> can find no basis for one in this pack: `years_exp`, `draft_number`, and `age` are all null and
+> there is exactly one season of stats on file, so "how far into his career this is" is not
+> something the evidence tells me. I am therefore *not* pricing in a step-up — if web access were
+> available, that is a claim to source rather than assume.
+>
+> On availability: `expected_games` is 17.0, the maximum the model can return, and `season_stats`
+> contains exactly one season with games played — so that 17.0 rests on a single year of observed
+> availability. One healthy season is thin evidence for a full 17 from a quarterback who took 103
+> rushing attempts, so I use 16.5. That is (413.46 / 17) × 16.5 = **401.30** — carried through
+> unrounded, because 24.32 × 16.5 rounds to 401.28 and the displayed rate is not the real one.
 > Floor 300 assumes a mid-season injury or a scheme change that cuts his rushing volume; ceiling 480
-> assumes the passing-efficiency step-up his skill composite implies actually lands.
-> Confidence medium: the game-log evidence is solid and one full season deep, but three of the
-> model's inputs are absences, and I have no coaching or depth-chart information from the database
-> at all — `news` is empty and `news_fetched_at` is null, so that emptiness is an absence of
-> fetching, not an absence of news.
+> assumes the passing-efficiency step-up his skill composite implies actually lands — a ceiling is
+> allowed to be a scenario I cannot yet evidence, which is exactly why it is the ceiling and not the
+> projection. Confidence medium: the game-log evidence is solid and one full season deep, but three
+> of the model's inputs are absences, and I have no coaching or depth-chart information from the
+> database at all — `news` is empty and `news_fetched_at` is null, so that emptiness is an absence
+> of fetching, not an absence of news.
 
-The `key_factors` that go with it. Signed magnitudes sum to −136.6, against an actual disagreement
-of 404.25 − 540.86 = −136.61:
+The `key_factors` that go with it. Signed magnitudes sum to −139.6, against an actual disagreement
+of 401.30 − 540.86 = −139.56:
 
 ```json
 "key_factors": [
-  {"factor": "Model's adjustment stack adds 10.0 ppg over its own baseline with nothing in the pack supporting a rate above the corrected 24.32 observed",
+  {"factor": "Model's adjustment stack adds 10.0 ppg over its own baseline, with nothing in the pack supporting a rate above the corrected 24.32 observed",
    "direction": "-", "magnitude_pts": 127.4, "source": "db"},
-  {"factor": "Third-year step-up allowance over the corrected 2025 rate (24.32 -> 24.5 ppg)",
-   "direction": "+", "magnitude_pts": 3.0, "source": "db"},
   {"factor": "expected_games cut 17.0 -> 16.5; the model's 17.0 rests on one season of availability history for a QB with 103 carries",
    "direction": "-", "magnitude_pts": 12.2, "source": "db"}
 ],
-"disagreement_with_model": "Model 540.86, mine 404.25 — a 136.6-point (25%) reduction. Almost all of it is the model's adjustment stack, which carries its per-game rate to 31.8 against a 21.83 baseline and a corrected 24.32 observed. The inflated games_played denominator pushes the other way and is already priced into the corrected rate."
+"disagreement_with_model": "Model 540.86, mine 401.30 — a 139.6-point (26%) reduction. Almost all of it is the model's adjustment stack, which carries its per-game rate to 31.8 against a 21.83 baseline and a corrected 24.32 observed. The inflated games_played denominator pushes the other way and is already priced into the corrected rate."
 ```
 
-Note what the denominator finding did: it did not become its own factor. It corrected the *anchor* the first
+Two things to notice about what is *not* in that array.
+
+**The denominator finding did not become its own factor.** It corrected the *anchor* the first
 factor is measured against, which is why that factor's magnitude is right. A finding that changes
 your reference point belongs in the rationale and in the arithmetic, not necessarily as a separate
 line item.
+
+**The career-stage allowance did not become a factor either, because it had no source.** An earlier
+draft of this very example carried a `"Third-year step-up allowance"` factor tagged
+`"source": "db"` — and the pack has `years_exp`, `draft_number`, and `age` all null, so the
+database does not know what year of his career this is. The tag asserted a provenance that did not
+exist. Dropping it removed 3.0 points from the projection and made the arithmetic exact rather than
+approximate. **Every factor must name evidence you can point at.** If you cannot say which field or
+which URL it came from, it is an assumption: state it in the `rationale`, exclude it from
+`key_factors`, and leave it out of the number — or go and source it.
 
 What separates them: **every paragraph of the good one contains a claim that could be wrong, and
 says how it was checked.** The decomposition is arithmetic on the pack. The denominator finding is a
@@ -299,6 +328,13 @@ Notes:
   scope you ran the evidence pack for.
 - Season-scope `projected_points`, `floor`, and `ceiling` are **season totals**, not per-game rates.
   This is the most likely place to make a 17× error.
+- **`source` is a provenance claim, not a category label.** `"db"` asserts the factor is derivable
+  from the evidence pack — name the block and field to yourself before you write it. `"web"` asserts
+  it came from a page you actually read, and requires the `url`. There is no third value, and that
+  is deliberate: a judgment resting on neither — an intuition about a player's career arc, a hunch
+  about scheme fit, anything you know about the real person that the pack does not contain — is not
+  a `key_factor` at all. Put it in the `rationale` as a stated assumption, so a later reader can
+  separate your evidence from your priors.
 - `url` is required on a `key_factor` with `"source": "web"` and omitted on `"source": "db"`.
 - **`magnitude_pts` is in the same unit as `projected_points`** — season totals at season scope,
   week points at weekly scope. Nothing validates this, and it is the same 17× trap as above.
