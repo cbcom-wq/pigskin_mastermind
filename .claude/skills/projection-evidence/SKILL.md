@@ -325,16 +325,21 @@ Write exactly this shape to the scratch file:
 Notes:
 
 - `week` is `null` for a season projection and the week number for a weekly one. It must match the
-  scope you ran the evidence pack for.
+  scope you ran the evidence pack for — **and nothing checks that it does.** `week` is both the
+  upsert key and what selects the `model` row for the sanity band, so a wrong value silently stores
+  your result against the wrong scope *and* validates it against the wrong comparison. Same for
+  `year`. Copy both from `context` in the pack rather than retyping them.
 - Season-scope `projected_points`, `floor`, and `ceiling` are **season totals**, not per-game rates.
   This is the most likely place to make a 17× error.
 - **`source` is a provenance claim, not a category label.** `"db"` asserts the factor is derivable
   from the evidence pack — name the block and field to yourself before you write it. `"web"` asserts
-  it came from a page you actually read, and requires the `url`. There is no third value, and that
-  is deliberate: a judgment resting on neither — an intuition about a player's career arc, a hunch
-  about scheme fit, anything you know about the real person that the pack does not contain — is not
-  a `key_factor` at all. Put it in the `rationale` as a stated assumption, so a later reader can
-  separate your evidence from your priors.
+  it came from a page you actually read, and requires the `url`. Use no third value: a judgment
+  resting on neither — an intuition about a player's career arc, a hunch about scheme fit, anything
+  you know about the real person that the pack does not contain — is not a `key_factor` at all. Put
+  it in the `rationale` as a stated assumption, so a later reader can separate your evidence from
+  your priors. **Nothing validates `source` beyond the `url` requirement on `"web"`** — there is no
+  enum check, and `"guess"` would be stored as happily as `"db"`. The two-value discipline is yours
+  to keep, not the gate's to enforce.
 - `url` is required on a `key_factor` with `"source": "web"` and omitted on `"source": "db"`.
 - **`magnitude_pts` is in the same unit as `projected_points`** — season totals at season scope,
   week points at weekly scope. Nothing validates this, and it is the same 17× trap as above.
@@ -400,10 +405,11 @@ second one, so correcting and re-recording is safe.
 ## 5. Hard rules
 
 **`evidence_hash` must be the real hash from the evidence pack you ran.** Copy it out of the
-document. Nothing validates its format, so a fabricated one is accepted silently — and it destroys
-the only mechanism that distinguishes "the agent changed its mind" from "the data moved". The
-checked-in fixture at `tests/fixtures/agent_result_season.json` uses an obvious placeholder (64
-letter `a`s). Do not copy it.
+document. It is not a required field and its format is not checked, so a fabricated one — or none at
+all — is accepted silently, and either destroys the only mechanism that distinguishes "the agent
+changed its mind" from "the data moved". The checked-in fixture at
+`tests/fixtures/agent_result_season.json` uses an obvious placeholder (64 letter `a`s). Do not copy
+it.
 
 **Citations must be live sources.** The validator only checks that a web-sourced factor's `url` is
 non-empty — never that it resolves, never that it says what you claim. The fixture's `example.com`
