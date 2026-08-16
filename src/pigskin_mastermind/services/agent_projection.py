@@ -11,7 +11,7 @@ misplaced decimal point, not to referee a debatable opinion.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -58,6 +58,7 @@ def validate_result(
     result: Dict[str, Any],
     *,
     web_allowed: bool = True,
+    expected_scope: Optional[Tuple[int, Optional[int]]] = None,
 ) -> Dict[str, Any]:
     """Return *result* unchanged, or raise :class:`ResultRejected`."""
     for field in _REQUIRED_FIELDS:
@@ -69,6 +70,8 @@ def validate_result(
             f"confidence must be one of {_CONFIDENCE_VALUES}, "
             f"got {result['confidence']!r}"
         )
+
+    _check_scope(result, expected_scope)
 
     player = db.query(DBPlayer).filter(DBPlayer.id == result["player_id"]).first()
     if player is None:
@@ -83,6 +86,39 @@ def validate_result(
     _check_citations(result, web_allowed=web_allowed)
 
     return result
+
+
+def _check_scope(
+    result: Dict[str, Any],
+    expected_scope: Optional[Tuple[int, Optional[int]]],
+) -> None:
+    """Reject a result whose scope is not the one that was requested.
+
+    ``week`` is both the upsert key in :func:`record_llm_projection` and what
+    selects the ``model`` row in :func:`_model_projection`, so a wrong value
+    does not merely mislabel the row -- it stores the result against the wrong
+    scope *and* validates it against the wrong comparison. A weekly number
+    checked against a season model projection sails through a band roughly
+    17x too wide.
+
+    Year and week are checked together on purpose. Checking one without the
+    other is how this gap survived the first review.
+    """
+    if expected_scope is None:
+        return
+
+    expected_year, expected_week = expected_scope
+    if result["year"] != expected_year:
+        raise ResultRejected(
+            f"Result year {result['year']} does not match the requested "
+            f"year {expected_year}"
+        )
+    if result.get("week") != expected_week:
+        raise ResultRejected(
+            f"Result week {result.get('week')!r} does not match the requested "
+            f"week {expected_week!r} -- copy year and week from the evidence "
+            f"pack's context block rather than retyping them"
+        )
 
 
 def _check_interval(result: Dict[str, Any], points: float) -> None:
@@ -187,13 +223,14 @@ def record_llm_projection(
     result: Dict[str, Any],
     *,
     web_allowed: bool = True,
+    expected_scope: Optional[Tuple[int, Optional[int]]] = None,
 ) -> DBPlayerProjection:
     """Validate *result* and upsert it as a ``source='llm'`` row.
 
     Raises:
         ResultRejected: If validation fails. Nothing is written in that case.
     """
-    validate_result(db, result, web_allowed=web_allowed)
+    validate_result(db, result, web_allowed=web_allowed, expected_scope=expected_scope)
 
     week = result.get("week")
     query = db.query(DBPlayerProjection).filter(

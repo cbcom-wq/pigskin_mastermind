@@ -62,11 +62,14 @@ anything.
 
 ```bash
 .venv/Scripts/python -m pigskin_mastermind.cli agent record-projection \
-  --result-file /path/to/scratch/result.json
+  --result-file /path/to/scratch/result.json --year 2026 --week 5
 ```
 
-Add `--no-web` when the run was not permitted web access; the validator will then reject a result
-claiming `web_used: true`. The scratch file is the only thing you write.
+Pass the same `--year`/`--week` you gave `agent evidence` in step 1 — not values retyped from
+memory. `--year` is required and `--week` is omitted for a season projection; the validator now
+rejects a result whose `year`/`week` do not match what you pass here (see section 4). Add `--no-web`
+when the run was not permitted web access; the validator will then reject a result claiming
+`web_used: true`. The scratch file is the only thing you write.
 
 **6. Return a short summary:** the number, the two or three factors that moved it, and the size of
 the disagreement with the model. Not a re-run of the rationale — the rationale is already stored.
@@ -325,10 +328,12 @@ Write exactly this shape to the scratch file:
 Notes:
 
 - `week` is `null` for a season projection and the week number for a weekly one. It must match the
-  scope you ran the evidence pack for — **and nothing checks that it does.** `week` is both the
-  upsert key and what selects the `model` row for the sanity band, so a wrong value silently stores
-  your result against the wrong scope *and* validates it against the wrong comparison. Same for
-  `year`. Copy both from `context` in the pack rather than retyping them.
+  scope you ran the evidence pack for. `week` is both the upsert key and what selects the `model`
+  row for the sanity band, so a wrong value silently stores your result against the wrong scope
+  *and* validates it against the wrong comparison. Same for `year`. Copy both from `context` in the
+  pack rather than retyping them. `record-projection`'s required `--year`/`--week` flags check this
+  against what was actually requested — see section 4 — but that check is enforced by the flags you
+  pass, not by anything in this JSON, so getting it right here still matters.
 - Season-scope `projected_points`, `floor`, and `ceiling` are **season totals**, not per-game rates.
   This is the most likely place to make a 17× error.
 - **`source` is a provenance claim, not a category label.** `"db"` asserts the factor is derivable
@@ -366,9 +371,19 @@ The rules:
    be present and non-null. → `Missing required field: <name>`
 2. **`confidence` is an enum**: exactly `low`, `medium`, or `high`. →
    `confidence must be one of ('low', 'medium', 'high'), got …`
-3. **`floor <= projected_points <= ceiling`.** Both bounds are optional; each is checked only if
+3. **Scope must match what was requested — enforced when the CLI is used, which is the only
+   supported path.** `record-projection`'s `--year` (required) and `--week` (optional, omitted for
+   season scope) are checked against the result's own `year`/`week` as one pair, before anything
+   else runs. A mismatch on either rejects. →
+   `Result year … does not match the requested year …` /
+   `Result week … does not match the requested week …`
+   This is what closes the hole described in section 3: a weekly result mis-typed as `week: null`
+   used to land on the season row and get validated against the season model projection instead of
+   the weekly one. A caller invoking the underlying Python function directly and passing no
+   `expected_scope` still gets no check — the CLI is what makes it real.
+4. **`floor <= projected_points <= ceiling`.** Both bounds are optional; each is checked only if
    present. → `floor … is above projected_points …` / `ceiling … is below projected_points …`
-4. **The sanity band.** When a `model` row exists for the same player, year, and week, and its
+5. **The sanity band.** When a `model` row exists for the same player, year, and week, and its
    `projected_points` is greater than zero, your `projected_points` must fall within
    **`[0.25×, 3.0×]`** of it. →
    `projected_points … is outside […, …], the sanity band around the model projection of …`
@@ -376,7 +391,7 @@ The rules:
    scope QB 600, RB 500, WR 500, TE 400, K 250, DEF 250, and **one tenth of those** for weekly
    scope. → `projected_points … exceeds the absolute ceiling for … at this scope (…)`
    If the position is not one of those six, neither check runs and any non-negative number passes.
-5. **Web-sourced factors need a URL.** Any `key_factor` with `"source": "web"` must carry a
+6. **Web-sourced factors need a URL.** Any `key_factor` with `"source": "web"` must carry a
    non-empty `url`. → `key_factor '…' is sourced from the web but carries no url`
 
 Three more checks that also reject:
@@ -388,6 +403,9 @@ Three more checks that also reject:
 
 **Rejection is information. Read the reason and correct the analysis — never work around the gate.**
 
+- Scope mismatch → the `--year`/`--week` you passed on the command line disagree with the `year`/
+  `week` in the result JSON. Fix the JSON to match what you actually ran `agent evidence` for —
+  copy from `context`, do not retype — rather than changing the flags to match a wrong result.
 - Outside the sanity band → you almost certainly have a unit error. The band is `[0.25×, 3.0×]`; a
   disagreement that wide is not an opinion. Check season totals versus per-game rates first.
 - Absolute ceiling exceeded → same, and it also tells you the `model` row for this scope is absent

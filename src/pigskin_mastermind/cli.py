@@ -352,13 +352,20 @@ def agent_evidence(player_id, year, week, as_of_week):
 @click.option('--web/--no-web', 'web_allowed', default=True,
               help='Whether this run was permitted to use the web. '
                    '--no-web rejects a result claiming web sources.')
-def agent_record_projection(result_file, web_allowed):
+@click.option('--year', type=int, required=True,
+              help='Season year the result must be for. Required: this is '
+                   'what stops a mis-scoped result being stored silently.')
+@click.option('--week', type=int, default=None,
+              help='Week the result must be for. Omit for season scope.')
+def agent_record_projection(result_file, web_allowed, year, week):
     """Validate an agent result and store it as a source='llm' projection.
 
     Exits non-zero with the reason on stderr when a result is rejected, so the
-    agent can see what was wrong and correct it::
+    agent can see what was wrong and correct it. Pass the same --year/--week
+    given to `agent evidence`, so the result is checked against the scope it
+    was actually asked for::
 
-        pigskin agent record-projection --result-file out.json
+        pigskin agent record-projection --result-file out.json --year 2026 --week 5
     """
     import json as _json
 
@@ -371,7 +378,10 @@ def agent_record_projection(result_file, web_allowed):
 
     db = _get_stats_db()
     try:
-        row = record_llm_projection(db, payload, web_allowed=web_allowed)
+        row = record_llm_projection(
+            db, payload, web_allowed=web_allowed,
+            expected_scope=(year, week),
+        )
     except ResultRejected as exc:
         raise click.ClickException(f"Result rejected: {exc}")
     finally:

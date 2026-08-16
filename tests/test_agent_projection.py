@@ -388,3 +388,57 @@ def test_checked_in_fixture_satisfies_the_contract(db, player):
     assert row.components["web_used"] is True
     web_factors = [f for f in row.components["key_factors"] if f["source"] == "web"]
     assert web_factors and all(f.get("url") for f in web_factors)
+
+
+# --- Task 3b: expected_scope closes the year/week hole ---
+
+
+def test_scope_check_passes_when_year_and_week_match(db, result):
+    assert validate_result(db, result, expected_scope=(2026, None)) == result
+
+
+def test_rejects_year_that_does_not_match_the_request(db, result):
+    with pytest.raises(ResultRejected, match="year"):
+        validate_result(db, result, expected_scope=(2025, None))
+
+
+def test_rejects_season_result_when_a_week_was_requested(db, result):
+    """The failure that motivated this task.
+
+    A weekly number stored with week=None lands on the season row and gets
+    validated against the season model projection -- a band roughly 17x too
+    wide -- so the gate silently stops gating.
+    """
+    with pytest.raises(ResultRejected, match="week"):
+        validate_result(db, result, expected_scope=(2026, 5))
+
+
+def test_rejects_weekly_result_when_a_season_was_requested(db, result):
+    result["week"] = 5
+    with pytest.raises(ResultRejected, match="week"):
+        validate_result(db, result, expected_scope=(2026, None))
+
+
+def test_weekly_scope_check_passes_when_the_week_matches(db, player, result):
+    result["week"] = 5
+    result["projected_points"] = 18.0
+    result["floor"] = 9.0
+    result["ceiling"] = 31.0
+    assert validate_result(db, result, expected_scope=(2026, 5))
+
+
+def test_no_scope_check_when_expected_scope_is_absent(db, result):
+    """Existing callers keep working; the CLI is what makes the check real."""
+    result["year"] = 1999
+    assert validate_result(db, result) == result
+
+
+def test_record_threads_the_scope_check_through(db, result):
+    from pigskin_mastermind.services.agent_projection import (
+        record_llm_projection,
+    )
+
+    with pytest.raises(ResultRejected, match="year"):
+        record_llm_projection(db, result, expected_scope=(2025, None))
+
+    assert db.query(DBPlayerProjection).count() == 0
