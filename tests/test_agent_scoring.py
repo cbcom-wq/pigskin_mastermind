@@ -65,12 +65,12 @@ def _weekly_actual(db, player, points, year=2025, week=5):
     db.commit()
 
 
-def _season_actual(db, player, points, year=2025):
+def _season_actual(db, player, points, year=2025, games_played=17):
     db.add(
         DBPlayerSeasonStats(
             player_id=player.id,
             year=year,
-            games_played=17,
+            games_played=games_played,
             fantasy_points_total=points,
         )
     )
@@ -202,3 +202,50 @@ def test_empty_when_nothing_stored(db):
     assert result["per_source"] == {}
     assert result["head_to_head"] is None
     assert result["no_actual"] == 0
+    assert result["mean_games_played"] is None
+    assert result["sources_with_no_rows"] == []
+
+
+def test_mean_games_played_reflects_partial_season(db):
+    a, b = _player(db, "A"), _player(db, "B")
+    _proj(db, a, "model", 240.0)
+    _proj(db, b, "model", 180.0)
+    _season_actual(db, a, 90.0, games_played=8)
+    _season_actual(db, b, 70.0, games_played=10)
+
+    result = score_projections(db, 2025)
+    assert result["mean_games_played"] == pytest.approx(9.0)
+
+
+def test_mean_games_played_is_none_at_weekly_scope(db):
+    a = _player(db, "A")
+    _proj(db, a, "model", 12.0, week=5)
+    _weekly_actual(db, a, 10.0)
+
+    result = score_projections(db, 2025, week=5)
+    assert result["mean_games_played"] is None
+
+
+def test_sources_with_no_rows_flags_a_source_that_scored_nothing(db):
+    """A typo in --sources (or a real source with no actuals) is named.
+
+    Without this, a typo like ``lmm`` silently scores zero rows and the
+    only symptom is a downstream "fewer than two sources" message that
+    points at the wrong cause.
+    """
+    a = _player(db, "A")
+    _proj(db, a, "model", 12.0, week=5)
+    _weekly_actual(db, a, 10.0)
+
+    result = score_projections(db, 2025, week=5, sources=["model", "lmm"])
+    assert result["sources_with_no_rows"] == ["lmm"]
+    assert "lmm" not in result["per_source"]
+
+
+def test_sources_with_no_rows_is_empty_when_no_sources_filter_given(db):
+    a = _player(db, "A")
+    _proj(db, a, "model", 12.0, week=5)
+    _weekly_actual(db, a, 10.0)
+
+    result = score_projections(db, 2025, week=5)
+    assert result["sources_with_no_rows"] == []

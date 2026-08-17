@@ -394,6 +394,33 @@ def agent_record_projection(result_file, web_allowed, year, week):
     )
 
 
+# A full NFL season is 17 games. A season-scope score built from actuals
+# well short of that isn't wrong, but it isn't final either -- it's mostly
+# measuring how much of the season has been played, not how good the
+# projection was.
+_FULL_SEASON_GAMES = 17.0
+_PARTIAL_SEASON_WARNING_FRACTION = 0.85
+
+
+def _season_completeness_warning(mean_games_played):
+    """Warn when the season being scored is materially incomplete.
+
+    Returns ``None`` for weekly scope (``mean_games_played`` is ``None``
+    there) or for a season the scored players have mostly finished.
+    """
+    if mean_games_played is None:
+        return None
+    threshold = _FULL_SEASON_GAMES * _PARTIAL_SEASON_WARNING_FRACTION
+    if mean_games_played >= threshold:
+        return None
+    return (
+        f'scored players averaged only {mean_games_played:.1f} of '
+        f'{_FULL_SEASON_GAMES:.0f} games played -- these are season-total '
+        'projections compared against a season that is not over yet, so '
+        'the MAE/bias above are not final'
+    )
+
+
 @agent.command('score')
 @click.option('--year', type=int, default=None,
               help='Season year (defaults to the current fantasy season)')
@@ -433,6 +460,20 @@ def agent_score(year, week, sources):
     )
     click.echo(f"Scoring {result['year']} {scope_label}...")
 
+    if result["sources_with_no_rows"]:
+        click.echo(
+            "  No scored rows for: "
+            f"{', '.join(result['sources_with_no_rows'])} -- check for a "
+            "typo in --sources, or that projections actually exist for "
+            "this year/scope."
+        )
+
+    completeness_warning = _season_completeness_warning(
+        result.get("mean_games_played")
+    )
+    if completeness_warning:
+        click.echo(f"  WARNING: {completeness_warning}.")
+
     if not result["per_source"]:
         # A dividing-by-zero table or a silent empty print reads as "the
         # command worked and there's nothing to say" -- but the far more
@@ -468,6 +509,14 @@ def agent_score(year, week, sources):
         click.echo(
             "\nHead-to-head: not shown -- fewer than two sources were "
             "scored, so there is nothing to compare."
+        )
+    elif h2h["players"] == 0:
+        # A table of all-zero rows here reads as a tie between the sources
+        # rather than what it actually is: they didn't project any of the
+        # same players, so there is nothing to compare.
+        click.echo(
+            "\nHead-to-head: the scored sources share no players -- "
+            "nothing to compare."
         )
     else:
         click.echo(f"\nHead-to-head ({h2h['players']} shared player(s)):")

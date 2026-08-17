@@ -42,7 +42,8 @@ def score_projections(
         sources: Restrict to these sources (default: every source present).
 
     Returns:
-        ``{"year", "week", "scope", "per_source", "head_to_head", "no_actual"}``.
+        ``{"year", "week", "scope", "per_source", "head_to_head", "no_actual",
+        "mean_games_played", "sources_with_no_rows"}``.
     """
     query = db.query(DBPlayerProjection).filter(DBPlayerProjection.year == year)
     if week is None:
@@ -54,22 +55,35 @@ def score_projections(
 
     scored: Dict[str, Dict[int, Tuple[float, float]]] = {}
     no_actual = 0
+    games_played_values: List[float] = []
 
     for row in query.all():
-        actual = (
-            _season_actual(db, row.player_id, year)
-            if week is None
-            else _actual_points(db, row.player_id, year, week)
-        )
-        if actual is None:
-            # Counted per projection row, so a player missing an actual is
-            # counted once for each source that projected them.
-            no_actual += 1
-            continue
+        if week is None:
+            season_actual = _season_actual(db, row.player_id, year)
+            if season_actual is None:
+                # Counted per projection row, so a player missing an actual
+                # is counted once for each source that projected them.
+                no_actual += 1
+                continue
+            actual, games_played = season_actual
+            games_played_values.append(games_played)
+        else:
+            actual = _actual_points(db, row.player_id, year, week)
+            if actual is None:
+                no_actual += 1
+                continue
         scored.setdefault(row.source, {})[row.player_id] = (
             row.projected_points,
             actual,
         )
+
+    # Sources the caller explicitly asked for but that produced zero scored
+    # rows -- most often a typo in --sources, but also a real source with no
+    # actuals yet. Reported so the cause isn't mistaken for "fewer than two
+    # sources were scored" downstream.
+    sources_with_no_rows = (
+        sorted(s for s in sources if s not in scored) if sources else []
+    )
 
     return {
         "year": year,
@@ -80,6 +94,17 @@ def score_projections(
         },
         "head_to_head": _head_to_head(scored),
         "no_actual": no_actual,
+        # Mean games_played of the season-actual rows this call scored
+        # against -- None at weekly scope, where the question doesn't apply.
+        # A season projection is a full-season number; scoring it against a
+        # partial season inflates MAE/bias in a way that looks like model
+        # error but is really just "the season isn't over."
+        "mean_games_played": (
+            round(sum(games_played_values) / len(games_played_values), 2)
+            if games_played_values
+            else None
+        ),
+        "sources_with_no_rows": sources_with_no_rows,
     }
 
 
@@ -145,6 +170,11 @@ def _actual_points(
     if log is not None and log.fantasy_points is not None:
         return round(log.fantasy_points, 2)
 
+    # NOTE: DBWeeklyPlayerStats (and its parent matchup) carries no `year`
+    # column, so this fallback is structurally single-season and `year` is
+    # silently ignored here -- it can return another season's week-`week`
+    # actual. Not a bug to fix in this function: it faithfully mirrors
+    # ProjectionTunerService._get_actual_points, which has the same gap.
     weekly = (
         db.query(DBWeeklyPlayerStats)
         .filter(
@@ -163,15 +193,20 @@ def _season_actual(
     db: Session,
     player_id: int,
     year: int,
-) -> Optional[float]:
-    """Season total actual points.
+) -> Optional[Tuple[float, float]]:
+    """Season total actual points, and games played behind it.
 
     A stored total of zero means the season has not been played rather than
     a player who scored nothing all year, so it is treated as absent.
+
+    ``games_played`` is returned alongside the total because a non-zero
+    total does not mean a *complete* season -- mid-season this is scoring a
+    full-season projection against however much football has actually been
+    played, and the caller needs the games count to say so.
     """
     row = (
         db.query(DBPlayerSeasonStats).filter_by(player_id=player_id, year=year).first()
     )
     if row is None or not row.fantasy_points_total:
         return None
-    return round(row.fantasy_points_total, 2)
+    return round(row.fantasy_points_total, 2), float(row.games_played or 0)
