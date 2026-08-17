@@ -112,6 +112,34 @@ scheme changes, depth-chart moves, holdouts, camp reports, and preseason usage h
 this schema. Web search is the only source, so a cited claim here is the highest-value thing you can
 add.
 
+### Defenses (DEF) push past what this method was built for
+
+Everything above assumes a skill player with a bench, a target share, and an opponent whose defense
+against that position resolves to a rank. None of that holds for a team defense. Start a DEF run
+from these three gaps rather than rediscover them:
+
+- **There is no defensive or special-teams production criterion at all.** None of the eleven
+  season-scope `criteria.fields` count a sack, a takeaway, a point allowed, or a return touchdown.
+  `team_offense_level` — the team's *own offense* — is usually the largest non-default number in a
+  DEF pack, and it has only an indirect bearing on how the defense itself scores. There is nothing
+  else in the block to lean on instead.
+- **`games_played` cannot be read as an availability signal for a defense.** A team defense plays
+  every one of its team's games; there is no bench and no individual health to track. When a
+  season's `game_logs` are only partially imported, the model still reads the gap as a health
+  problem: `_compute_expected_games` floors availability at 0.5 of a season regardless of cause, and
+  `_compute_injury_risk` divides the same partial `games_played` by a fixed 17 — so an import gap
+  inflates both `expected_games` downward and `injury_risk_score` upward at once. Cross-check the
+  `game_logs` row count and week numbers against `season_stats.games_played` before trusting either
+  field for DEF; a gap here is a data-completeness problem, not a bye or an injury, and 17.0 is
+  usually the defensible `expected_games`.
+- **`opponent_defense_level` sits at its 50.0 default with no per-team rank to resolve for DEF.**
+  Treat it exactly like any other default field: an absence, not a neutral measurement.
+
+None of this is fixable from the evidence pack itself. If a web search turns up real defensive
+production — points allowed, takeaways, sacks, returning starters, coordinator continuity — that is
+close to the only position-appropriate signal available; everything `criteria` otherwise offers for
+DEF is measuring the team's offense instead.
+
 ### Two mechanical checks that produce findings
 
 Run both on every pack. They cost nothing and they are where the real disagreements come from.
@@ -298,6 +326,70 @@ as what it does, including the one thing that would take a second call to settle
 `floor` and `ceiling` should describe scenarios you can name, not a fixed percentage band around
 your point estimate. If you cannot say what the floor case *is*, you have not found a floor.
 
+### When the sanity band floors you
+
+The validator's sanity band (`[0.25×, 3.0×]` of the model, section 4) is calibrated to catch unit
+errors, not to bound every legitimate outcome — and occasionally your honest answer is narrower than
+that. A fringe-roster player facing a real chance of being cut can have a true expected value near
+zero, which sits below `0.25×` of a model built on the assumption he stays rostered all season. You
+cannot express that in `projected_points` — the validator will reject anything below the floor — so
+do not quietly round up and report the inflated number as your actual view. Set `projected_points`
+at or just above the band floor, put the real downside in `floor` itself (`0.0` is a legitimate
+value there), and say plainly in the rationale that the band, not your judgment, is what is
+constraining the point estimate. A run that hits this should read as *constrained*, not as agreeing
+with the model — see the second worked example below.
+
+### A second worked example: player 1023, 2026 season
+
+Real numbers, from `agent evidence --player-id 1023 --year 2026`. Shorter than the first example on
+purpose — its job is to show the method holding up on a thin-data case, not to repeat the full
+walkthrough.
+
+```
+player.name = "CJ Dippre"  position TE  team NE
+season_stats: 2026 (games_played 0, adp 748.4, adp_source espn_tail — deep waiver-wire tier)
+              2025 (games_played 1, fantasy_points_total 0.0)
+game_logs: 1 row — 2025 week 17, fantasy_points 0.0, every counting stat 0
+criteria.fields: historical_average_points 7.18  player_skill_level 50.0 (the neutral default)
+                 team_offense_level 90.6  positional_touch_percentage 0
+                 fantasy_points_per_touch 0.0  expected_games 8.5
+existing_projections.model.projected_points = 67.71   expected_games 8.5
+```
+
+`historical_average_points` reads 7.18 for a player whose entire recorded NFL history is one game
+that scored zero. `season_stats` and `game_logs` agree on that: `games_played: 1`,
+`fantasy_points_total: 0.0`, and the single logged game is 0.0 across every counting stat, not just
+fantasy points. Whatever produced 7.18, it did not come from this player's own production — the pack
+itself proves that much, without needing to know the mechanism behind the field. Naming the
+mechanism would mean guessing at code the pack does not expose, which is exactly the invented
+attribution the method above warns against; the defensible claim stops at "not his own production."
+
+Decomposition: 67.71 / 8.5 expected games = 7.97 ppg against that 7.18 baseline — only about 0.79
+ppg (≈6.7 season points) of adjustment on top of an already-uninformative anchor. `criteria` has
+exactly one field that isn't a literal zero or a neutral default: `team_offense_level` at 90.6, New
+England's own passing-offense strength. `positional_touch_percentage` and `fantasy_points_per_touch`
+are both a literal `0` here — for this player that zero is a real measurement, since he has never
+recorded an NFL target — so the ~6.7-point lift is best read as the model crediting a zero-target
+blocking specialist with a share of an offense he has not actually played in.
+
+Web research (role/depth-chart, since `news_fetched_at` is null and none of this has a column)
+found him fourth on New England's 2026 TE depth chart behind two established players, opening camp
+on the PUP list and described by beat coverage as no lock to make the roster
+(https://www.si.com/nfl/patriots/onsi/patriots-depth-chart-entering-training-camp-who-s-fighting-for-their-job).
+That is the real driver of the projection, and it is the kind of fact this schema has no column for
+at all.
+
+The stored result: 20.0 points (floor 0.0, ceiling 60.0, expected_games 7.5, confidence low).
+`key_factors` magnitudes −30.0 (web, the depth-chart/roster-risk finding) and −17.71 (db, the
+team-offense-credit finding) sum to −47.71, matching the disagreement with the model to two decimal
+places (20.0 − 67.71 = −47.71). But the honest view here is closer to bimodal than to 20.0: either he
+makes the roster and plays a real, if marginal, role, or he is cut and plays not at all. The sanity
+band floors at `0.25 × 67.71 ≈ 16.93`, so a point estimate any lower would have been rejected. The
+projection sits at 20.0 — just above that floor — and the real downside is priced into `floor: 0.0`
+instead, with the rationale saying outright that the band, not the underlying judgment, set the
+point estimate. That is the pattern from the previous section: constrained, and said so, rather than
+quietly presented as a confident 20.0.
+
 ---
 
 ## 3. The output contract
@@ -433,6 +525,18 @@ it.
 non-empty — never that it resolves, never that it says what you claim. The fixture's `example.com`
 link is a stand-in, not an example to follow. A URL you have not actually read is worse than no
 factor, because it launders a guess as a citation.
+
+**One factor, one claim, fully supported.** Reading the source is not the whole check — the source
+has to support *everything* the factor asserts, not most of it. A real run cited an SI article
+(`.../patriots-offensive-line-upgrades-drake-maye-top-3-fantasy-qb-conversation`) for "WR additions
+A.J. Brown/Romeo Doubs, OL additions Alijah Vera-Tucker and Caleb Lomu": the article was genuinely
+read, and it supports Doubs, Vera-Tucker's $42M deal, Lomu at pick 28, the top-five framing, and the
+tougher-2026-schedule headwind — precisely, with matching figures. It says nothing about A.J. Brown.
+Every individual rule passed — the URL was real, it was read, it supported most of the claim — and
+the factor was still wrong, because it bundled several facts under one citation and one of them
+wasn't in it. If a factor states more than one fact, either every fact in it appears in the source
+you cited, or the factor splits into two. A citation that supports most of a claim is a citation
+that does not support the claim.
 
 **`--as-of` is a partial, schedule-dependent cutoff, not a time machine.** Five blocks truncate
 unconditionally (`game_logs`, `season_stats`, `criteria`, `schedule` results, `sportsbook`).
