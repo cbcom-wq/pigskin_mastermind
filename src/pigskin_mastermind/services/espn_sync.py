@@ -20,6 +20,9 @@ from pigskin_mastermind.models.database import (
 )
 from pigskin_mastermind.services.espn_stats_mapper import map_espn_breakdown_to_stats
 from pigskin_mastermind.services.player_identity import PlayerIdentityService
+from pigskin_mastermind.services.nfl_schedule import (
+    PlayerTeams, ScheduleIndex, drop_bye_weeks, is_bye_stat_line,
+)
 from pigskin_mastermind.utils.nfl_teams import normalize_team
 from pigskin_mastermind.utils.positions import normalize_position
 
@@ -658,6 +661,8 @@ class ESPNSyncService:
             return 0
 
         count = 0
+        schedule = ScheduleIndex(self.db)
+        teams = PlayerTeams(self.db)
         weekly_stats_rows = (
             self.db.query(DBWeeklyTeamStats)
             .filter_by(team_id=db_team.id)
@@ -676,6 +681,14 @@ class ESPNSyncService:
                     breakdown = wp.stats.get('breakdown', {})
 
                 parsed = map_espn_breakdown_to_stats(breakdown)
+
+                # A rostered bye week is not a game. Storing it inflates
+                # games_played and poisons the recent-form windows.
+                if is_bye_stat_line(
+                    schedule, teams.get(wp.player_id),
+                    year, weekly_team.week, wp.actual_points, parsed,
+                ):
+                    continue
 
                 # Upsert game log
                 game_log = self.db.query(DBPlayerGameLog).filter_by(
@@ -735,6 +748,7 @@ class ESPNSyncService:
 
         players = self.db.query(DBPlayer).filter_by(team_id=db_team.id).all()
         count = 0
+        schedule = ScheduleIndex(self.db)
 
         for player in players:
             logs = (
@@ -742,6 +756,9 @@ class ESPNSyncService:
                 .filter_by(player_id=player.id, year=year)
                 .all()
             )
+            # Bye weeks are rostered weeks with no stat line, not games —
+            # counting them deflates fantasy_points_avg for the whole roster.
+            logs = drop_bye_weeks(schedule, player.nfl_team, logs)
             if not logs:
                 continue
 

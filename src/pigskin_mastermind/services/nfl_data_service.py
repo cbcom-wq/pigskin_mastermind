@@ -19,6 +19,9 @@ from pigskin_mastermind.models.database import (
 from pigskin_mastermind.services.player_identity import (
     PlayerIdentityService, is_placeholder_name,
 )
+from pigskin_mastermind.services.nfl_schedule import (
+    PlayerTeams, ScheduleIndex, drop_bye_weeks, is_bye_stat_line,
+)
 from pigskin_mastermind.utils.positions import normalize_position
 from pigskin_mastermind.utils.nfl_teams import normalize_team
 
@@ -326,12 +329,24 @@ class NFLDataService:
         )
 
         count = 0
+        schedule = ScheduleIndex(self.db)
+        teams = PlayerTeams(self.db)
         for wps, wts in rows:
             breakdown = {}
             if wps.stats and isinstance(wps.stats, dict):
                 breakdown = wps.stats.get('breakdown', {})
 
             parsed = map_espn_breakdown_to_stats(breakdown) if breakdown else {}
+
+            # ESPN reports a rostered player every week, bye included. A bye is
+            # not a game — DBPlayerGameLog is "one row per player per game" —
+            # and a stored 0.0 also drags down the momentum and consistency
+            # windows in projection_criteria_builder.
+            if is_bye_stat_line(
+                schedule, teams.get(wps.player_id),
+                year, wts.week, wps.actual_points, parsed,
+            ):
+                continue
 
             game_log = (
                 self.db.query(DBPlayerGameLog)
@@ -390,12 +405,19 @@ class NFLDataService:
         )
         count = 0
 
+        schedule = ScheduleIndex(self.db)
+        teams = PlayerTeams(self.db)
+
         for (player_id,) in player_ids:
             logs = (
                 self.db.query(DBPlayerGameLog)
                 .filter_by(player_id=player_id, year=year)
                 .all()
             )
+            # A bye is stored as a rostered week with no stat line. Counting it
+            # inflates games_played and deflates fantasy_points_avg for every
+            # player, which ProjectionBaselines then inherits.
+            logs = drop_bye_weeks(schedule, teams.get(player_id), logs)
             if not logs:
                 continue
 

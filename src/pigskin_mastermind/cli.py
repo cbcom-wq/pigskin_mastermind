@@ -523,6 +523,40 @@ def stats_import_schedules(years):
         db.close()
 
 
+@stats.command('purge-bye-weeks')
+@click.option('--years', default='2025', help='Comma-separated years (e.g. 2024,2025)')
+@click.option('--dry-run/--apply', default=True,
+              help='Report what would change without writing (default: dry run)')
+def stats_purge_bye_weeks(years, dry_run):
+    """Delete bye-week rows wrongly stored in player_game_logs.
+
+    ESPN reports a rostered player every week, bye included, so both import
+    paths used to store the bye as a game log with an empty stat line. That
+    inflated ``games_played`` and deflated ``fantasy_points_avg`` by ~5% for
+    every affected player -- and that average feeds ProjectionBaselines.
+
+    The importers no longer create these rows; this cleans up ones already
+    stored. Needs the schedule, so run ``pigskin stats import-schedules``
+    first -- without it no bye can be identified and this is a no-op.
+
+    Re-run ``pigskin stats import-nfl`` (or the ESPN sync) afterwards to
+    recompute the season aggregates.
+    """
+    from pigskin_mastermind.services.nfl_schedule import purge_bye_week_game_logs
+
+    db = _get_stats_db()
+    try:
+        for year in [int(y.strip()) for y in years.split(',')]:
+            removed = purge_bye_week_game_logs(db, year, dry_run=dry_run)
+            verb = 'would be removed' if dry_run else 'removed'
+            click.echo(f"{year}: {removed} bye-week game logs {verb}")
+
+        if dry_run:
+            click.echo("\nNothing was written. Re-run with --apply to commit.")
+    finally:
+        db.close()
+
+
 @stats.command('player')
 @click.argument('player_id', type=int)
 @click.option('--year', type=int, default=None, help='Filter to specific year')

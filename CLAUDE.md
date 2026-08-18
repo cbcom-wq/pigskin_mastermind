@@ -159,6 +159,34 @@ which means **leave the stored value alone** — never write it, or an unsigned 
 team. Applied in `adp_service.py` and `espn_sync.py`; normalizing only one of them lets the next
 sync undo the other.
 
+### A bye is not a game
+
+ESPN reports a player every week they are *rostered*, bye weeks included, so both ESPN paths used
+to store the bye as a game log with an empty stat line and 0.0 points. Both aggregation sites then
+counted it (`games_played = len(logs)`), inflating games by one and deflating `fantasy_points_avg`
+by ~5% for everyone — and that average is what `ProjectionBaselines` and `_compute_expected_games`
+build on, so every projection inherited it.
+
+`services/nfl_schedule.py` owns the single definition. Two rules matter:
+
+- **Byes come from the schedule, never from the score.** A K or DEF can genuinely put up 0.0 in a
+  game that happened. `ScheduleIndex.is_bye()` reports a bye only when `DBNFLGame` has rows for
+  that year *and* none for that team that week — an unimported schedule makes every week look
+  missing, so it must return `False` rather than guess.
+- **A row is only a bye if it also has no stat line.** Game logs carry no team column, so the team
+  comes from `DBPlayer.nfl_team` — the player's *current* club, which for a past season is often
+  the wrong franchise after free agency. The empty-line requirement is what stops a traded
+  player's real game from being deleted because his new team was on bye that week.
+
+Applied at both aggregation sites (`nfl_data_service.compute_season_stats_from_game_logs`,
+`espn_sync._aggregate_season_stats`) and at the two weekly-roster promotion paths that create the
+rows. `pigskin stats purge-bye-weeks [--dry-run|--apply]` cleans rows written before this, which
+matters beyond `games_played`: a stored 0.0 also drags down `_calculate_momentum` and inflates the
+standard deviation behind the consistency score.
+
+`snap_count`/`snap_pct` do **not** have this divisor problem — they come from nflverse's own
+per-game snap frame, which has no row for a bye, and are never divided by `games_played`.
+
 ### Projection pipeline
 
 ```
