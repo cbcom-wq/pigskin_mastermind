@@ -236,7 +236,8 @@ read site has a `NOTE:` comment pointing here. Do not add a new consumer of
 `player_projections.source` also has an `llm` value, written by `pigskin agent record-projection`
 (see below). It is display-only: `_READ_PRIORITY` and `DRAFT_POOL_SOURCES` in
 `projection_refresh.py` never include it, so an `llm` row cannot become the `blend` row and never
-reaches the mock draft pool.
+reaches the mock draft pool. Being locked out of the blend is not the same as being unevaluated —
+see `agent_scoring.py` below for how it's actually judged.
 
 ### Agent evidence and recorded projections
 
@@ -252,6 +253,26 @@ upserts it as `source='llm'`. Both are exposed via `pigskin agent evidence` and
 document doesn't leak data past the cutoff. `context.as_of_week` and `context.as_of_cutoff_at`
 report whether the cutoff was requested and whether it actually resolved to a kickoff — read those
 before trusting a `_filtered_reason` key, since an unresolvable cutoff serves rows unfiltered.
+
+**`--year` is required on `record-projection`**, with `--week` optional and omitted for a season
+projection. Pass the same values given to `agent evidence` for the same run — copied from its
+`context` block, not retyped — or `record_llm_projection()`'s scope check rejects the result: it
+validates the JSON's own `year`/`week` against these flags before checking anything about the
+projected number itself.
+
+`services/agent_scoring.py::score_projections()` is the justification for `llm` existing as a source
+at all: it is what turns "recorded but never blended" into an actual track record. It compares stored
+projections against actuals per source, then re-scores every source on the intersection of players
+*all* requested sources projected. That second number is the only one worth reading — `model` carries
+a row for essentially the whole draft pool (~1,000+ players) while `llm` has however many an agent has
+actually run, so their raw per-source MAEs are not comparable; the head-to-head restriction is what
+makes them comparable. Exposed via `pigskin agent score --year Y [--week N] [--sources model,llm]`.
+
+The `.claude/skills/projection-evidence/` skill and the `player-analyst` agent
+(`.claude/agents/player-analyst.md`) are what actually run a projection end to end: the skill teaches
+an agent how to read one evidence pack, find where the deterministic model is structurally blind for
+that specific player, and record a validated `llm` result without re-deriving what the model already
+computed. The agent is what Claude Code dispatches to carry that out.
 
 ### Monte Carlo simulation
 

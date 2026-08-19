@@ -347,6 +347,34 @@ is prompt-shaped and reviewed by eye. **No test invokes a real LLM.**
 
 Run scoped, as always: `pytest tests/`.
 
+## What Phase 2 demonstrated
+
+Phase 2 shipped `pigskin agent score`, the `projection-evidence` skill, and the `player-analyst`
+agent, then dispatched that agent against three real players — a data-rich QB, a thin-data fringe
+TE, and a team defense. All three produced projections that differed materially from the model
+(−26%, −73%, +44%), with every disagreement traced to a named field and signed magnitudes
+reconciling to the stated total. Measured against this spec's own test — additive rather than a
+worse re-derivation — it passes.
+
+**But the value arrived by a different route than this spec predicted.** The framing above assumes
+the gap is information the schema has no column for: a coaching change, a camp report, a
+depth-chart move. Only one of the three runs delivered that. What the other two contributed was
+**auditing the model's own inputs** — a bye week inflating a per-game denominator, a half-imported
+season read as an injury signal. Three runs found three genuine defects in the projection pipeline,
+all since raised as separate work.
+
+That is worth more than the spec anticipated, and it means the demonstrated product is closer to a
+data-quality auditor than an outside-information analyst. When Phase 3 and 4 build the tuner, treat
+that as the finding rather than as a deviation: the deterministic pipeline's inputs are less
+trustworthy than the formula operating on them, and an agent reading an evidence pack is unusually
+well placed to notice.
+
+**The evaluation half remains untested by design.** No `llm` row has been scored, and none can be
+until real actuals land — the honest consequence of refusing a contaminated backtest. So Phase 2
+merged on the strength of its analyses, not on measured accuracy. `agent score` is built and
+verified against fixtures; whether the `llm` source beats `model` is still open by the system's own
+standard, which is the correct state to be in rather than a gap to paper over.
+
 ## Delivery order
 
 This is more than one sitting's work. The phases below are separable — each ends somewhere useful,

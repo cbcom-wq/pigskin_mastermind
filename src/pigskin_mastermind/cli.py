@@ -352,13 +352,20 @@ def agent_evidence(player_id, year, week, as_of_week):
 @click.option('--web/--no-web', 'web_allowed', default=True,
               help='Whether this run was permitted to use the web. '
                    '--no-web rejects a result claiming web sources.')
-def agent_record_projection(result_file, web_allowed):
+@click.option('--year', type=int, required=True,
+              help='Season year the result must be for. Required: this is '
+                   'what stops a mis-scoped result being stored silently.')
+@click.option('--week', type=int, default=None,
+              help='Week the result must be for. Omit for season scope.')
+def agent_record_projection(result_file, web_allowed, year, week):
     """Validate an agent result and store it as a source='llm' projection.
 
     Exits non-zero with the reason on stderr when a result is rejected, so the
-    agent can see what was wrong and correct it::
+    agent can see what was wrong and correct it. Pass the same --year/--week
+    given to `agent evidence`, so the result is checked against the scope it
+    was actually asked for::
 
-        pigskin agent record-projection --result-file out.json
+        pigskin agent record-projection --result-file out.json --year 2026 --week 5
     """
     import json as _json
 
@@ -371,7 +378,10 @@ def agent_record_projection(result_file, web_allowed):
 
     db = _get_stats_db()
     try:
-        row = record_llm_projection(db, payload, web_allowed=web_allowed)
+        row = record_llm_projection(
+            db, payload, web_allowed=web_allowed,
+            expected_scope=(year, week),
+        )
     except ResultRejected as exc:
         raise click.ClickException(f"Result rejected: {exc}")
     finally:
@@ -382,6 +392,140 @@ def agent_record_projection(result_file, web_allowed):
         f"Stored llm projection for player {row.player_id} "
         f"({row.year} {scope}): {row.projected_points:.1f} pts"
     )
+
+
+# A full NFL season is 17 games. A season-scope score built from actuals
+# well short of that isn't wrong, but it isn't final either -- it's mostly
+# measuring how much of the season has been played, not how good the
+# projection was.
+_FULL_SEASON_GAMES = 17.0
+_PARTIAL_SEASON_WARNING_FRACTION = 0.85
+
+
+def _season_completeness_warning(mean_games_played):
+    """Warn when the season being scored is materially incomplete.
+
+    Returns ``None`` for weekly scope (``mean_games_played`` is ``None``
+    there) or for a season the scored players have mostly finished.
+    """
+    if mean_games_played is None:
+        return None
+    threshold = _FULL_SEASON_GAMES * _PARTIAL_SEASON_WARNING_FRACTION
+    if mean_games_played >= threshold:
+        return None
+    return (
+        f'scored players averaged only {mean_games_played:.1f} of '
+        f'{_FULL_SEASON_GAMES:.0f} games played -- these are season-total '
+        'projections compared against a season that is not over yet, so '
+        'the MAE/bias above are not final'
+    )
+
+
+@agent.command('score')
+@click.option('--year', type=int, default=None,
+              help='Season year (defaults to the current fantasy season)')
+@click.option('--week', type=int, default=None,
+              help='Score weekly projections for this week. Omit for season scope.')
+@click.option('--sources', default=None,
+              help='Comma-separated sources to score (default: every source present)')
+def agent_score(year, week, sources):
+    """Score stored projections against what actually happened.
+
+    Backtesting an LLM projection is contaminated — the model may already
+    know how the season ended. The honest evaluation is prospective: record
+    projections now, score them as real weeks land. This is what builds the
+    track record that would ever justify trusting the ``llm`` source::
+
+        pigskin agent score --year 2025 --week 5 --sources model,llm
+
+    Sources are reported twice: on their own coverage, and head to head on
+    the players every source projected. Only the head-to-head numbers are
+    comparable — a source that projected three easy players will always
+    look better on its own coverage.
+    """
+    from pigskin_mastermind.services.agent_scoring import score_projections
+    from pigskin_mastermind.utils.season import current_fantasy_season
+
+    year = year or current_fantasy_season()
+    source_list = [s.strip() for s in sources.split(',')] if sources else None
+
+    db = _get_stats_db()
+    try:
+        result = score_projections(db, year, week=week, sources=source_list)
+    finally:
+        db.close()
+
+    scope_label = (
+        "season" if result["scope"] == "season" else f"week {result['week']}"
+    )
+    click.echo(f"Scoring {result['year']} {scope_label}...")
+
+    if result["sources_with_no_rows"]:
+        click.echo(
+            "  No scored rows for: "
+            f"{', '.join(result['sources_with_no_rows'])} -- check for a "
+            "typo in --sources, or that projections actually exist for "
+            "this year/scope."
+        )
+
+    completeness_warning = _season_completeness_warning(
+        result.get("mean_games_played")
+    )
+    if completeness_warning:
+        click.echo(f"  WARNING: {completeness_warning}.")
+
+    if not result["per_source"]:
+        # A dividing-by-zero table or a silent empty print reads as "the
+        # command worked and there's nothing to say" -- but the far more
+        # likely cause is that actuals for this scope haven't landed yet
+        # (the season hasn't been played, or stats haven't synced), and
+        # that distinction matters to whoever is reading this.
+        click.echo(
+            "  No source has a scored projection for this year/scope. "
+            "Either no projections are stored for it, or none of them have "
+            "a matching actual yet (season not played / stats not synced)."
+        )
+        if result["no_actual"]:
+            click.echo(
+                f"  {result['no_actual']} projection(s) found but had no "
+                "actual to compare against."
+            )
+        return
+
+    click.echo(f"{'source':<10}{'n':>6}{'mae':>10}{'bias':>10}{'rmse':>10}")
+    for source, metrics in sorted(result["per_source"].items()):
+        click.echo(
+            f"{source:<10}{metrics['n']:>6}{metrics['mae']:>10.3f}"
+            f"{metrics['bias']:>10.3f}{metrics['rmse']:>10.3f}"
+        )
+    if result["no_actual"]:
+        click.echo(
+            f"  ({result['no_actual']} projection(s) had no actual yet -- "
+            "excluded above)"
+        )
+
+    h2h = result["head_to_head"]
+    if h2h is None:
+        click.echo(
+            "\nHead-to-head: not shown -- fewer than two sources were "
+            "scored, so there is nothing to compare."
+        )
+    elif h2h["players"] == 0:
+        # A table of all-zero rows here reads as a tie between the sources
+        # rather than what it actually is: they didn't project any of the
+        # same players, so there is nothing to compare.
+        click.echo(
+            "\nHead-to-head: the scored sources share no players -- "
+            "nothing to compare."
+        )
+    else:
+        click.echo(f"\nHead-to-head ({h2h['players']} shared player(s)):")
+        click.echo(f"{'source':<10}{'n':>6}{'mae':>10}{'bias':>10}{'rmse':>10}")
+        for source, metrics in sorted(h2h["sources"].items()):
+            click.echo(
+                f"{source:<10}{metrics['n']:>6}{metrics['mae']:>10.3f}"
+                f"{metrics['bias']:>10.3f}{metrics['rmse']:>10.3f}"
+            )
 
 
 @stats.command('import-espn')
