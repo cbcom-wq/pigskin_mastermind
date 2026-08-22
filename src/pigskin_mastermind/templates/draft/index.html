@@ -36,8 +36,17 @@
     <div class="lg:col-span-3 space-y-5">
 
       <!-- Draft Settings Card -->
-      <div class="draft-card p-6 space-y-5">
-        <h3 class="text-xs font-bold text-pigskin-400 uppercase tracking-widest">Draft Settings</h3>
+      <div id="draft-settings-card" class="draft-card p-6 space-y-5">
+        <div class="flex items-baseline justify-between gap-3 flex-wrap">
+          <h3 class="text-xs font-bold text-pigskin-400 uppercase tracking-widest">Draft Settings</h3>
+          <div id="restored-settings-note" class="hidden items-baseline gap-2">
+            <span class="text-[11px] text-slate-500">Restored your last draft setup</span>
+            <button type="button" onclick="resetDraftSettings()"
+                    class="text-[11px] font-semibold text-pigskin-400 hover:text-pigskin-300 transition-colors">
+              Reset to defaults
+            </button>
+          </div>
+        </div>
 
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
@@ -371,6 +380,7 @@
     document.getElementById('user-pick-pos').value =
       String(Math.floor(Math.random() * teams) + 1);
     onSettingsChange();
+    saveDraftSettings();
   }
 
   function onRandomSlotToggle() {
@@ -645,6 +655,15 @@
   // Store randomised profile data keyed by slot
   let aiProfileData = {};
 
+  // Remembered AI strategy picks keyed by slot. The dropdowns only exist once
+  // the accordion has been opened, so this is what carries a saved pick until
+  // then - and what stops a save from wiping strategies never re-opened.
+  let savedAiStrategies = {};
+
+  // Which imported league the roster format came from, stored by id so a
+  // re-synced league can't restore a stale slot snapshot.
+  let selectedLeaguePresetId = null;
+
   // `applyRandomized` marks a rebuild triggered by the 🎲 button: freshly
   // randomised strategies must win over whatever the dropdowns currently show.
   // Every select carries a non-empty value (there is no blank option), so
@@ -655,7 +674,9 @@
     const container = document.getElementById('ai-strategy-rows');
     // Rebuilds happen whenever the slot or team count changes, so carry any
     // hand-picked strategies across.
-    const chosen = {};
+    // Seeded from the remembered map so a saved strategy survives the first
+    // build, when there is nothing in the DOM yet to carry across.
+    const chosen = {...savedAiStrategies};
     container.querySelectorAll('select[id^="ai-strat-"]').forEach(sel => {
       chosen[sel.id.replace('ai-strat-', '')] = sel.value;
     });
@@ -711,6 +732,7 @@
         aiProfileData[slot] = { strategy: info.strategy, ...info.profile };
       }
       buildAIRows(true);
+      saveDraftSettings();
       showToast('AI strategies & profiles randomized!', 'success');
     } catch (e) {
       showToast('Network error', 'error');
@@ -785,6 +807,21 @@
       leagueRow.classList.remove('hidden');
     }
 
+    // Re-select the remembered league if it still exists. Selection only: the
+    // slots and scoring format were already restored, and re-applying the
+    // option's embedded snapshot would overwrite them with stale values.
+    if (selectedLeaguePresetId !== null && leagueSel) {
+      for (const opt of leagueSel.options) {
+        if (!opt.value) continue;
+        try {
+          if (JSON.parse(opt.value).id === selectedLeaguePresetId) {
+            leagueSel.value = opt.value;
+            break;
+          }
+        } catch (e) { /* ignore an unparseable option */ }
+      }
+    }
+
     buildSlotInputs();
   }
 
@@ -842,14 +879,22 @@
     // Highlight active preset button
     const btns = document.getElementById('lineup-preset-btns').querySelectorAll('button');
     btns.forEach(b => b.classList.remove('border-pigskin-500','text-pigskin-300'));
-    if (activeBtn) activeBtn.classList.add('border-pigskin-500','text-pigskin-300');
+    if (activeBtn) {
+      activeBtn.classList.add('border-pigskin-500','text-pigskin-300');
+      // A hand-picked preset replaces whatever league the slots came from.
+      selectedLeaguePresetId = null;
+      const leagueSel = document.getElementById('league-preset-select');
+      if (leagueSel) leagueSel.value = '';
+    }
+    saveDraftSettings();
   }
 
   function applyLeaguePreset(jsonVal) {
     if (!jsonVal) return;
     try {
-      const {slots, scoring_format} = JSON.parse(jsonVal);
+      const {id, slots, scoring_format} = JSON.parse(jsonVal);
       applyPreset(slots);
+      selectedLeaguePresetId = id ?? null;
       // Clear preset button highlights since this came from a league
       const btns = document.getElementById('lineup-preset-btns').querySelectorAll('button');
       btns.forEach(b => b.classList.remove('border-pigskin-500','text-pigskin-300'));
@@ -861,6 +906,7 @@
           if (currentAdpSource === 'ffc') loadAdpData();
         }
       }
+      saveDraftSettings();
     } catch(e) {}
   }
 
@@ -972,11 +1018,135 @@
     }
   });
 
+  // ---- Remembered draft settings ----
+  // The setup form is entirely client-side, so the last configuration is kept in
+  // localStorage and restored on the next visit. SETTINGS_VERSION is a hard
+  // gate: anything that is not the current shape is discarded outright rather
+  // than half-restored, which is how a removed field would otherwise poison a
+  // future form.
+  const DRAFT_SETTINGS_KEY = 'pigskin_draft_settings';
+  const SETTINGS_VERSION = 1;
+
+  // Suppresses writes while restoreDraftSettings() populates the form, so a
+  // half-applied state can never overwrite the good saved one.
+  let restoringSettings = false;
+
+  function saveDraftSettings() {
+    if (restoringSettings) return;
+    try {
+      // The strategy dropdowns only exist once the AI accordion has been opened.
+      // Merge over the remembered map rather than replacing it, or a save
+      // triggered by an unrelated field would wipe every unopened slot.
+      document.querySelectorAll('#ai-strategy-rows select[id^="ai-strat-"]').forEach(sel => {
+        savedAiStrategies[sel.id.replace('ai-strat-', '')] = sel.value;
+      });
+      const ffcEl = document.getElementById('ffc-scoring-format');
+      const poolEl = document.querySelector('input[name="pool-source"]:checked');
+      localStorage.setItem(DRAFT_SETTINGS_KEY, JSON.stringify({
+        v: SETTINGS_VERSION,
+        numTeams: parseInt(document.getElementById('num-teams').value) || 10,
+        numRounds: parseInt(document.getElementById('num-rounds').value) || 15,
+        userPickPos: parseInt(document.getElementById('user-pick-pos').value) || 1,
+        randomUserSlot: document.getElementById('random-user-slot').checked,
+        poolSource: poolEl ? poolEl.value : 'ffc_adp',
+        espnAdpYear: parseInt(document.getElementById('espn-adp-year').value) || CURRENT_SEASON,
+        ffcScoring: ffcEl ? ffcEl.value : 'half-ppr',
+        lineupSlots: {...currentLineupSlots},
+        leaguePresetId: selectedLeaguePresetId,
+        aiAggressiveness: parseInt(document.getElementById('ai-aggressiveness').value) || 0,
+        aiStrategies: {...savedAiStrategies},
+        // Kept with its `strategy` field, unlike the stripped shape startDraft()
+        // posts - the A: badges and the buildAIRows fallback both read it.
+        aiProfiles: {...aiProfileData},
+      }));
+    } catch (e) { /* storage unavailable or full - remembering is best-effort */ }
+  }
+
+  function readSavedSettings() {
+    try {
+      const raw = localStorage.getItem(DRAFT_SETTINGS_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      if (!data || data.v !== SETTINGS_VERSION) return null;
+      return data;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** Populate the form from localStorage. Returns true if anything was restored. */
+  function restoreDraftSettings() {
+    const s = readSavedSettings();
+    if (!s) return false;
+    restoringSettings = true;
+    try {
+      const setVal = (id, val) => {
+        const el = document.getElementById(id);
+        if (el && val !== undefined && val !== null) el.value = String(val);
+      };
+      setVal('num-teams', s.numTeams);
+      setVal('user-pick-pos', s.userPickPos);
+      setVal('espn-adp-year', s.espnAdpYear);
+      setVal('ffc-scoring-format', s.ffcScoring);
+      setVal('ai-aggressiveness', s.aiAggressiveness);
+      const aggrVal = document.getElementById('aggr-val');
+      if (aggrVal) aggrVal.textContent = (s.aiAggressiveness ?? 50) + '%';
+
+      const poolRadio = document.querySelector(
+        'input[name="pool-source"][value="' + String(s.poolSource) + '"]');
+      if (poolRadio) poolRadio.checked = true;
+
+      if (s.lineupSlots && typeof s.lineupSlots === 'object') {
+        currentLineupSlots = {};
+        ALL_SLOT_POSITIONS.forEach(pos => { currentLineupSlots[pos] = s.lineupSlots[pos] ?? 0; });
+      }
+      selectedLeaguePresetId = s.leaguePresetId ?? null;
+      savedAiStrategies = (s.aiStrategies && typeof s.aiStrategies === 'object')
+        ? {...s.aiStrategies} : {};
+      aiProfileData = (s.aiProfiles && typeof s.aiProfiles === 'object')
+        ? {...s.aiProfiles} : {};
+
+      document.getElementById('random-user-slot').checked = !!s.randomUserSlot;
+
+      // Rounds last. It is normally derived from roster size by
+      // syncRoundsToRoster(), so restoring the slots first and the saved round
+      // count after is what brings the form back exactly as it was left.
+      setVal('num-rounds', s.numRounds);
+    } finally {
+      restoringSettings = false;
+    }
+    return true;
+  }
+
+  /** Forget the saved setup and come back up at the hardcoded defaults. */
+  function resetDraftSettings() {
+    try { localStorage.removeItem(DRAFT_SETTINGS_KEY); } catch (e) { /* ignore */ }
+    window.location.reload();
+  }
+
   // Init
-  onSettingsChange();
+  if (restoreDraftSettings()) {
+    const note = document.getElementById('restored-settings-note');
+    note.classList.remove('hidden');
+    note.classList.add('flex');
+  }
+  // A remembered random slot rolls fresh: asking for a random slot means a new
+  // one every draft, not the same one pinned forever. rollUserSlot() calls
+  // onSettingsChange() itself, so the form renders either way.
+  if (document.getElementById('random-user-slot').checked) rollUserSlot();
+  else onSettingsChange();
   // The FFC radio ships `checked`, but onchange never fires for a default, so
   // the rankings panel sat empty until the user clicked something. Loading it
   // here is also what surfaces the stale-data prompt on arrival.
   onPoolSourceChange();
+
+  // Persist every edit inside the settings card. Delegation is what covers the
+  // AI, roster, and position-by-round controls: those are built by JS after
+  // load, so per-element handlers would miss them. Listening on the card also
+  // means the target's own oninput has already run, so the module state a save
+  // reads (currentLineupSlots, the synced round count) is up to date.
+  const settingsCard = document.getElementById('draft-settings-card');
+  settingsCard.addEventListener('input', saveDraftSettings);
+  settingsCard.addEventListener('change', saveDraftSettings);
 </script>
 {% endblock %}
