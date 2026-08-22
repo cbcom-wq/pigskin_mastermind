@@ -1,0 +1,709 @@
+/* ============================================================
+   Draft Pick Celebrations
+   ============================================================
+
+   Six ~2.5s broadcast interstitials that play over the draft board when the
+   user makes a pick. Built by static/js/draft-celebration.js.
+
+   Two rules hold the set together:
+
+   1. The team color is the variable. Every animation is tinted with the
+      drafted player's club color (--cel-team), so a Vikings pick is purple and
+      a Chiefs pick is red. Nothing here hardcodes the brand orange except the
+      system chrome.
+   2. The raked slab is the signature. A hard-edged bar at --cel-rake recurs in
+      every animation — as the streak a logo rides, the plate under a name, the
+      shockwave of an impact. It is what makes six different motions read as one
+      system.
+
+   The stage deliberately does NOT black out the board. Picks keep advancing
+   behind it, and you should be able to watch them. Legibility comes from
+   putting every piece of type on its own solid plate instead.
+   ============================================================ */
+
+.cel-stage {
+    /* Defaults are the brand orange. draft-celebration.js overwrites all of
+       them per pick with the drafted club's colors. The derived tints are
+       computed in JS rather than with color-mix() so an older engine that does
+       not support it still gets a fully painted graphic. */
+    --cel-team: #d47a1e;
+    --cel-team-deep: #29200f;
+    --cel-team-mid: #7c4a17;
+    --cel-team-a70: rgba(212, 122, 30, 0.7);
+    --cel-team-a60: rgba(212, 122, 30, 0.6);
+    --cel-team-a55: rgba(212, 122, 30, 0.55);
+    --cel-team-a12: rgba(212, 122, 30, 0.12);
+    --cel-rake: -12deg;
+    --cel-chalk: #f8fafc;
+
+    position: fixed;
+    inset: 0;
+    z-index: 45;                 /* over the board, under panels (50) and the modal (60) */
+    pointer-events: none;
+    overflow: hidden;
+    contain: strict;
+    font-family: 'Barlow Semi Condensed', 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Pulls focus toward the middle without hiding the board behind it. */
+.cel-vignette {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(
+        ellipse 70% 60% at 50% 50%,
+        rgba(11, 18, 32, 0) 0%,
+        rgba(11, 18, 32, 0.55) 60%,
+        rgba(11, 18, 32, 0.8) 100%
+    );
+    opacity: 0;
+    animation: cel-vignette 2.6s ease-out forwards;
+}
+@keyframes cel-vignette {
+    0%   { opacity: 0; }
+    12%  { opacity: 1; }
+    82%  { opacity: 1; }
+    100% { opacity: 0; }
+}
+
+/* ---------- Shared type ---------- */
+
+.cel-eyebrow {
+    font-family: 'Barlow Semi Condensed', 'Segoe UI', sans-serif;
+    font-size: clamp(0.7rem, 1.1vw, 0.95rem);
+    font-weight: 600;
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+    color: var(--cel-team);
+}
+.cel-name {
+    font-family: 'Big Shoulders Display', 'Arial Narrow', 'Segoe UI', sans-serif;
+    font-size: clamp(2.75rem, 7vw, 6.5rem);
+    font-weight: 800;
+    line-height: 0.88;
+    letter-spacing: 0.01em;
+    text-transform: uppercase;
+    color: var(--cel-chalk);
+    text-shadow: 0 4px 24px rgba(11, 18, 32, 0.9);
+}
+.cel-meta {
+    font-family: 'Barlow Semi Condensed', 'Segoe UI', sans-serif;
+    font-size: clamp(0.85rem, 1.4vw, 1.15rem);
+    font-weight: 600;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: rgba(248, 250, 252, 0.72);
+}
+.cel-word {
+    font-family: 'Big Shoulders Display', 'Arial Narrow', 'Segoe UI', sans-serif;
+    font-size: clamp(3rem, 9vw, 8rem);
+    font-weight: 900;
+    line-height: 0.85;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--cel-chalk);
+    -webkit-text-stroke: 2px var(--cel-team);
+    text-shadow: 0 6px 30px rgba(11, 18, 32, 0.95);
+}
+
+/* ---------- Shared face (headshot → logo → position disc) ---------- */
+
+.cel-face {
+    width: clamp(120px, 15vw, 210px);
+    height: clamp(120px, 15vw, 210px);
+    border-radius: 50%;
+    overflow: hidden;
+    background:
+        radial-gradient(circle at 50% 35%, rgba(248, 250, 252, 0.14), transparent 60%),
+        var(--cel-team);
+    border: 3px solid var(--cel-team);
+    box-shadow: 0 0 0 6px rgba(11, 18, 32, 0.85), 0 18px 48px rgba(11, 18, 32, 0.7);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+}
+.cel-face img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: 50% 12%;
+}
+/* Logo standing in for a missing headshot needs air, not a crop. */
+.cel-face--logo img {
+    object-fit: contain;
+    object-position: 50% 50%;
+    padding: 16%;
+}
+.cel-face--initials {
+    align-items: center;
+    font-family: 'Big Shoulders Display', 'Arial Narrow', sans-serif;
+    font-size: clamp(2.2rem, 4.5vw, 3.6rem);
+    font-weight: 800;
+    color: var(--cel-chalk);
+    text-shadow: 0 2px 10px rgba(11, 18, 32, 0.6);
+}
+
+.cel-mark {
+    width: clamp(90px, 11vw, 160px);
+    height: clamp(90px, 11vw, 160px);
+    object-fit: contain;
+    filter: drop-shadow(0 10px 26px rgba(11, 18, 32, 0.8));
+}
+/* Stands in for a club with no logo — free agents, mostly. */
+.cel-mark--text {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--cel-team);
+    font-family: 'Big Shoulders Display', 'Arial Narrow', sans-serif;
+    font-size: clamp(1.6rem, 3.4vw, 2.8rem);
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    color: var(--cel-chalk);
+}
+
+/* ============================================================
+   1 — Light Sweep : a lateral wipe, the lower-third you know
+   ============================================================ */
+
+.cel--sweep .cel-sweep-band {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 92vw;
+    max-width: 1180px;
+    transform: translate(-50%, -50%);
+    display: flex;
+    align-items: center;
+    gap: clamp(1.5rem, 4vw, 4rem);
+}
+.cel--sweep .cel-slab {
+    position: absolute;
+    top: 50%;
+    left: -12%;
+    width: 124%;
+    height: clamp(150px, 24vh, 260px);
+    transform: translateY(-50%) rotate(var(--cel-rake));
+    background: linear-gradient(90deg,
+        var(--cel-team) 0%,
+        var(--cel-team-mid) 78%,
+        rgba(11, 18, 32, 0) 100%);
+    clip-path: inset(0 100% 0 0);
+    animation: cel-wipe-in 2.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+/* Hairline of hot light on the wipe's leading edge. */
+.cel--sweep .cel-slab::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent 0%, transparent 92%, rgba(255, 255, 255, 0.9) 100%);
+}
+@keyframes cel-wipe-in {
+    0%   { clip-path: inset(0 100% 0 0); }
+    28%  { clip-path: inset(0 0 0 0); }
+    80%  { clip-path: inset(0 0 0 0); }
+    100% { clip-path: inset(0 0 0 100%); }
+}
+
+.cel--sweep .cel-mark {
+    opacity: 0;
+    animation: cel-mark-ride 2.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+@keyframes cel-mark-ride {
+    0%   { opacity: 0; transform: translateX(-28vw) scale(0.7); }
+    30%  { opacity: 1; transform: translateX(0) scale(1); }
+    82%  { opacity: 1; transform: translateX(0) scale(1); }
+    100% { opacity: 0; transform: translateX(6vw) scale(0.9); }
+}
+
+.cel--sweep .cel-sweep-copy {
+    flex: 1;
+    min-width: 0;
+    opacity: 0;
+    animation: cel-copy-in 2.6s cubic-bezier(0.16, 1, 0.3, 1) 0.18s forwards;
+}
+@keyframes cel-copy-in {
+    0%   { opacity: 0; transform: translateX(2.5vw); }
+    18%  { opacity: 1; transform: translateX(0); }
+    80%  { opacity: 1; transform: translateX(0); }
+    100% { opacity: 0; transform: translateX(-2vw); }
+}
+
+.cel--sweep .cel-face {
+    flex: none;
+    opacity: 0;
+    animation: cel-face-slide 2.6s cubic-bezier(0.16, 1, 0.3, 1) 0.1s forwards;
+}
+@keyframes cel-face-slide {
+    0%   { opacity: 0; transform: translateX(14vw); }
+    26%  { opacity: 1; transform: translateX(0); }
+    80%  { opacity: 1; transform: translateX(0); }
+    100% { opacity: 0; transform: translateX(4vw); }
+}
+
+/* ============================================================
+   2 — Card Slam : a vertical impact
+   ============================================================ */
+
+.cel--slam .cel-card {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: clamp(260px, 30vw, 400px);
+    padding: clamp(1.25rem, 2.4vw, 2rem);
+    border-radius: 1.25rem;
+    background: linear-gradient(160deg, var(--cel-team-deep) 0%, #0b1220 62%);
+    border: 1px solid var(--cel-team-a60);
+    box-shadow: 0 30px 90px rgba(11, 18, 32, 0.85);
+    text-align: center;
+    animation: cel-slam 2.6s cubic-bezier(0.6, 0, 0.2, 1) forwards;
+}
+@keyframes cel-slam {
+    0%   { opacity: 0; transform: translate(-50%, -140%) scale(2.2) rotate(6deg); }
+    22%  { opacity: 1; transform: translate(-50%, -50%) scale(1) rotate(0deg); }
+    27%  { transform: translate(-50%, -50%) scale(1.04) rotate(-0.8deg); }
+    32%  { transform: translate(-50%, -50%) scale(1) rotate(0deg); }
+    84%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    100% { opacity: 0; transform: translate(-50%, -58%) scale(0.94); }
+}
+
+/* Logo sits behind the card contents as a watermark, not a badge. */
+.cel--slam .cel-card-mark {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.13;
+    overflow: hidden;
+    border-radius: 1.25rem;
+}
+.cel--slam .cel-card-mark img {
+    width: 88%;
+    height: 88%;
+    object-fit: contain;
+}
+.cel--slam .cel-card-body {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.85rem;
+}
+.cel--slam .cel-name {
+    font-size: clamp(1.9rem, 3.4vw, 3.1rem);
+}
+
+/* The raked slab returns as the nameplate under the card's type. */
+.cel--slam .cel-nameplate {
+    position: relative;
+    padding: 0.5rem 1.1rem 0.6rem;
+    background: var(--cel-team);
+    transform: skewX(var(--cel-rake));
+    box-shadow: 0 10px 30px rgba(11, 18, 32, 0.6);
+}
+.cel--slam .cel-nameplate > * {
+    transform: skewX(calc(-1 * var(--cel-rake)));
+}
+
+/* Shockwave, raked to match. */
+.cel--slam .cel-shock {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 40vmax;
+    height: 40vmax;
+    margin: -20vmax 0 0 -20vmax;
+    border: 3px solid var(--cel-team);
+    border-radius: 50%;
+    opacity: 0;
+    transform: rotate(var(--cel-rake)) scale(0.1);
+    animation: cel-shock 0.75s cubic-bezier(0.16, 1, 0.3, 1) 0.42s forwards;
+}
+@keyframes cel-shock {
+    0%   { opacity: 0.9; transform: rotate(var(--cel-rake)) scale(0.1); border-width: 10px; }
+    100% { opacity: 0; transform: rotate(var(--cel-rake)) scale(1); border-width: 1px; }
+}
+
+/* ============================================================
+   3 — Spotlight : a reveal that settles
+   ============================================================ */
+
+.cel--spotlight .cel-spot-stack {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(90vw, 1040px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.1rem;
+    text-align: center;
+}
+.cel--spotlight .cel-beam {
+    position: absolute;
+    top: -60vh;
+    left: 50%;
+    width: 44vw;
+    height: 150vh;
+    margin-left: -22vw;
+    background: linear-gradient(180deg,
+        var(--cel-team-a70) 0%,
+        var(--cel-team-a12) 55%,
+        transparent 85%);
+    clip-path: polygon(38% 0%, 62% 0%, 100% 100%, 0% 100%);
+    mix-blend-mode: screen;
+    transform-origin: 50% 0%;
+    opacity: 0;
+    animation: cel-beam 2.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+@keyframes cel-beam {
+    0%   { opacity: 0; transform: rotate(-38deg); }
+    26%  { opacity: 1; transform: rotate(4deg); }
+    38%  { transform: rotate(0deg); }
+    80%  { opacity: 1; transform: rotate(0deg); }
+    100% { opacity: 0; transform: rotate(16deg); }
+}
+
+/* Logo hangs behind the beam like a banner in the rafters. */
+.cel--spotlight .cel-spot-mark {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 46vmin;
+    height: 46vmin;
+    margin: -23vmin 0 0 -23vmin;
+    object-fit: contain;
+    opacity: 0;
+    animation: cel-spot-mark 2.6s ease-out forwards;
+}
+@keyframes cel-spot-mark {
+    0%   { opacity: 0; transform: scale(1.3); }
+    30%  { opacity: 0.22; transform: scale(1); }
+    80%  { opacity: 0.22; transform: scale(1); }
+    100% { opacity: 0; transform: scale(1.08); }
+}
+
+.cel--spotlight .cel-face {
+    animation: cel-spot-rise 2.6s cubic-bezier(0.16, 1, 0.3, 1) 0.15s forwards;
+    opacity: 0;
+}
+@keyframes cel-spot-rise {
+    0%   { opacity: 0; transform: translateY(16vh) scale(0.86); }
+    30%  { opacity: 1; transform: translateY(0) scale(1); }
+    80%  { opacity: 1; transform: translateY(0) scale(1); }
+    100% { opacity: 0; transform: translateY(-4vh) scale(1.02); }
+}
+
+/* Name resolves out of wide tracking — the graphic "focusing". */
+.cel--spotlight .cel-name {
+    opacity: 0;
+    animation: cel-track-in 2.6s cubic-bezier(0.16, 1, 0.3, 1) 0.32s forwards;
+}
+@keyframes cel-track-in {
+    0%   { opacity: 0; letter-spacing: 0.5em; filter: blur(6px); }
+    32%  { opacity: 1; letter-spacing: 0.01em; filter: blur(0); }
+    80%  { opacity: 1; letter-spacing: 0.01em; }
+    100% { opacity: 0; letter-spacing: 0.06em; }
+}
+
+.cel--spotlight .cel-eyebrow,
+.cel--spotlight .cel-meta {
+    opacity: 0;
+    animation: cel-fade-hold 2.6s ease-out 0.5s forwards;
+}
+@keyframes cel-fade-hold {
+    0%   { opacity: 0; transform: translateY(0.6rem); }
+    22%  { opacity: 1; transform: translateY(0); }
+    80%  { opacity: 1; transform: translateY(0); }
+    100% { opacity: 0; }
+}
+
+/* ============================================================
+   4 — Hail Mary : a parabola, then a spike
+   ============================================================
+   The arc is faked with nested transforms: the outer element carries X at a
+   constant rate, the middle carries Y on an ease pair, the inner spins. One
+   element cannot do all three on independent curves.
+   ============================================================ */
+
+.cel--hailmary .cel-arc-x {
+    position: absolute;
+    top: 62vh;
+    left: 0;
+    animation: cel-arc-x 1.15s linear forwards;
+}
+@keyframes cel-arc-x {
+    0%   { transform: translateX(-22vw); }
+    100% { transform: translateX(50vw); }
+}
+.cel--hailmary .cel-arc-y {
+    animation: cel-arc-y 1.15s forwards;
+}
+@keyframes cel-arc-y {
+    0%   { transform: translateY(0); animation-timing-function: cubic-bezier(0.2, 0.7, 0.4, 1); }
+    55%  { transform: translateY(-46vh); animation-timing-function: cubic-bezier(0.6, 0, 0.9, 0.4); }
+    100% { transform: translateY(2vh); }
+}
+.cel--hailmary .cel-arc-spin {
+    animation: cel-arc-spin 1.15s linear forwards;
+    transform-origin: 50% 50%;
+}
+@keyframes cel-arc-spin {
+    0%   { transform: translateX(-50%) rotate(0deg) scale(0.72); }
+    100% { transform: translateX(-50%) rotate(1080deg) scale(1); }
+}
+
+.cel--hailmary .cel-face {
+    animation: cel-hail-settle 2.6s ease-out forwards;
+}
+@keyframes cel-hail-settle {
+    0%, 84% { opacity: 1; transform: scale(1); }
+    100%    { opacity: 0; transform: scale(0.94); }
+}
+
+/* Impact at the landing point. */
+.cel--hailmary .cel-spike {
+    position: absolute;
+    top: 62vh;
+    left: 50%;
+    width: 34vmax;
+    height: 34vmax;
+    margin: -17vmax 0 0 -17vmax;
+    border-radius: 50%;
+    border: 4px solid var(--cel-team);
+    opacity: 0;
+    transform: rotate(var(--cel-rake)) scale(0.1);
+    animation: cel-shock 0.7s cubic-bezier(0.16, 1, 0.3, 1) 1.1s forwards;
+}
+.cel--hailmary .cel-hail-copy {
+    position: absolute;
+    top: 26vh;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    opacity: 0;
+    animation: cel-word-slam 1.5s cubic-bezier(0.16, 1, 0.3, 1) 1.12s forwards;
+}
+@keyframes cel-word-slam {
+    0%   { opacity: 0; transform: translateX(-50%) scale(1.7); }
+    14%  { opacity: 1; transform: translateX(-50%) scale(1); }
+    82%  { opacity: 1; transform: translateX(-50%) scale(1); }
+    100% { opacity: 0; transform: translateX(-50%) scale(0.96); }
+}
+.cel--hailmary .cel-hail-copy .cel-name {
+    font-size: clamp(1.6rem, 3vw, 2.6rem);
+    margin-top: 0.6rem;
+}
+
+/* ============================================================
+   5 — Logo Blitz : a collision
+   ============================================================ */
+
+.cel--blitz .cel-blitz-face {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    margin-top: -8vh;
+    animation: cel-blitz-hit 2.6s cubic-bezier(0.3, 0, 0.2, 1) forwards;
+}
+@keyframes cel-blitz-hit {
+    0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.9); }
+    12%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    /* the moment of contact */
+    34%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    40%  { opacity: 1; transform: translate(20%, -60%) scale(0.95) rotate(120deg); }
+    62%  { opacity: 0; transform: translate(160%, -20%) scale(0.5) rotate(620deg); }
+    100% { opacity: 0; transform: translate(160%, -20%) scale(0.5) rotate(620deg); }
+}
+.cel--blitz .cel-blitz-mark {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    margin-top: -8vh;
+    animation: cel-blitz-charge 2.6s cubic-bezier(0.3, 0, 0.2, 1) forwards;
+}
+@keyframes cel-blitz-charge {
+    0%   { opacity: 0; transform: translate(-620%, -50%) scale(1.1); }
+    18%  { opacity: 1; }
+    34%  { transform: translate(-140%, -50%) scale(1.1); }
+    44%  { transform: translate(-50%, -50%) scale(1); }
+    50%  { transform: translate(-46%, -50%) scale(1.03); }
+    56%  { transform: translate(-50%, -50%) scale(1); }
+    84%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    100% { opacity: 0; transform: translate(-50%, -50%) scale(1.1); }
+}
+
+/* Raked speed lines behind the charge. */
+.cel--blitz .cel-speed {
+    position: absolute;
+    top: 50%;
+    left: -30%;
+    width: 160%;
+    height: clamp(150px, 22vh, 240px);
+    margin-top: -8vh;
+    transform: translateY(-50%) rotate(var(--cel-rake));
+    background: repeating-linear-gradient(90deg,
+        var(--cel-team-a55) 0px,
+        var(--cel-team-a55) 3px,
+        transparent 3px,
+        transparent 46px);
+    opacity: 0;
+    animation: cel-speed 2.6s cubic-bezier(0.3, 0, 0.2, 1) forwards;
+}
+@keyframes cel-speed {
+    0%   { opacity: 0; transform: translateY(-50%) rotate(var(--cel-rake)) translateX(-14vw); }
+    16%  { opacity: 0.85; }
+    44%  { opacity: 0.25; transform: translateY(-50%) rotate(var(--cel-rake)) translateX(4vw); }
+    100% { opacity: 0; transform: translateY(-50%) rotate(var(--cel-rake)) translateX(8vw); }
+}
+
+.cel--blitz .cel-blitz-copy {
+    position: absolute;
+    top: 62vh;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    opacity: 0;
+    animation: cel-word-slam 1.35s cubic-bezier(0.16, 1, 0.3, 1) 1.05s forwards;
+}
+.cel--blitz .cel-blitz-copy .cel-name {
+    font-size: clamp(1.6rem, 3vw, 2.6rem);
+    margin-top: 0.6rem;
+}
+
+/* ============================================================
+   6 — Field Goal : a launch with distance
+   ============================================================ */
+
+.cel--fieldgoal .cel-posts {
+    position: absolute;
+    top: 4vh;
+    left: 50%;
+    width: clamp(220px, 26vw, 380px);
+    height: 34vh;
+    margin-left: calc(clamp(220px, 26vw, 380px) / -2);
+    animation: cel-posts-drop 2.6s cubic-bezier(0.34, 1.4, 0.5, 1) forwards;
+}
+@keyframes cel-posts-drop {
+    0%   { opacity: 0; transform: translateY(-46vh); }
+    22%  { opacity: 1; transform: translateY(0); }
+    84%  { opacity: 1; transform: translateY(0); }
+    100% { opacity: 0; transform: translateY(-8vh); }
+}
+.cel--fieldgoal .cel-post-bar,
+.cel--fieldgoal .cel-post-up {
+    position: absolute;
+    background: var(--cel-team);
+    box-shadow: 0 0 22px var(--cel-team-a60);
+}
+.cel--fieldgoal .cel-post-bar {
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 10px;
+    border-radius: 5px;
+}
+.cel--fieldgoal .cel-post-up {
+    bottom: 0;
+    width: 10px;
+    height: 100%;
+    border-radius: 5px;
+}
+.cel--fieldgoal .cel-post-up--l { left: 0; }
+.cel--fieldgoal .cel-post-up--r { right: 0; }
+
+/* Ball leaves the bottom of the screen and shrinks with distance. */
+.cel--fieldgoal .cel-fg-face {
+    position: absolute;
+    bottom: -18vh;
+    left: 50%;
+    animation: cel-fg-kick 2.6s cubic-bezier(0.15, 0.6, 0.35, 1) 0.28s forwards;
+}
+@keyframes cel-fg-kick {
+    0%   { opacity: 0; transform: translateX(-50%) translateY(0) rotate(0deg) scale(1); }
+    10%  { opacity: 1; }
+    62%  { opacity: 1; transform: translateX(-50%) translateY(-92vh) rotate(760deg) scale(0.34); }
+    100% { opacity: 0; transform: translateX(-50%) translateY(-104vh) rotate(900deg) scale(0.28); }
+}
+
+.cel--fieldgoal .cel-fg-copy {
+    position: absolute;
+    top: 52vh;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    opacity: 0;
+    animation: cel-word-slam 1.4s cubic-bezier(0.16, 1, 0.3, 1) 1.15s forwards;
+}
+.cel--fieldgoal .cel-fg-copy .cel-name {
+    font-size: clamp(1.6rem, 3vw, 2.6rem);
+    margin-top: 0.6rem;
+}
+
+/* ============================================================
+   Board shake — applied to #draft-app, not the stage, or the graphic
+   would shake along with it and the hit would read as a wobble.
+   ============================================================ */
+
+@keyframes cel-board-shake {
+    0%, 100% { transform: translate(0, 0); }
+    15%  { transform: translate(-4px, 2px); }
+    30%  { transform: translate(4px, -2px); }
+    45%  { transform: translate(-3px, -2px); }
+    60%  { transform: translate(3px, 2px); }
+    80%  { transform: translate(-1px, 0); }
+}
+.cel-board-shake {
+    animation: cel-board-shake 0.26s ease-out;
+}
+
+/* ============================================================
+   Toggle button in the board header
+   ============================================================ */
+
+.cel-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 9999px;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    background: rgba(15, 23, 42, 0.6);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #94a3b8;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.cel-toggle:hover {
+    color: #e2e8f0;
+    border-color: rgba(148, 163, 184, 0.45);
+}
+.cel-toggle:focus-visible {
+    outline: 2px solid #d47a1e;
+    outline-offset: 2px;
+}
+.cel-toggle[aria-pressed="true"] {
+    color: #e8b87a;
+    border-color: rgba(212, 122, 30, 0.5);
+    background: rgba(212, 122, 30, 0.12);
+}
+
+/* ============================================================
+   Reduced motion — the JS bails before building a stage, so this is the
+   belt to that suspenders: if anything does render, it holds still.
+   ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+    .cel-stage,
+    .cel-stage * {
+        animation: none !important;
+        transition: none !important;
+    }
+    .cel-stage { display: none; }
+    .cel-board-shake { animation: none !important; }
+}

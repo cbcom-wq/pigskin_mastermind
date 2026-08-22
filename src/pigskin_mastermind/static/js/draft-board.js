@@ -908,6 +908,13 @@ const DraftBoard = (() => {
     if (aiAdvancing) return;
     closeSpotlight();
 
+    // Grab the pool entry now — the pick removes it from available_players,
+    // and it is the fallback the celebration falls back on if the new pick
+    // cannot be located in the returned log.
+    const pickedPlayer = (state && state.available_players)
+      ? state.available_players.find(p => p.id === playerId)
+      : null;
+
     try {
       // Submit user's pick (backend does NOT auto-advance AI now)
       const resp = await fetch('/draft/pick', {
@@ -922,17 +929,29 @@ const DraftBoard = (() => {
       }
       const afterUserState = await resp.json();
 
-      // Confetti for user pick
-      fireConfetti();
+      // The entry the server just appended. Its round and pick number label the
+      // celebration, and its player object is what generateLocalCommentary
+      // needs when the server sends no commentary of its own. Found by
+      // comparing against the pre-pick log, so this must run before render().
+      const userPick = afterUserState.picks_log.find(p =>
+        !state.picks_log.some(sp => sp.pick_number === p.pick_number)
+      );
+
+      // Celebrate the user's pick. Replaced the confetti burst; fireConfetti()
+      // still runs on the draft-complete overlay, which is a separate moment
+      // and is not covered by the pick-replay toggle.
+      if (typeof DraftCelebration !== 'undefined') {
+        DraftCelebration.play(
+          (userPick && userPick.player) || pickedPlayer,
+          userPick ? { round: userPick.round, pick: userPick.pick_number } : null
+        );
+      }
 
       // Commentary from server for user pick
       if (afterUserState.commentary) {
         addCommentary(afterUserState.commentary);
-      } else {
-        const userPick = afterUserState.picks_log.find(p =>
-          !state.picks_log.some(sp => sp.pick_number === p.pick_number)
-        );
-        if (userPick) addCommentary(generateLocalCommentary(userPick));
+      } else if (userPick) {
+        addCommentary(generateLocalCommentary(userPick));
       }
 
       render(afterUserState);
@@ -991,7 +1010,8 @@ const DraftBoard = (() => {
   }
 
   // ============================================================
-  // Confetti
+  // Confetti — draft-complete only. Individual picks get the celebration
+  // graphics in static/js/draft-celebration.js instead.
   // ============================================================
   function fireConfetti() {
     const colors = ['#d47a1e','#dd9642','#22c55e','#3b82f6','#ef4444','#a78bfa','#f59e0b'];

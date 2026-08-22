@@ -57,24 +57,15 @@
 {% endblock %}
 
 {% block extra_js %}
+<script src="/static/js/nfl-team-visuals.js"></script>
 <script>
 let refreshTimer = null;
 const REFRESH_INTERVAL = 30000; // 30 seconds for live games
 
-/* ── NFL team abbreviation → emoji/color for cards ── */
-const TEAM_COLORS = {
-    ARI:'#97233F',ATL:'#A71930',BAL:'#241773',BUF:'#00338D',
-    CAR:'#0085CA',CHI:'#0B162A',CIN:'#FB4F14',CLE:'#311D00',
-    DAL:'#041E42',DEN:'#FB4F14',DET:'#0076B6',GB:'#203731',
-    HOU:'#03202F',IND:'#002C5F',JAX:'#006778',KC:'#E31837',
-    LV:'#000000',LAC:'#0080C6',LAR:'#003594',MIA:'#008E97',
-    MIN:'#4F2683',NE:'#002244',NO:'#D3BC8D',NYG:'#0B2265',
-    NYJ:'#125740',PHI:'#004C54',PIT:'#FFB612',SF:'#AA0000',
-    SEA:'#002244',TB:'#D50A0A',TEN:'#0C2340',WAS:'#773141',
-};
-
+/* Club colors live in static/js/nfl-team-visuals.js, shared with the draft
+   board's pick celebrations. */
 function teamColor(abbr) {
-    return TEAM_COLORS[abbr] || '#64748b';
+    return NFLTeamVisuals.color(abbr);
 }
 
 async function loadScoreboard() {

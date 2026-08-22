@@ -6,6 +6,11 @@
 
 {% block content %}
 <link rel="stylesheet" href="/static/css/draft.css">
+<link rel="stylesheet" href="/static/css/draft-celebration.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@800;900&family=Barlow+Semi+Condensed:wght@600&display=swap">
 
 <div id="draft-app" data-draft-id="{{ state.draft_id }}" class="space-y-3">
 
@@ -55,8 +60,11 @@
 
     <!-- Center: Draft Board Grid -->
     <div class="xl:col-span-6 draft-card flex flex-col" style="max-height: calc(100vh - 160px);">
-      <div class="px-4 py-3 draft-card-header">
+      <div class="px-4 py-3 draft-card-header flex items-center justify-between gap-2">
         <h3 class="text-sm font-bold text-slate-300">Draft Board</h3>
+        <button type="button" id="celebration-toggle" class="cel-toggle" aria-pressed="true">
+          🎬 Pick replays on
+        </button>
       </div>
       <div class="overflow-auto flex-1 p-2">
         <div id="draft-grid" class="draft-grid">
@@ -139,6 +147,8 @@
 {% endblock %}
 
 {% block extra_js %}
+<script src="/static/js/nfl-team-visuals.js?v={{ range(100000) | random }}"></script>
+<script src="/static/js/draft-celebration.js?v={{ range(100000) | random }}"></script>
 <script src="/static/js/draft-board.js?v={{ range(100000) | random }}"></script>
 <script>
   // Apply dark theme to body and collapse sidebar for full-width board
