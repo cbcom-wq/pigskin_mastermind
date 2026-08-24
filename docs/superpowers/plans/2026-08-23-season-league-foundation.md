@@ -1220,10 +1220,14 @@ def round_robin_pairings(num_teams: int) -> List[List[Tuple[int, int]]]:
         pairs: List[Tuple[int, int]] = []
         for i in range(num_teams // 2):
             a, b = order[i], order[num_teams - 1 - i]
-            if (round_index + i) % 2 == 0:
-                pairs.append((a, b))
-            else:
-                pairs.append((b, a))
+            # The fixed team sits at position 0 every round, so its venue can
+            # only be balanced by alternating on round parity. Every other
+            # pairing rotates through positions, so position parity balances
+            # it. Deciding both with one combined `(round + i) % 2` test looks
+            # tidier and is badly wrong: it leaves one team in a 10-team
+            # league with zero home games across a full rotation.
+            home_first = (round_index % 2 == 0) if i == 0 else (i % 2 == 1)
+            pairs.append((a, b) if home_first else (b, a))
         rounds.append(pairs)
         # Rotate everything except the fixed first position.
         order = [order[0], order[-1]] + order[1:-1]
@@ -7130,6 +7134,19 @@ def test_scoreboard_renders_matchup_points(db, league):
 def test_scoreboard_for_an_unplayed_week_is_empty_not_broken(db, league):
     response = client.get("/season/s1/scoreboard/9")
     assert response.status_code == 200
+
+
+def test_literal_routes_are_not_swallowed_by_the_league_catch_all(db, league):
+    """Registration order is load-bearing.
+
+    FastAPI matches in registration order, so `GET /season/{league_key}` must be
+    registered *after* the literal-prefix routes. Registered first, it would
+    swallow `/season/runs/5` as league_key="runs" and the agent proposal
+    endpoints would silently 404.
+    """
+    response = client.get("/season/runs/999999")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Run not found"
 ```
 
 - [ ] **Step 2: Run to verify failure**
