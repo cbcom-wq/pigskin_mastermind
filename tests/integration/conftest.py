@@ -23,7 +23,18 @@ def override_get_db():
         db.close()
 
 
-app.dependency_overrides[get_db] = override_get_db
+@pytest.fixture(autouse=True)
+def override_db_dependency():
+    """Install the test DB override for integration tests only.
+
+    Assigning this at module import leaked the override into every other test
+    module that builds a TestClient — they inherited a database whose tables
+    reset_db had already dropped. Setting and unsetting it per test keeps the
+    blast radius inside this directory.
+    """
+    app.dependency_overrides[get_db] = override_get_db
+    yield
+    app.dependency_overrides.pop(get_db, None)
 
 
 @pytest.fixture(autouse=True)
