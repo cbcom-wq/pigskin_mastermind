@@ -42,14 +42,14 @@ async def commit_draft(req: CommitDraftRequest, db: Session = Depends(get_db)):
         )
     except DraftCommitError as exc:
         db.rollback()
-        if exc.unresolved:
+        if exc.code == "unresolved":
             # 422 rather than 400: the request was well-formed, the draft
             # simply contains players this database has never seen.
             raise HTTPException(
                 status_code=422,
                 detail={"message": str(exc), "unresolved": exc.unresolved},
             )
-        if "not found" in str(exc):
+        if exc.code == "not_found":
             raise HTTPException(status_code=404, detail=str(exc))
         raise HTTPException(status_code=400, detail=str(exc))
 

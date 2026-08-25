@@ -256,6 +256,7 @@ class TestCommitRefuses:
                 draft_id, name="L", user_team_name="M", owner="B", year=YEAR,
             )
         assert len(exc.value.unresolved) == 8
+        assert exc.value.unresolved and exc.value.code == "unresolved"
 
     def test_a_precheck_rejection_writes_nothing(self, db, pool):
         state = draft_engine.create_draft(
@@ -288,3 +289,24 @@ class TestCommitRefuses:
         assert db.query(DBTeam).count() == 0
         assert db.query(DBRosterSpot).count() == 0
         assert db.query(DBMatchup).count() == 0
+
+
+class TestErrorCodes:
+    """HTTP status mapping reads `code`, never the message text."""
+
+    def test_unknown_draft_is_not_found(self, db):
+        with pytest.raises(DraftCommitError) as exc:
+            SeasonLeagueService(db).create_from_draft(
+                "no-such-draft", name="L", user_team_name="M", owner="B", year=YEAR,
+            )
+        assert exc.value.code == "not_found"
+
+    def test_incomplete_draft_is_invalid(self, db, pool):
+        state = draft_engine.create_draft(
+            num_teams=4, num_rounds=2, user_pick_position=1, player_pool=pool,
+        )
+        with pytest.raises(DraftCommitError) as exc:
+            SeasonLeagueService(db).create_from_draft(
+                state["draft_id"], name="L", user_team_name="M", owner="B", year=YEAR,
+            )
+        assert exc.value.code == "invalid"

@@ -27,13 +27,22 @@ from pigskin_mastermind.services.season_schedule import (
 class DraftCommitError(ValueError):
     """A draft cannot become a league.
 
-    Carries *unresolved* so the caller can list every unmatched player at once.
-    Reporting them one per run would make a 15-round draft unusable to fix.
+    ``code`` is what callers map to a status; the message is for humans. An
+    HTTP layer matching on message text would silently misroute the moment
+    someone rewords a string or adds a raise site.
+
+    Codes: 'not_found' | 'invalid' | 'unresolved'
     """
 
-    def __init__(self, message: str, unresolved: Optional[List[Dict[str, Any]]] = None):
+    def __init__(
+        self,
+        message: str,
+        unresolved: Optional[List[Dict[str, Any]]] = None,
+        code: str = "invalid",
+    ):
         super().__init__(message)
         self.unresolved = unresolved or []
+        self.code = code
 
 
 class SeasonLeagueService:
@@ -54,11 +63,12 @@ class SeasonLeagueService:
         """Commit a completed draft as a league. One transaction."""
         state = draft_engine.get_draft(draft_id)
         if not state:
-            raise DraftCommitError(f"Draft {draft_id} not found")
+            raise DraftCommitError(f"Draft {draft_id} not found", code="not_found")
         if state["status"] != "complete":
             raise DraftCommitError(
                 "Draft is not complete; a partial draft has unfilled rosters "
                 "and no honest way to schedule",
+                code="invalid",
             )
 
         num_teams = state["num_teams"]
@@ -67,6 +77,7 @@ class SeasonLeagueService:
                 f"A league needs an even number of teams; this draft has "
                 f"{num_teams}. A round robin over an odd count leaves one team "
                 f"idle every week.",
+                code="invalid",
             )
 
         year = year or datetime.utcnow().year
@@ -131,6 +142,7 @@ class SeasonLeagueService:
                 f"{len(unresolved)} drafted players could not be matched to the "
                 f"player database",
                 unresolved=unresolved,
+                code="unresolved",
             )
         return resolved
 
@@ -270,6 +282,7 @@ class SeasonLeagueService:
                 raise DraftCommitError(
                     f"Team in slot {slot} has {count} roster spots, "
                     f"expected {expected_spots}",
+                    code="invalid",
                 )
 
         team_ids = {t.id for t in teams.values()}
@@ -282,9 +295,10 @@ class SeasonLeagueService:
             playing: List[int] = []
             for game in games:
                 if game.home_team_id == game.away_team_id:
-                    raise DraftCommitError(f"Week {week} has a team playing itself")
+                    raise DraftCommitError(f"Week {week} has a team playing itself", code="invalid")
                 playing.extend([game.home_team_id, game.away_team_id])
             if sorted(playing) != sorted(team_ids):
                 raise DraftCommitError(
                     f"Week {week} does not have every team playing exactly once",
+                    code="invalid",
                 )
