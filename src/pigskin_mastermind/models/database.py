@@ -71,6 +71,17 @@ class DBTeam(Base):
     total_points = Column(Float, default=0.0)
     espn_team_id = Column(String, nullable=True)
     is_user_team = Column(Boolean, default=False)
+    # 'human' or 'ai'. An AI team is structurally identical to a human one —
+    # this column is the only difference, which is what lets a future human
+    # take one over.
+    manager_type = Column(String, nullable=False, default='human', server_default='human')
+    ai_strategy = Column(String, nullable=True)   # a DraftStrategy value
+    ai_profile = Column(JSON, nullable=True)      # an AIProfile dict
+    draft_slot = Column(Integer, nullable=True)   # 1-indexed pick slot
+    # Forward-compat hook for multiple human users. Nothing reads it yet and
+    # there is no users table; it exists so adding one is not a migration of
+    # every team row.
+    owner_user_id = Column(String, nullable=True)
     last_synced_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -379,6 +390,17 @@ class DBLeague(Base):
     swid = Column(String, nullable=True)
     scoring_settings = Column(JSON, nullable=True)
     roster_slots = Column(JSON, nullable=True)
+    # Season-league fields. ``kind`` discriminates: existing ESPN-synced rows
+    # default to 'espn' and none of the rest apply to them.
+    kind = Column(String, nullable=False, default='espn', server_default='espn')  # espn | season
+    status = Column(String, nullable=True)  # drafting | in_season | complete
+    current_week = Column(Integer, default=1)
+    regular_season_weeks = Column(Integer, default=14)
+    playoff_teams = Column(Integer, default=6)
+    playoff_start_week = Column(Integer, default=15)
+    # The finished picks_log, so a recap survives a server restart — the mock
+    # draft engine's state is in-memory and does not.
+    draft_snapshot = Column(JSON, nullable=True)
     last_synced_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -439,6 +461,144 @@ class DBPlayerNews(Base):
     fetched_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     player = relationship("DBPlayer", back_populates="news")
+
+
+class DBRosterSpot(Base):
+    """Who owns a player, scoped to one league.
+
+    ``DBPlayer.team_id`` is a single global FK — one player, one team, across
+    the whole application. That is fine for a single imported ESPN league and
+    impossible for a drafted league sharing the same player rows. This table
+    carries the assignment instead, so both kinds of league coexist.
+
+    ``dropped_at`` is not used in Cycle 1 (rosters are frozen after the draft)
+    but the shape is here so waivers and trades do not require migrating the
+    core relationship later.
+    """
+    __tablename__ = "roster_spots"
+    __table_args__ = (
+        # SQL cannot express "one team per player per league" with a plain
+        # unique constraint once drops exist — a dropped row must not block a
+        # re-add. The partial index is what makes it enforceable.
+        Index(
+            'uq_roster_spot_active',
+            'league_id', 'player_id',
+            unique=True,
+            sqlite_where=Column('dropped_at').is_(None),
+        ),
+        Index('ix_roster_spot_team', 'team_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    league_id = Column(Integer, ForeignKey("leagues.id"), nullable=False, index=True)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=False, index=True)
+    acquired_via = Column(String, nullable=False, default='draft')
+    acquired_at = Column(DateTime, default=datetime.utcnow)
+    dropped_at = Column(DateTime, nullable=True)
+
+
+class DBMatchup(Base):
+    """One head-to-head game. Source of truth for standings.
+
+    Team ids are nullable because playoff rows are created at league creation,
+    before anyone is seeded. That is also why the unique key is
+    ``bracket_slot`` rather than ``home_team_id``: SQLite treats every NULL as
+    distinct, so a team-keyed constraint would silently allow duplicate
+    unseeded rows in the same week.
+    """
+    __tablename__ = "matchups"
+    __table_args__ = (
+        UniqueConstraint(
+            'league_id', 'year', 'week', 'bracket_slot', name='uq_matchup_slot',
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    league_id = Column(Integer, ForeignKey("leagues.id"), nullable=False, index=True)
+    year = Column(Integer, nullable=False)
+    week = Column(Integer, nullable=False, index=True)
+    bracket_slot = Column(Integer, nullable=False, default=0)
+
+    home_team_id = Column(Integer, ForeignKey("teams.id"), nullable=True)
+    away_team_id = Column(Integer, ForeignKey("teams.id"), nullable=True)
+    home_points = Column(Float, default=0.0)
+    away_points = Column(Float, default=0.0)
+    winner_team_id = Column(Integer, ForeignKey("teams.id"), nullable=True)
+
+    is_playoff = Column(Boolean, default=False)
+    round_name = Column(String, nullable=True)
+    status = Column(String, nullable=False, default='scheduled')
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DBLineupSlot(Base):
+    """One rostered player's slot for one team-week.
+
+    Deliberately not DBWeeklyPlayerStats: that table's parent is keyed
+    ``(team_id, week)`` with no year, and espn_sync rewrites those rows
+    wholesale on every sync. A season league's lineup history must not be
+    destroyable by an unrelated ESPN import.
+    """
+    __tablename__ = "lineup_slots"
+    __table_args__ = (
+        UniqueConstraint(
+            'team_id', 'year', 'week', 'player_id', name='uq_lineup_slot_player',
+        ),
+        Index('ix_lineup_slot_team_week', 'team_id', 'year', 'week'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
+    year = Column(Integer, nullable=False)
+    week = Column(Integer, nullable=False)
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=False, index=True)
+
+    # QB | RB | WR | TE | FLEX | K | DEF | BENCH — the vocabulary in
+    # services/mock_draft.py DEFAULT_LINEUP_SLOTS.
+    slot = Column(String, nullable=False)
+
+    # Kickoff of this player's game. NULL until the game starts.
+    locked_at = Column(DateTime, nullable=True)
+    set_by = Column(String, nullable=False, default='auto')  # user|auto|ai|agent
+
+    projected_points = Column(Float, default=0.0)
+    actual_points = Column(Float, default=0.0)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DBManagerRun(Base):
+    """One invocation of the Claude team-manager agent.
+
+    Exists so a proposal is reviewable and revisitable rather than a transient
+    HTTP response, and so a track record can be built over a season the way
+    agent_scoring.py does for projections.
+    """
+    __tablename__ = "manager_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    league_id = Column(Integer, ForeignKey("leagues.id"), nullable=False, index=True)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=False, index=True)
+    year = Column(Integer, nullable=False)
+    week = Column(Integer, nullable=True)
+
+    kind = Column(String, nullable=False, default='lineup')
+    # running | proposed | applied | discarded | failed
+    status = Column(String, nullable=False, default='running')
+
+    proposal = Column(JSON, nullable=True)
+    rationale = Column(String, nullable=True)
+    citations = Column(JSON, nullable=True)
+
+    model = Column(String, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+    error = Column(String, nullable=True)
 
 
 DEFAULT_SCORING_SETTINGS = {
