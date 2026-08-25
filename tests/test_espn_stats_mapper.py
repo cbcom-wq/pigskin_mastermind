@@ -136,3 +136,38 @@ class TestToInt:
 
     def test_invalid_input(self):
         assert _to_int("abc") == 0
+
+
+class TestKickingStatIds:
+    """ESPN ids from the vendored PLAYER_STATS_MAP: 74/77/80 made by distance,
+    85 missed, 86 made extra points."""
+
+    def test_field_goals_map_by_distance_bucket(self):
+        stats = map_espn_stat_ids_to_stats({80: 2, 77: 1, 74: 1})
+        assert stats == {"fg_0_39": 2, "fg_40_49": 1, "fg_50_plus": 1}
+
+    def test_missed_field_goals_and_extra_points(self):
+        stats = map_espn_stat_ids_to_stats({85: 1, 86: 3})
+        assert stats == {"fg_miss": 1, "xp": 3}
+
+
+class TestDefensiveStatIds:
+    """ESPN ids 94 TD, 95 INT, 96 fumble recovery, 98 safety, 99 sack,
+    120 points allowed."""
+
+    def test_defensive_counting_stats(self):
+        stats = map_espn_stat_ids_to_stats({99: 3, 95: 2, 96: 1, 94: 1, 98: 1})
+        assert stats == {
+            "def_sack": 3, "def_int": 2, "def_fumble_rec": 1,
+            "def_td": 1, "def_safety": 1,
+        }
+
+    def test_points_allowed_is_carried_through(self):
+        assert map_espn_stat_ids_to_stats({120: 17}) == {"pts_allowed": 17}
+
+    def test_breakdown_keys_map_too(self):
+        """Box scores sometimes arrive keyed by name rather than id."""
+        stats = map_espn_breakdown_to_stats({
+            "defensiveSacks": 2, "madeFieldGoalsFromUnder40": 1,
+        })
+        assert stats == {"def_sack": 2, "fg_0_39": 1}

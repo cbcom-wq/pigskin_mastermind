@@ -33,6 +33,21 @@ ESPN_TO_INTERNAL = {
     'lostFumbles': 'fumbles_lost',
     '2PtConversions': 'two_pt_conversions',
     'fumbleRecoveredForTD': 'rec_td',  # counted as receiving TD equivalent
+
+    # Kicking
+    'madeFieldGoalsFrom50Plus': 'fg_50_plus',
+    'madeFieldGoalsFrom40To49': 'fg_40_49',
+    'madeFieldGoalsFromUnder40': 'fg_0_39',
+    'missedFieldGoals': 'fg_miss',
+    'madeExtraPoints': 'xp',
+
+    # Team defense
+    'defensiveTouchdowns': 'def_td',
+    'defensiveInterceptions': 'def_int',
+    'defensiveFumbles': 'def_fumble_rec',
+    'defensiveSafeties': 'def_safety',
+    'defensiveSacks': 'def_sack',
+    'defensivePointsAllowed': 'pts_allowed',
 }
 
 # ESPN numeric stat IDs (from PLAYER_STATS_MAP) to our internal field names.
@@ -56,6 +71,23 @@ ESPN_STAT_ID_TO_INTERNAL = {
     62: 'two_pt_conversions',
     68: 'fumbles',
     72: 'fumbles_lost',
+
+    # Kicking. ESPN splits made field goals into distance buckets, which is
+    # exactly the granularity scoring needs — a 52-yarder is worth more than
+    # a 21-yarder, so a single 'fg' key would lose the distinction.
+    74: 'fg_50_plus',   # madeFieldGoalsFrom50Plus
+    77: 'fg_40_49',     # madeFieldGoalsFrom40To49
+    80: 'fg_0_39',      # madeFieldGoalsFromUnder40
+    85: 'fg_miss',      # missedFieldGoals
+    86: 'xp',           # madeExtraPoints
+
+    # Team defense.
+    94: 'def_td',           # defensiveTouchdowns
+    95: 'def_int',          # defensiveInterceptions
+    96: 'def_fumble_rec',   # defensiveFumbles (recoveries)
+    98: 'def_safety',       # defensiveSafeties
+    99: 'def_sack',         # defensiveSacks
+    120: 'pts_allowed',     # defensivePointsAllowed
 }
 
 
