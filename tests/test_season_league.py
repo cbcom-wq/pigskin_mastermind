@@ -257,7 +257,7 @@ class TestCommitRefuses:
             )
         assert len(exc.value.unresolved) == 8
 
-    def test_a_rejected_commit_leaves_no_partial_league(self, db, pool):
+    def test_a_precheck_rejection_writes_nothing(self, db, pool):
         state = draft_engine.create_draft(
             num_teams=4, num_rounds=2, user_pick_position=1, player_pool=pool,
         )
@@ -267,3 +267,24 @@ class TestCommitRefuses:
             )
         assert db.query(DBLeague).count() == 0
         assert db.query(DBTeam).count() == 0
+
+    def test_a_failure_after_writing_rolls_everything_back(self, db, finished_draft, monkeypatch):
+        """The guarantee that matters: _assert_invariants fires only after
+        teams, roster spots and the schedule have all been flushed, so its
+        failure path is the one that proves the transaction is real."""
+        service = SeasonLeagueService(db)
+
+        def boom(*_args, **_kwargs):
+            raise DraftCommitError("invariant violated after writes")
+
+        monkeypatch.setattr(service, "_assert_invariants", boom)
+
+        with pytest.raises(DraftCommitError, match="after writes"):
+            service.create_from_draft(
+                finished_draft, name="L", user_team_name="M", owner="B", year=YEAR,
+            )
+
+        assert db.query(DBLeague).count() == 0
+        assert db.query(DBTeam).count() == 0
+        assert db.query(DBRosterSpot).count() == 0
+        assert db.query(DBMatchup).count() == 0

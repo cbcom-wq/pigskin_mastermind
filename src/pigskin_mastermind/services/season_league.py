@@ -72,12 +72,19 @@ class SeasonLeagueService:
         year = year or datetime.utcnow().year
         resolved = self._resolve_rosters(state)
 
-        league = self._create_league(state, name, year)
-        teams = self._create_teams(state, league, user_team_name, owner)
-        self._create_roster_spots(league, teams, resolved)
-        self._create_schedule(state, league, teams, year)
+        # Everything below writes. A failure past this point must leave the
+        # database exactly as it found it -- the caller owning the session is
+        # not a guarantee, it is a coincidence.
+        try:
+            league = self._create_league(state, name, year)
+            teams = self._create_teams(state, league, user_team_name, owner)
+            self._create_roster_spots(league, teams, resolved)
+            self._create_schedule(state, league, teams, year)
+            self._assert_invariants(state, league, teams)
+        except Exception:
+            self.db.rollback()
+            raise
 
-        self._assert_invariants(state, league, teams)
         self.db.commit()
         return league
 
