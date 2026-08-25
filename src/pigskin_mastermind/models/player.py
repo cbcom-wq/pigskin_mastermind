@@ -59,24 +59,21 @@ class Player:
     def calculate_points(self, scoring_settings: Optional[Dict[str, float]] = None) -> float:
         """
         Calculate fantasy points based on stats and scoring settings.
-        
+
         Args:
             scoring_settings: Dictionary of scoring rules (e.g., {'pass_td': 4, 'rush_td': 6})
-            
+
         Returns:
             Calculated fantasy points
         """
+        from pigskin_mastermind.services.scoring import score_stat_line
+
         if scoring_settings is None:
             from pigskin_mastermind.models.database import DEFAULT_SCORING_SETTINGS
             scoring_settings = DEFAULT_SCORING_SETTINGS
-        
-        points = 0.0
-        for stat, value in self.stats.items():
-            if stat in scoring_settings:
-                points += value * scoring_settings[stat]
-        
-        self.actual_points = points
-        return points
+
+        self.actual_points = score_stat_line(self.stats, scoring_settings)
+        return self.actual_points
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert player to dictionary representation."""

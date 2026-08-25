@@ -442,6 +442,7 @@ class DBPlayerNews(Base):
 
 
 DEFAULT_SCORING_SETTINGS = {
+    # Offense — unchanged, 0.5 PPR
     "pass_yd": 0.04,
     "pass_td": 4,
     "pass_int": -2,
@@ -452,6 +453,22 @@ DEFAULT_SCORING_SETTINGS = {
     "rec_td": 6,
     "fumbles_lost": -2,
     "two_pt": 2,
+
+    # Kicking. Field goals score by distance, which is why one ``fg`` key
+    # would not do — a 52-yarder and a 21-yarder are not worth the same.
+    "xp": 1,
+    "fg_0_39": 3,
+    "fg_40_49": 4,
+    "fg_50_plus": 5,
+    "fg_miss": -1,
+
+    # Team defense. ``pts_allowed`` is deliberately absent here: it is a tier
+    # table, not a multiplier, and lives in services/scoring.py.
+    "def_sack": 1,
+    "def_int": 2,
+    "def_fumble_rec": 2,
+    "def_td": 6,
+    "def_safety": 2,
 }
 
 
