@@ -453,6 +453,7 @@ DEFAULT_SCORING_SETTINGS = {
     "rec_td": 6,
     "fumbles_lost": -2,
     "two_pt": 2,
+    "two_pt_conversions": 2,  # ESPN mappers emit this key; both names must exist or 2PT scores zero
 
     # Kicking. Field goals score by distance, which is why one ``fg`` key
     # would not do — a 52-yarder and a 21-yarder are not worth the same.

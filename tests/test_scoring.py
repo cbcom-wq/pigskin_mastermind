@@ -74,3 +74,12 @@ def test_custom_tiers_are_honoured():
 def test_default_tiers_are_exposed_for_league_customisation():
     assert DEFAULT_PTS_ALLOWED_TIERS[0] == (0, 10.0)
     assert len(DEFAULT_PTS_ALLOWED_TIERS) == 6
+
+
+def test_two_point_conversions_score_from_the_espn_mapper_key():
+    """The mappers emit `two_pt_conversions`; a settings table that only knows
+    `two_pt` silently scores every 2PT as zero."""
+    from pigskin_mastermind.services.espn_stats_mapper import map_espn_stat_ids_to_stats
+    stats = map_espn_stat_ids_to_stats({19: 2})
+    assert stats == {"two_pt_conversions": 2}
+    assert score_stat_line(stats, DEFAULT_SCORING_SETTINGS) == pytest.approx(4.0)
