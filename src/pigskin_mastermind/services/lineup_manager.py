@@ -13,7 +13,7 @@ reproduce, argue with, or trust a bad week.
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, FrozenSet, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -76,6 +76,16 @@ def _starter_slots(roster_slots: Dict[str, int]) -> Dict[str, int]:
     }
 
 
+def _rank_key(candidate: Dict[str, Any]) -> tuple:
+    """Total order: points descending, then player id.
+
+    The id term is not decoration. Without it the order depends on however the
+    roster query happened to return rows, and the AI's lineup stops being
+    reproducible.
+    """
+    return (-candidate["points"], candidate["player"].id)
+
+
 def plan_lineup(
     db: Session,
     team: DBTeam,
@@ -87,7 +97,9 @@ def plan_lineup(
     """Best legal lineup for *team* in *week*, as of *now*."""
     if league is None:
         league = db.query(DBLeague).filter_by(league_id=team.league_id).first()
-    roster_slots = (league.roster_slots if league else None) or dict(DEFAULT_LINEUP_SLOTS)
+    roster_slots = (
+        (league.roster_slots if league else None) or dict(DEFAULT_LINEUP_SLOTS)
+    )
 
     players = (
         db.query(DBPlayer)
@@ -142,17 +154,25 @@ def plan_lineup(
         })
 
     # Stable and total: ties break on player id, never on iteration order.
-    candidates.sort(key=lambda c: (-c["points"], c["player"].id))
+    candidates.sort(key=_rank_key)
 
     assigned: Dict[int, str] = {}
     remaining = dict(_starter_slots(roster_slots))
     flex_remaining = roster_slots.get(FLEX_SLOT, 0)
 
-    # Locked players hold whatever slot they were in and consume its capacity.
+    # Locked players who already occupy a slot cannot be moved out of it, and
+    # that slot's capacity is spent whether or not anyone else wants it. A
+    # locked player with NO prior row is a different case: there is no
+    # placement to preserve, so they fall through to the normal assignment
+    # loops below. Defaulting them to BENCH here would strand them there --
+    # on a cold start after kickoff (exactly what the auto-fill fallback
+    # does) that benches the entire roster for a zero.
     for candidate in candidates:
         if not candidate["locked"]:
             continue
-        slot = existing.get(candidate["player"].id, BENCH_SLOT)
+        slot = existing.get(candidate["player"].id)
+        if slot is None:
+            continue
         assigned[candidate["player"].id] = slot
         if slot == FLEX_SLOT:
             flex_remaining = max(0, flex_remaining - 1)
@@ -202,7 +222,6 @@ def plan_lineup(
 
 def apply_plan(db: Session, plan: LineupPlan, set_by: str) -> int:
     """Persist *plan* as ``DBLineupSlot`` rows. Returns rows written."""
-    team = db.query(DBTeam).filter_by(id=plan.team_id).one()
     locks = LockIndex(db)
 
     existing = {

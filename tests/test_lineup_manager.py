@@ -5,6 +5,7 @@ from the same roster every time, or nobody can reproduce a bad week.
 """
 
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine
@@ -16,7 +17,7 @@ from pigskin_mastermind.models.database import (
     DBRosterSpot, DBTeam,
 )
 from pigskin_mastermind.services.lineup_manager import (
-    apply_plan, plan_lineup,
+    _rank_key, apply_plan, plan_lineup,
 )
 
 test_engine = create_engine(
@@ -175,6 +176,32 @@ class TestDeterminism:
         assert starter == min(a.id, b.id)
 
 
+class TestRankKey:
+    """Unit-tests the sort key directly, with stub candidates whose input
+    order the test genuinely controls. A DB-backed test can pass even
+    without an id tiebreak, because SQLite happens to return rows in
+    ascending-id order and Python's sort is stable — this does not.
+    """
+
+    def test_ties_sort_by_id_ascending_regardless_of_input_order(self):
+        shuffled_ids = [40, 10, 30, 50, 20]
+        candidates = [
+            {"points": 10.0, "player": SimpleNamespace(id=pid)}
+            for pid in shuffled_ids
+        ]
+        ordered = sorted(candidates, key=_rank_key)
+        assert [c["player"].id for c in ordered] == [10, 20, 30, 40, 50]
+
+    def test_higher_points_always_sorts_before_lower_points(self):
+        candidates = [
+            {"points": 5.0, "player": SimpleNamespace(id=1)},
+            {"points": 25.0, "player": SimpleNamespace(id=99)},
+            {"points": 15.0, "player": SimpleNamespace(id=2)},
+        ]
+        ordered = sorted(candidates, key=_rank_key)
+        assert [c["player"].id for c in ordered] == [99, 2, 1]
+
+
 class TestByesAndInjuries:
     def test_a_player_on_bye_is_benched(self, db, team, league, full_roster):
         """DAL has no week 5 game in the fixture schedule."""
@@ -252,6 +279,39 @@ class TestLocks:
         better = add_player(db, league, team, "LateRB", "RB", "BUF", 40.0)
         plan = plan_lineup(db, team, YEAR, WEEK, BEFORE, league=league)
         assert slot_of(plan, better) == "RB"
+
+
+class TestColdStartAfterKickoff:
+    """The auto-fill fallback runs AT first kickoff, when Thursday players are
+    already locked. A locked player with no prior row has no placement to
+    preserve and must be assignable."""
+
+    def test_a_locked_player_with_no_prior_row_still_fills_his_slot(
+        self, db, team, league, full_roster,
+    ):
+        plan = plan_lineup(db, team, YEAR, WEEK, AFTER, league=league)
+        assert slot_of(plan, full_roster["qb"]) == "QB"
+        assert plan.projected_total > 0
+
+    def test_cold_start_after_kickoff_fills_every_required_slot(
+        self, db, team, league, full_roster,
+    ):
+        plan = plan_lineup(db, team, YEAR, WEEK, AFTER, league=league)
+        starters = sorted(d.slot for d in plan.starters())
+        assert starters == sorted(
+            ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "K", "DEF"]
+        )
+
+    def test_a_locked_player_already_placed_still_cannot_move(
+        self, db, team, league, full_roster,
+    ):
+        """The anti-move rule must survive the fix."""
+        apply_plan(db, plan_lineup(db, team, YEAR, WEEK, BEFORE, league=league),
+                   set_by="auto")
+        better = add_player(db, league, team, "LateRB", "RB", "BUF", 40.0)
+        plan = plan_lineup(db, team, YEAR, WEEK, AFTER, league=league)
+        assert slot_of(plan, full_roster["rb1"]) == "RB"
+        assert slot_of(plan, better) == "BENCH"
 
 
 class TestApplyPlan:
