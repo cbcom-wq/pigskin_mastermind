@@ -870,6 +870,53 @@ a.rc-card-name:hover { color: var(--leather); text-decoration: underline; }
 .rc-btn-solid { background: var(--leather); color: #fff; }
 .rc-btn-solid:hover { background: #c46316; }
 
+.rc-commit {
+  max-width: 34rem;
+  margin: 0 auto 1.5rem;
+  padding: 1.25rem 1.5rem;
+  border-radius: 0.85rem;
+  background: var(--booth-soft);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  text-align: center;
+}
+
+.rc-commit-title {
+  font-family: var(--display);
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #fff;
+}
+
+.rc-commit-copy {
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--dim);
+}
+
+.rc-commit-row {
+  margin-top: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: center;
+}
+
+.rc-commit-input {
+  flex: 1 1 12rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.6rem;
+  border: 1px solid #334155;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 0.8rem;
+}
+
+.rc-commit-error {
+  margin-top: 0.75rem;
+  font-size: 0.78rem;
+  color: var(--loss);
+}
+
 .rc :is(a, button):focus-visible {
   outline: 3px solid var(--leather);
   outline-offset: 2px;

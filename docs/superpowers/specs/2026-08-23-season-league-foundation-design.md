@@ -428,8 +428,10 @@ start/sit, never a roster escape.
 Templates under `templates/season/`, with `_proposal.html` as the HTMX fragment. Sidebar gains a
 Season entry.
 
-**CLI** — a `pigskin season` group: `create-from-draft`, `evidence`, `propose-lineup`, `set-lineup`,
-`refresh`, `settle`, `standings`.
+**CLI** — a `pigskin season` group: `evidence`, `propose-lineup`, `set-lineup`,
+`refresh`, `settle`, `standings`. There is deliberately no `create-from-draft`:
+`draft_engine` is an in-process singleton, so a draft created by the web server
+does not exist in a CLI process. Committing is web-only.
 
 ---
 

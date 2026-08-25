@@ -78,6 +78,25 @@
           </div>
         </div>
 
+        <!-- Play for real -->
+        <div class="rounded-xl border border-slate-600/30 bg-slate-800/30 p-4 space-y-3">
+          <label class="flex items-center gap-2 cursor-pointer select-none">
+            <input type="checkbox" id="play-for-real" onchange="onPlayForRealToggle()"
+                   class="text-pigskin-500 bg-slate-700 border-slate-600 rounded">
+            <span class="text-sm font-medium text-slate-200">Play for real</span>
+          </label>
+          <p class="text-xs text-slate-500">
+            Save this draft as a season league when it finishes. Other teams become AI
+            managers and play you week to week.
+          </p>
+          <div id="real-league-fields" class="hidden space-y-2">
+            <input type="text" id="league-name" placeholder="League name"
+                   class="w-full bg-slate-800/80 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-pigskin-500 focus:border-transparent">
+            <input type="text" id="user-team-name" placeholder="Your team name"
+                   class="w-full bg-slate-800/80 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-pigskin-500 focus:border-transparent">
+          </div>
+        </div>
+
         <!-- Player pool source -->
         <div class="rounded-xl border border-slate-600/30 bg-slate-800/30 p-4 space-y-3">
           <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Player Pool</p>
@@ -386,6 +405,11 @@
   function onRandomSlotToggle() {
     if (document.getElementById('random-user-slot').checked) rollUserSlot();
     else onSettingsChange();
+  }
+
+  function onPlayForRealToggle() {
+    document.getElementById('real-league-fields')
+      .classList.toggle('hidden', !document.getElementById('play-for-real').checked);
   }
 
   function onSettingsChange() {

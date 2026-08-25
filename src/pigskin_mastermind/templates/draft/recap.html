@@ -378,6 +378,22 @@
     </div>
   </section>
 
+  <section class="rc-commit">
+    <h3 class="rc-commit-title">Make this a real league</h3>
+    <p class="rc-commit-copy">
+      Save these rosters, turn the other teams into AI managers, and play the season.
+    </p>
+    <div class="rc-commit-row">
+      <input type="text" id="commit-league-name" placeholder="League name" class="rc-commit-input">
+      <input type="text" id="commit-team-name" placeholder="Your team name" class="rc-commit-input">
+      <button type="button" id="commit-league-btn" class="rc-btn rc-btn-solid"
+              data-draft-id="{{ recap.draft_id }}">
+        Create league
+      </button>
+    </div>
+    <p id="commit-error" class="rc-commit-error" hidden></p>
+  </section>
+
   <div class="rc-actions">
     <a class="rc-btn rc-btn-ghost" href="/draft/board/{{ recap.draft_id }}">Back to the board</a>
     <a class="rc-btn rc-btn-solid" href="/draft">Draft another team</a>

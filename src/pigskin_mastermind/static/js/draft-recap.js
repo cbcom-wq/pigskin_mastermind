@@ -101,4 +101,48 @@
   document.querySelectorAll('.rc-sim').forEach(function (button) {
     button.addEventListener('click', function () { simulate(button); });
   });
+
+  // ── Commit to a season league ────────────────────────────────────────
+  var commitBtn = document.getElementById('commit-league-btn');
+  if (commitBtn) {
+    commitBtn.addEventListener('click', async function () {
+      var errorEl = document.getElementById('commit-error');
+      errorEl.hidden = true;
+      var label = commitBtn.textContent;
+      commitBtn.disabled = true;
+      commitBtn.textContent = 'Creating…';
+
+      try {
+        var response = await fetch('/season/commit-draft', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            draft_id: commitBtn.dataset.draftId,
+            name: document.getElementById('commit-league-name').value || 'My League',
+            user_team_name: document.getElementById('commit-team-name').value || 'My Team',
+          }),
+        });
+        var body = await response.json();
+
+        if (response.ok) {
+          window.location.href = body.redirect_url;
+          return;
+        }
+
+        var detail = body.detail;
+        errorEl.textContent = typeof detail === 'string'
+          ? detail
+          : detail.message + ': ' + detail.unresolved.map(function (u) { return u.name; }).join(', ');
+        errorEl.hidden = false;
+      } catch (err) {
+        errorEl.textContent = "Couldn't reach the server.";
+        errorEl.hidden = false;
+      } finally {
+        if (commitBtn.isConnected) {
+          commitBtn.disabled = false;
+          commitBtn.textContent = label;
+        }
+      }
+    });
+  }
 })();
