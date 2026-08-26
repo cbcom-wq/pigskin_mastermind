@@ -3,7 +3,7 @@
 from datetime import datetime
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -116,6 +116,36 @@ class TestSetAiLineups:
         assert result["skipped"] == 1
         assert result["teams"] == 0
 
+    def test_one_failing_team_does_not_abort_the_league(self, db, league, monkeypatch):
+        """The failure mode this try/except exists for. Without db.rollback(),
+        the next team's plan_lineup raises PendingRollbackError and every
+        remaining team is silently abandoned. We simulate a failed commit by
+        injecting an exception into the session after a successful apply."""
+        import pigskin_mastermind.services.ai_manager as ai
+
+        first = make_team(db, league, "BotA", "ai", 1)
+        second = make_team(db, league, "BotB", "ai", 2)
+
+        real_apply = ai.apply_plan
+        apply_calls = {"n": 0}
+
+        def flaky_apply(db_, plan, set_by):
+            apply_calls["n"] += 1
+            if plan.team_id == first.id:
+                real_apply(db_, plan, set_by)
+                db_.execute(text("INSERT INTO players VALUES (9999, 'bad', 'QB', NULL)"))
+                db_.commit()
+            return real_apply(db_, plan, set_by)
+
+        monkeypatch.setattr(ai, "apply_plan", flaky_apply)
+
+        result = set_ai_lineups(db, league, WEEK, BEFORE)
+
+        assert apply_calls["n"] == 2, "loop must attempt both teams"
+        assert result["skipped"] == 1
+        assert result["teams"] == 1
+        assert db.query(DBLineupSlot).filter_by(team_id=second.id).count() == 3
+
 
 class TestAutofill:
     def test_fills_a_team_with_no_lineup_at_all(self, db, league):
@@ -146,3 +176,17 @@ class TestAutofill:
         make_team(db, league, "Bot", "ai", 1)
         result = autofill_missing_lineups(db, league, WEEK, BEFORE)
         assert result["teams"] == 1
+
+    def test_autofill_is_scoped_to_the_target_week(self, db, league):
+        """Rows for another week must not make a team look already-set."""
+        team = make_team(db, league, "Human", "human", 2)
+        player = db.query(DBPlayer).filter_by(name="Human0").one()
+        db.add(DBLineupSlot(team_id=team.id, year=YEAR, week=WEEK + 1,
+                            player_id=player.id, slot="QB", set_by="user"))
+        db.commit()
+
+        result = autofill_missing_lineups(db, league, WEEK, BEFORE)
+
+        assert result["teams"] == 1
+        assert db.query(DBLineupSlot).filter_by(team_id=team.id, week=WEEK).count() == 3
+        assert db.query(DBLineupSlot).filter_by(team_id=team.id, week=WEEK + 1).count() == 1

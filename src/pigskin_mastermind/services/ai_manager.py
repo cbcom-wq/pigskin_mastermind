@@ -33,15 +33,23 @@ def _set_for_teams(
     handled = 0
     skipped = 0
     for team in teams:
-        plan = plan_lineup(db, team, league.year, week, now, league=league)
-        if not plan.decisions:
-            skipped += 1
-            continue
         try:
+            plan = plan_lineup(db, team, league.year, week, now, league=league)
+            if not plan.decisions:
+                skipped += 1
+                continue
             apply_plan(db, plan, set_by=set_by)
         except Exception:
             # One bad team must not stop the rest of the league from being set.
-            logger.exception("Lineup apply failed for team %s week %s", team.id, week)
+            # The rollback is load-bearing: apply_plan commits internally, and a
+            # failed commit leaves the session needing rollback -- without this,
+            # the NEXT team's plan_lineup raises PendingRollbackError and the
+            # loop dies uncounted, which is precisely what this block exists to
+            # prevent.
+            logger.exception(
+                "Lineup set failed for team %s week %s", team.id, week,
+            )
+            db.rollback()
             skipped += 1
             continue
         handled += 1
