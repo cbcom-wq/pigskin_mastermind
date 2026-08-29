@@ -1,5 +1,9 @@
 """FastAPI application entry point for Pigskin Mastermind."""
 
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -10,10 +14,39 @@ import os
 from pigskin_mastermind.api.database import get_db, engine
 from pigskin_mastermind.models.database import DBTeam, DBPlayer, DBLeague, Base
 
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Run the season scheduler for the life of the process.
+
+    Imported lazily so that merely importing this module (the CLI and the test
+    suite both do) never pulls in the scheduler's dependency tree.
+    """
+    from pigskin_mastermind.services.season_scheduler import run_scheduler
+
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(run_scheduler(stop_event))
+    try:
+        yield
+    finally:
+        # Ask it to stop first; cancel only forces the point if it is mid-sleep.
+        stop_event.set()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Season scheduler failed on shutdown")
+
+
 app = FastAPI(
     title="Pigskin Mastermind",
     description="Fantasy Football Management Application",
-    version="0.1.0"
+    version="0.1.0",
+    lifespan=lifespan,
 )
 
 # Get template and static directories

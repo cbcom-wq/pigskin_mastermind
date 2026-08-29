@@ -53,3 +53,7 @@ pigskin_mastermind.db
 
 # Electron desktop wrapper
 desktop/node_modules/
+
+# SQLite WAL sidecars (WAL enabled in api/database.py)
+*.db-wal
+*.db-shm
