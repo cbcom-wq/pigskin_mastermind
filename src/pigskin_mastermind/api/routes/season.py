@@ -14,7 +14,9 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.api.database import get_db
-from pigskin_mastermind.models.database import DBLeague, DBManagerRun, DBTeam
+from pigskin_mastermind.models.database import (
+    DBLeague, DBManagerRun, DBMatchup, DBTeam,
+)
 from pigskin_mastermind.services.season_agent import (
     LineupRejected, apply_proposal, run_agent_subprocess, start_manager_run,
 )
@@ -138,3 +140,73 @@ async def discard_run(run_id: int, db: Session = Depends(get_db)):
         run.status = "discarded"
         db.commit()
     return {"run_id": run.id, "status": run.status}
+
+
+def _standings(db: Session, league_key: str):
+    teams = db.query(DBTeam).filter_by(league_id=league_key).all()
+    return sorted(
+        teams, key=lambda t: (-(t.wins or 0), -(t.total_points or 0.0), t.id),
+    )
+
+
+# NOTE (Ruling P2): `/{league_key}` is a CATCH-ALL. Everything with a literal
+# first segment — `/commit-draft`, `/runs/...` — must already be registered
+# above this point, or FastAPI will match this route first and read the literal
+# as a league key. tests/integration/test_api_season_pages.py has a regression
+# test for exactly that. Add new literal routes ABOVE, never below.
+@router.get("/{league_key}")
+async def league_home(
+    request: Request, league_key: str, db: Session = Depends(get_db),
+):
+    """Standings and the current week's matchups."""
+    from pigskin_mastermind.api.main import templates
+
+    league = db.query(DBLeague).filter_by(league_id=league_key).first()
+    if league is None:
+        raise HTTPException(status_code=404, detail="League not found")
+
+    week = league.current_week or 1
+    matchups = (
+        db.query(DBMatchup)
+        .filter_by(league_id=league.id, year=league.year, week=week)
+        .order_by(DBMatchup.bracket_slot)
+        .all()
+    )
+    teams = {t.id: t for t in db.query(DBTeam).filter_by(league_id=league_key)}
+
+    return templates.TemplateResponse(
+        "season/detail.html",
+        {
+            "request": request, "league": league, "week": week,
+            "standings": _standings(db, league_key),
+            "matchups": matchups, "teams": teams,
+        },
+    )
+
+
+@router.get("/{league_key}/scoreboard/{week}")
+async def scoreboard(
+    request: Request, league_key: str, week: int, db: Session = Depends(get_db),
+):
+    """Every matchup in one week, with live points."""
+    from pigskin_mastermind.api.main import templates
+
+    league = db.query(DBLeague).filter_by(league_id=league_key).first()
+    if league is None:
+        raise HTTPException(status_code=404, detail="League not found")
+
+    matchups = (
+        db.query(DBMatchup)
+        .filter_by(league_id=league.id, year=league.year, week=week)
+        .order_by(DBMatchup.bracket_slot)
+        .all()
+    )
+    teams = {t.id: t for t in db.query(DBTeam).filter_by(league_id=league_key)}
+
+    return templates.TemplateResponse(
+        "season/scoreboard.html",
+        {
+            "request": request, "league": league, "week": week,
+            "matchups": matchups, "teams": teams,
+        },
+    )
