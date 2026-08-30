@@ -7,12 +7,17 @@ other process.
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import (
+    APIRouter, BackgroundTasks, Depends, HTTPException, Request,
+)
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.api.database import get_db
-from pigskin_mastermind.models.database import DBTeam
+from pigskin_mastermind.models.database import DBLeague, DBManagerRun, DBTeam
+from pigskin_mastermind.services.season_agent import (
+    LineupRejected, apply_proposal, run_agent_subprocess, start_manager_run,
+)
 from pigskin_mastermind.services.season_league import (
     DraftCommitError, SeasonLeagueService,
 )
@@ -60,3 +65,76 @@ async def commit_draft(req: CommitDraftRequest, db: Session = Depends(get_db)):
         "teams": team_count,
         "redirect_url": f"/season/{league.league_id}",
     }
+
+
+# NOTE (Ruling P2): every route below is literal-prefixed (`/runs/...`) or has
+# a literal first segment. They MUST stay registered ahead of the catch-all
+# `GET /{league_key}` — FastAPI matches in registration order, so a
+# `/{league_key}` declared earlier would swallow `/season/runs/5` as
+# league_key="runs".
+@router.post("/{league_key}/teams/{team_id}/manage")
+async def manage_team(
+    league_key: str,
+    team_id: int,
+    background: BackgroundTasks,
+    week: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """Ask Claude to propose a lineup. Returns immediately with a run id."""
+    league = db.query(DBLeague).filter_by(league_id=league_key).first()
+    if league is None:
+        raise HTTPException(status_code=404, detail="League not found")
+    team = db.query(DBTeam).filter_by(id=team_id, league_id=league_key).first()
+    if team is None:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    target_week = week or league.current_week or 1
+    try:
+        run = start_manager_run(db, team, target_week, year=league.year)
+    except LineupRejected as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    background.add_task(
+        run_agent_subprocess, run.id, team.id, league.year, target_week,
+    )
+    return {"run_id": run.id, "status": run.status, "week": target_week}
+
+
+@router.get("/runs/{run_id}")
+async def get_run(request: Request, run_id: int, db: Session = Depends(get_db)):
+    """Poll target for the proposal. Renders an HTMX fragment."""
+    from pigskin_mastermind.api.main import templates
+
+    run = db.query(DBManagerRun).filter_by(id=run_id).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    return templates.TemplateResponse(
+        "season/_proposal.html",
+        {"request": request, "run": run},
+    )
+
+
+@router.post("/runs/{run_id}/apply")
+async def apply_run(run_id: int, db: Session = Depends(get_db)):
+    """Accept a proposed lineup."""
+    run = db.query(DBManagerRun).filter_by(id=run_id).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    try:
+        written = apply_proposal(db, run)
+    except LineupRejected as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"run_id": run.id, "status": run.status, "slots": written}
+
+
+@router.post("/runs/{run_id}/discard")
+async def discard_run(run_id: int, db: Session = Depends(get_db)):
+    """Reject a proposed lineup. Nothing is written."""
+    run = db.query(DBManagerRun).filter_by(id=run_id).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run.status == "proposed":
+        run.status = "discarded"
+        db.commit()
+    return {"run_id": run.id, "status": run.status}

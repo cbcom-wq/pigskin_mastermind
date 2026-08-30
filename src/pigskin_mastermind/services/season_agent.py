@@ -11,10 +11,15 @@ team's own players, so the worst a poisoned headline can do is argue for a
 bad-but-legal start/sit.
 """
 
+import logging
+import subprocess
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
+
+from pigskin_mastermind.api.database import SessionLocal
 
 from pigskin_mastermind.models.database import (
     DBLeague, DBLineupSlot, DBManagerRun, DBMatchup, DBPlayer, DBPlayerNews,
@@ -26,7 +31,13 @@ from pigskin_mastermind.services.mock_draft import BENCH_SLOT, FLEX_ELIGIBLE
 from pigskin_mastermind.services.nfl_schedule import ScheduleIndex
 from pigskin_mastermind.services.season_scheduler import league_now
 
+logger = logging.getLogger(__name__)
+
 NEWS_PER_PLAYER = 3
+
+#: Generous -- a real analysis reads news and reasons over a full roster -- but
+#: bounded, so a wedged subprocess does not hold a run open forever.
+AGENT_TIMEOUT_SECONDS = 300
 
 
 def _iso(value: Optional[datetime]) -> Optional[str]:
@@ -430,3 +441,103 @@ def apply_proposal(db: Session, run: DBManagerRun) -> int:
     run.status = "applied"
     db.commit()
     return written
+
+
+def start_manager_run(
+    db: Session, team: DBTeam, week: int, year: Optional[int] = None,
+) -> DBManagerRun:
+    """Create a ``running`` manager run, refusing a concurrent duplicate."""
+    league = db.query(DBLeague).filter_by(league_id=team.league_id).first()
+    year = year or (league.year if league else league_now().year)
+
+    existing = (
+        db.query(DBManagerRun)
+        .filter_by(team_id=team.id, year=year, week=week, status="running")
+        .first()
+    )
+    if existing is not None:
+        raise LineupRejected(
+            f"a manager run is already running for this team "
+            f"(run {existing.id})",
+        )
+
+    run = DBManagerRun(
+        league_id=league.id if league else None,
+        team_id=team.id, year=year, week=week,
+        kind="lineup", status="running", started_at=datetime.utcnow(),
+    )
+    db.add(run)
+    db.commit()
+    return run
+
+
+def _agent_prompt(team_id: int, year: int, week: int, run_id: int) -> str:
+    return (
+        f"Use the season-team-manager skill to set the lineup for team "
+        f"{team_id}, year {year}, week {week}. "
+        f"Record your result with: pigskin season propose-lineup "
+        f"--result-file <file> --team {team_id} --year {year} --week {week} "
+        f"--run-id {run_id}"
+    )
+
+
+def run_agent_subprocess(
+    run_id: int,
+    team_id: int,
+    year: int,
+    week: int,
+    timeout: int = AGENT_TIMEOUT_SECONDS,
+) -> None:
+    """Launch ``claude -p`` and record whether it produced a proposal.
+
+    Runs in a background task with its own session -- the request's session is
+    long gone by the time this finishes.
+
+    A clean exit is not success. The agent records its result through the
+    propose-lineup CLI, which is what moves the run to ``proposed``; if the run
+    is still ``running`` afterwards, the agent produced nothing usable.
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+    started = datetime.utcnow()
+    error: Optional[str] = None
+
+    try:
+        completed = subprocess.run(
+            [
+                "claude", "-p", _agent_prompt(team_id, year, week, run_id),
+                "--output-format", "json",
+            ],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if completed.returncode != 0:
+            error = (completed.stderr or completed.stdout or "").strip()[:2000]
+    except subprocess.TimeoutExpired:
+        error = f"agent timed out after {timeout}s"
+    except FileNotFoundError:
+        error = (
+            "the `claude` CLI was not found on PATH; the team manager needs "
+            "Claude Code installed and signed in"
+        )
+    except Exception as exc:
+        logger.exception("Manager agent subprocess failed")
+        error = str(exc)[:2000]
+
+    db = SessionLocal()
+    try:
+        run = db.query(DBManagerRun).filter_by(id=run_id).first()
+        if run is None:
+            return
+        run.duration_ms = int(
+            (datetime.utcnow() - started).total_seconds() * 1000,
+        )
+        if run.status == "running":
+            # propose-lineup never fired, or fired and was rejected.
+            run.status = "failed"
+            run.error = error or "agent exited cleanly but recorded no proposal"
+            run.finished_at = datetime.utcnow()
+        db.commit()
+    finally:
+        db.close()
