@@ -17,11 +17,12 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.models.database import (
-    DBLeague, DBLineupSlot, DBMatchup, DBPlayer, DBPlayerNews,
+    DBLeague, DBLineupSlot, DBManagerRun, DBMatchup, DBPlayer, DBPlayerNews,
     DBPlayerProjection, DBRosterSpot, DBTeam, get_scoring_settings,
 )
 from pigskin_mastermind.services.lineup_locks import LockIndex
-from pigskin_mastermind.services.lineup_manager import plan_lineup
+from pigskin_mastermind.services.lineup_manager import FLEX_SLOT, plan_lineup
+from pigskin_mastermind.services.mock_draft import BENCH_SLOT, FLEX_ELIGIBLE
 from pigskin_mastermind.services.nfl_schedule import ScheduleIndex
 from pigskin_mastermind.services.season_scheduler import league_now
 
@@ -224,3 +225,208 @@ def _standings_block(db: Session, team: DBTeam) -> List[Dict[str, Any]]:
         }
         for i, t in enumerate(ordered)
     ]
+
+
+class LineupRejected(ValueError):
+    """A proposed lineup is not legal, so nothing is written."""
+
+
+def validate_lineup_result(
+    db: Session,
+    result: Dict[str, Any],
+    team: DBTeam,
+    year: int,
+    week: int,
+    now: datetime,
+) -> Dict[str, Any]:
+    """Check a proposal against the league's rules and this team's roster.
+
+    Scope is checked before anything else, exactly as record_llm_projection
+    does: a result for the wrong week is not a bad lineup, it is a different
+    question entirely.
+
+    This function is the security boundary. Whatever an agent was told by a
+    news headline, only a legal lineup made of this team's own players can be
+    written.
+    """
+    if result.get("year") != year:
+        raise LineupRejected(
+            f"result year {result.get('year')} does not match --year {year}",
+        )
+    if result.get("week") != week:
+        raise LineupRejected(
+            f"result week {result.get('week')} does not match --week {week}",
+        )
+    if result.get("team_id") != team.id:
+        raise LineupRejected(
+            f"result team {result.get('team_id')} does not match team {team.id}",
+        )
+
+    slots = result.get("slots")
+    if not isinstance(slots, list) or not slots:
+        raise LineupRejected("result has no slots")
+
+    league = db.query(DBLeague).filter_by(league_id=team.league_id).first()
+    roster_slots = (league.roster_slots if league else None) or {}
+
+    rostered = {
+        row.player_id
+        for row in db.query(DBRosterSpot).filter(
+            DBRosterSpot.team_id == team.id,
+            DBRosterSpot.dropped_at.is_(None),
+        )
+    }
+    positions = {
+        p.id: p
+        for p in db.query(DBPlayer).filter(DBPlayer.id.in_(rostered or {0}))
+    }
+
+    seen: set = set()
+    counts: Dict[str, int] = {}
+    for entry in slots:
+        player_id = entry.get("player_id")
+        slot = entry.get("slot")
+        if player_id not in rostered:
+            raise LineupRejected(f"player {player_id} is not on this team")
+        if player_id in seen:
+            raise LineupRejected(f"player {player_id} appears twice")
+        seen.add(player_id)
+        counts[slot] = counts.get(slot, 0) + 1
+
+        if slot == FLEX_SLOT and positions[player_id].position not in FLEX_ELIGIBLE:
+            raise LineupRejected(
+                f"{positions[player_id].name} is a "
+                f"{positions[player_id].position} and cannot fill FLEX",
+            )
+
+    # Slot counts before completeness: a lineup missing its QB should say so by
+    # name. The completeness check would otherwise swallow every shape error
+    # into one generic message, since a dropped starter is also a missing
+    # player. See Ruling T16-1.
+    for slot, required in roster_slots.items():
+        if slot == BENCH_SLOT:
+            continue
+        if counts.get(slot, 0) != required:
+            raise LineupRejected(
+                f"slot {slot} has {counts.get(slot, 0)} players, expected {required}",
+            )
+
+    if seen != rostered:
+        raise LineupRejected(
+            "result must place every rostered player, including the bench",
+        )
+
+    locks = LockIndex(db)
+    current = {
+        row.player_id: row.slot
+        for row in db.query(DBLineupSlot).filter_by(
+            team_id=team.id, year=year, week=week,
+        )
+    }
+    for entry in slots:
+        player = positions[entry["player_id"]]
+        if not locks.is_locked(player.nfl_team, year, week, now):
+            continue
+        existing_slot = current.get(player.id)
+        if existing_slot is not None and existing_slot != entry["slot"]:
+            raise LineupRejected(
+                f"{player.name} is locked and cannot move from "
+                f"{existing_slot} to {entry['slot']}",
+            )
+
+    for change in result.get("changes") or []:
+        if not (change.get("reasoning") or "").strip():
+            raise LineupRejected(
+                f"change for player {change.get('player_id')} has no reasoning",
+            )
+
+    return result
+
+
+def record_proposal(
+    db: Session,
+    result: Dict[str, Any],
+    team: DBTeam,
+    year: int,
+    week: int,
+    run_id: Optional[int] = None,
+    now: Optional[datetime] = None,
+) -> DBManagerRun:
+    """Validate a result and store it as a proposal. Writes no lineup rows."""
+    now = now or league_now()
+    league = db.query(DBLeague).filter_by(league_id=team.league_id).first()
+
+    run = (
+        db.query(DBManagerRun).filter_by(id=run_id).first() if run_id else None
+    )
+    if run is None:
+        run = DBManagerRun(
+            league_id=league.id if league else None,
+            team_id=team.id, year=year, week=week, kind="lineup",
+        )
+        db.add(run)
+
+    try:
+        validate_lineup_result(db, result, team, year, week, now)
+    except LineupRejected as exc:
+        run.status = "failed"
+        run.error = str(exc)
+        run.finished_at = datetime.utcnow()
+        db.commit()
+        raise
+
+    run.status = "proposed"
+    run.proposal = result
+    run.rationale = result.get("rationale")
+    run.citations = result.get("citations")
+    run.error = None
+    run.finished_at = datetime.utcnow()
+    db.commit()
+    return run
+
+
+def apply_proposal(db: Session, run: DBManagerRun) -> int:
+    """Write a proposed lineup. Returns rows written."""
+    if run.status != "proposed":
+        raise LineupRejected(f"run {run.id} is {run.status}, not proposed")
+
+    team = db.query(DBTeam).filter_by(id=run.team_id).one()
+    locks = LockIndex(db)
+    now = league_now()
+
+    existing = {
+        row.player_id: row
+        for row in db.query(DBLineupSlot).filter_by(
+            team_id=team.id, year=run.year, week=run.week,
+        )
+    }
+    projections = {
+        row.player_id: row.projected_points
+        for row in db.query(DBPlayerProjection).filter(
+            DBPlayerProjection.year == run.year,
+            DBPlayerProjection.week == run.week,
+        )
+    }
+
+    written = 0
+    for entry in run.proposal.get("slots", []):
+        player = db.query(DBPlayer).filter_by(id=entry["player_id"]).one()
+        row = existing.get(player.id)
+        if row is None:
+            row = DBLineupSlot(
+                team_id=team.id, year=run.year, week=run.week, player_id=player.id,
+            )
+            db.add(row)
+        row.slot = entry["slot"]
+        row.set_by = "agent"
+        row.projected_points = projections.get(player.id, 0.0) or 0.0
+        row.locked_at = (
+            locks.kickoff(player.nfl_team, run.year, run.week)
+            if locks.is_locked(player.nfl_team, run.year, run.week, now)
+            else None
+        )
+        written += 1
+
+    run.status = "applied"
+    db.commit()
+    return written

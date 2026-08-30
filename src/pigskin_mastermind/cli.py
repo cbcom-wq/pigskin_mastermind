@@ -1055,5 +1055,158 @@ def odds_seed_props(all_stars, clear):
         db.close()
 
 
+@main.group()
+def season():
+    """Season league management."""
+    pass
+
+
+def _season_db():
+    """A session with the background scheduler disabled.
+
+    Importing the app would otherwise start a polling loop inside a one-shot
+    CLI process.
+    """
+    import os
+    os.environ.setdefault("PIGSKIN_DISABLE_SCHEDULER", "1")
+    from pigskin_mastermind.api.database import SessionLocal
+    return SessionLocal()
+
+
+@season.command('evidence')
+@click.option('--team', 'team_id', type=int, required=True,
+              help='DBTeam primary key')
+@click.option('--week', type=int, required=True)
+@click.option('--year', type=int, default=None)
+@click.option('--output', type=click.Path(), default=None,
+              help='Write JSON here instead of stdout')
+def season_evidence(team_id, week, year, output):
+    """Emit the evidence pack for one team-week."""
+    from pigskin_mastermind.models.database import DBTeam
+    from pigskin_mastermind.services.season_agent import build_team_evidence
+
+    db = _season_db()
+    try:
+        team = db.query(DBTeam).filter_by(id=team_id).first()
+        if team is None:
+            raise click.ClickException(f"Team {team_id} not found")
+        pack = build_team_evidence(db, team, week, year=year)
+        payload = json.dumps(pack, indent=2, default=str)
+        if output:
+            with open(output, 'w', encoding='utf-8') as handle:
+                handle.write(payload)
+            click.echo(f"Wrote {output}")
+        else:
+            click.echo(payload)
+    finally:
+        db.close()
+
+
+@season.command('propose-lineup')
+@click.option('--result-file', type=click.Path(exists=True), required=True)
+@click.option('--team', 'team_id', type=int, required=True)
+@click.option('--year', type=int, required=True)
+@click.option('--week', type=int, required=True)
+@click.option('--run-id', type=int, default=None)
+def season_propose_lineup(result_file, team_id, year, week, run_id):
+    """Validate an agent lineup result and store it as a proposal.
+
+    Scope flags are required and are checked against the payload's own
+    year/week/team before anything about the lineup is examined.
+    """
+    from pigskin_mastermind.models.database import DBTeam
+    from pigskin_mastermind.services.season_agent import (
+        LineupRejected, record_proposal,
+    )
+
+    db = _season_db()
+    try:
+        with open(result_file, encoding='utf-8') as handle:
+            result = json.load(handle)
+        team = db.query(DBTeam).filter_by(id=team_id).first()
+        if team is None:
+            raise click.ClickException(f"Team {team_id} not found")
+        try:
+            run = record_proposal(db, result, team, year, week, run_id=run_id)
+        except LineupRejected as exc:
+            raise click.ClickException(f"Rejected: {exc}")
+        click.echo(f"Proposal recorded as run {run.id} ({run.status})")
+    finally:
+        db.close()
+
+
+@season.command('set-lineup')
+@click.option('--team', 'team_id', type=int, required=True)
+@click.option('--week', type=int, required=True)
+@click.option('--year', type=int, default=None)
+def season_set_lineup(team_id, week, year):
+    """Run the deterministic optimizer for one team and apply it."""
+    from pigskin_mastermind.models.database import DBLeague, DBTeam
+    from pigskin_mastermind.services.lineup_manager import apply_plan, plan_lineup
+    from pigskin_mastermind.services.season_scheduler import league_now
+
+    db = _season_db()
+    try:
+        team = db.query(DBTeam).filter_by(id=team_id).first()
+        if team is None:
+            raise click.ClickException(f"Team {team_id} not found")
+        league = db.query(DBLeague).filter_by(league_id=team.league_id).first()
+        now = league_now()
+        resolved_year = year or (league.year if league else now.year)
+        plan = plan_lineup(db, team, resolved_year, week, now, league=league)
+        written = apply_plan(db, plan, set_by="user")
+        click.echo(f"Set {written} slots, projected {plan.projected_total}")
+        for decision in plan.starters():
+            click.echo(f"  {decision.slot:<6} {decision.name} "
+                       f"({decision.projected_points})")
+    finally:
+        db.close()
+
+
+@season.command('standings')
+@click.option('--league', 'league_key', required=True, help='DBLeague.league_id')
+def season_standings(league_key):
+    """Print the standings table."""
+    from pigskin_mastermind.models.database import DBLeague, DBTeam
+
+    db = _season_db()
+    try:
+        league = db.query(DBLeague).filter_by(league_id=league_key).first()
+        if league is None:
+            raise click.ClickException(f"League {league_key} not found")
+        teams = sorted(
+            db.query(DBTeam).filter_by(league_id=league_key).all(),
+            key=lambda t: (-(t.wins or 0), -(t.total_points or 0.0), t.id),
+        )
+        click.echo(f"{league.name} - week {league.current_week}")
+        for rank, team in enumerate(teams, start=1):
+            click.echo(
+                f"{rank:>2}. {team.name:<28} "
+                f"{team.wins}-{team.losses}-{team.ties}  "
+                f"{team.total_points:.1f}"
+            )
+    finally:
+        db.close()
+
+
+@season.command('tick')
+def season_tick():
+    """Run one scheduler pass by hand.
+
+    There is deliberately no --dry-run: tick() reaches apply_plan and
+    refresh_week, both of which commit internally, so a rollback afterwards
+    would undo nothing while claiming to. See Ruling T16-2.
+    """
+    from pigskin_mastermind.services.season_scheduler import league_now, tick
+
+    db = _season_db()
+    try:
+        result = tick(db, league_now())
+        for key, value in result.items():
+            click.echo(f"{key}: {value}")
+    finally:
+        db.close()
+
+
 if __name__ == '__main__':
     main()
