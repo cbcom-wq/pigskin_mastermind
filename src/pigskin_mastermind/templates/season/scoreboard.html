@@ -1,4 +1,6 @@
 {% extends "base.html" %}
+{% block title %}Week {{ week }} scoreboard · {{ league.name }}{% endblock %}
+{% block page_title %}{{ league.name }} &middot; Week {{ week }}{% endblock %}
 {% block content %}
 <div class="mb-6">
   <a href="/season/{{ league.league_id }}"

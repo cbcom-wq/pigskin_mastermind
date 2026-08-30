@@ -65,7 +65,7 @@ Optional: set `ODDS_API_KEY` for live sportsbook data, or call the odds `/seed` 
 | Deterministic projections (weekly + yearly) | Working |
 | Projection tuner UI + algorithm sweep + master coefficients | Working |
 | Monte Carlo simulation | Working |
-| Mock draft simulator | Working, but in-memory only (see below) |
+| Mock draft simulator | Working; in-progress state in-memory, but can commit to a persisted season league |
 | Sportsbook odds and prop-derived projections | Working with an API key; seedable without |
 | Game / player / team play animations | Working |
 | Season animation charts | Working |
@@ -73,32 +73,34 @@ Optional: set `ODDS_API_KEY` for live sportsbook data, or call the odds `/seed` 
 | Entertainment (names, power rankings, awards, trash talk) | Working; CLI + library only, no UI |
 | Yahoo import | **Stub.** `YahooImporter` in `services/importer.py` is unimplemented |
 | `ESPNImporter` in `services/importer.py` | **Stub.** Real ESPN work goes through `espn_sync.py` |
-| Persistence for draft state | Not implemented |
-| Auth / multi-user | Not implemented |
+| Persistence for draft state | Working for committed leagues (`DBLeague.draft_snapshot`); in-progress drafts are still in-memory |
+| Season leagues (rosters, matchups, lineups, AI managers, live scoring) | Working |
+| Claude team manager agent | Working; proposes lineups, a human applies or discards |
+| Auth / multi-user | Not implemented (`DBTeam.owner_user_id` exists as a hook) |
 
 ## Test suite
 
 Verified by running it, not assumed.
 
 ```
-pytest tests/            →  631 passed, 17 failed
+pytest tests/            →  1241 passed, 13 failed
 ```
 
 **Never run bare `pytest`** — it tries to collect the vendored `espn-api/tests/` tree and dies with
 12 collection errors before running anything.
 
-The 17 failures split into three groups:
+The 13 failures split into two groups. The order-dependent group is **fixed** — see below.
 
-### 1. Order-dependent (4) — a real test-infrastructure bug
+### 1. Order-dependent — FIXED
 
-`tests/test_mock_draft.py` passes 87/88 in isolation but loses 4 tests when the full suite runs.
-Cause: `tests/integration/conftest.py` mutates the **global** `app.dependency_overrides` at import
-time to point at an in-memory SQLite engine, but its `reset_db` autouse fixture only applies inside
-`tests/integration/`. Tests elsewhere that use `TestClient` inherit the override without ever getting
-tables created → `sqlite3.OperationalError: no such table: leagues`.
+`tests/test_mock_draft.py` used to lose 4 tests when the full suite ran:
+`tests/integration/conftest.py` mutated the **global** `app.dependency_overrides` at import time,
+so `TestClient` tests elsewhere inherited an in-memory engine that never got tables →
+`sqlite3.OperationalError: no such table: leagues`.
 
-Fix direction: move the override and schema fixtures into a root `tests/conftest.py`, or scope the
-override with a fixture that undoes itself.
+Resolved by scoping the override to a self-undoing autouse fixture inside
+`tests/integration/conftest.py`, which sets it per test and pops it afterwards. This removed 5
+failures, not the 4 predicted — an 18th pre-existing failure was hiding behind the same mechanism.
 
 ### 2. Stale tests, code moved on (8)
 

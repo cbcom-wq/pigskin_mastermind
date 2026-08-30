@@ -321,6 +321,70 @@ ESPN's projection because ~789 of its players share a placeholder ADP of 170.
 - `get_adp_metadata()` owns the staleness verdict (`STALE_AFTER_DAYS = 7`) so the draft page and the
   API can't disagree about what "out of date" means.
 
+### Season leagues
+
+A completed mock draft can become a persisted league (`DBLeague.kind='season'`)
+that plays the real NFL season. Committing happens from the draft results page
+via `POST /season/commit-draft` — **not** from the CLI, because `draft_engine` is
+an in-process singleton and a CLI process cannot see a draft the web server
+created.
+
+Rosters are **league-scoped** (`DBRosterSpot`), not `DBPlayer.team_id`. That
+column holds one team per player across the whole application, which cannot
+express a 12-team league sharing player rows with an ESPN-synced one. The ESPN
+path is untouched: `espn_sync` still uses `DBPlayer.team_id`.
+
+`services/lineup_manager.py::plan_lineup()` is the only place a lineup decision
+is made — the AI manager, the auto-fill fallback, the web auto-set button, and
+the agent's baseline all call it. It is strictly deterministic (stable sort on
+`(-projection, player_id)`, no randomness) and deliberately ignores
+`DBTeam.ai_profile`: a team's draft persona shaped which players it owns, and
+there is no aggressive way to start your highest projected players.
+
+Players lock at **their own** kickoff (`services/lineup_locks.py`), not a
+league-wide deadline. Every function there takes `now` as a parameter; calling
+`datetime.utcnow()` inline would make locks testable only during a real game.
+
+**`DBNFLGame.kickoff_at` is a naive US EASTERN wall clock, not UTC.** nflverse
+publishes `gameday`/`gametime` as ET and `_parse_kickoff` stores them without a
+tzinfo, so a Sunday early game is the literal value `13:00`. Anything compared
+against that column must use
+`services/season_scheduler.py::league_now()` — `datetime.utcnow()` runs 4-5
+hours ahead and would fire every lineup deadline before the games it guards.
+`league_now()` is the single definition; the scheduler, the evidence pack, the
+proposal validator, and the team routes all take their `now` from it.
+
+`services/season_scheduler.py` runs as an asyncio task in the FastAPI lifespan.
+It polls ESPN only inside game windows, sets AI lineups when a week opens,
+auto-fills any team with **no** lineup at the week's first kickoff, and settles
+matchups. Disable it with `PIGSKIN_DISABLE_SCHEDULER=1` — the test suite and
+every CLI command do.
+
+**This makes the app a second writer to SQLite.** `api/database.py` enables WAL
+and `busy_timeout` for that reason. The existing rule against running the
+desktop app and a dev `uvicorn` together matters more now, not less.
+
+Standings are a **regular-season** record: `live_scoring.recompute_standings()`
+excludes `is_playoff` matchups. This is not cosmetic — `_seeded_teams()` sorts
+on those same wins and points-for, and `_advance_bracket()` reads `seeds[0]`/
+`seeds[1]` to place the bye teams, so counting playoff results would let a
+quarterfinal winner leapfrog the real 1 seed into its own semifinal.
+
+The Claude team manager (`services/season_agent.py`,
+`.claude/skills/season-team-manager/`) **proposes**; AI teams apply
+automatically, the user's team never does. `validate_lineup_result()` is the
+real boundary: whatever an agent read in a news headline, only a legal lineup
+made of that team's own players can be written. Manual lineup edits go through
+the same validator.
+
+Scoring lives in `services/scoring.py`. `DEFAULT_SCORING_SETTINGS` now includes
+kicking (by field-goal distance) and team defense; `pts_allowed` is a tier step
+function, not a multiplier, and is handled by the scorer rather than the
+settings dict.
+
+CLI: `pigskin season {evidence,propose-lineup,set-lineup,standings,tick}`.
+
+
 ### Web layer conventions
 
 - `api/main.py` mounts `/static`, configures Jinja2, calls `Base.metadata.create_all()` at import,

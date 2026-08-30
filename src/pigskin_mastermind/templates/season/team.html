@@ -1,4 +1,6 @@
 {% extends "base.html" %}
+{% block title %}{{ team.name }} · {{ league.name }}{% endblock %}
+{% block page_title %}{{ team.name }}{% endblock %}
 {% block content %}
 <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
   <div>
@@ -32,7 +34,7 @@
     <thead class="text-left text-xs uppercase tracking-wide text-slate-500">
       <tr>
         <th class="pb-2">Slot</th><th class="pb-2">Player</th>
-        <th class="pb-2">Team</th><th class="pb-2">Status</th>
+        <th class="pb-2">Pos</th><th class="pb-2">Status</th>
         <th class="pb-2 text-right">Proj</th>
       </tr>
     </thead>
