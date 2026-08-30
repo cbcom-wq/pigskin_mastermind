@@ -1,0 +1,64 @@
+{% if run.status == 'running' %}
+<div data-run-running
+     class="rounded-xl border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-900">
+  Claude is reviewing your roster…
+</div>
+
+{% elif run.status == 'failed' %}
+<div class="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900">
+  <p class="font-medium">Claude could not produce a lineup.</p>
+  <p class="mt-1 text-xs">{{ run.error }}</p>
+</div>
+
+{% elif run.status == 'proposed' %}
+<div class="rounded-xl border border-indigo-200 bg-white p-5">
+  <h2 class="text-lg font-semibold text-slate-900">Claude's proposal</h2>
+  {% if run.rationale %}
+  <p class="mt-1 text-sm text-slate-600">{{ run.rationale }}</p>
+  {% endif %}
+
+  {% set changes = (run.proposal or {}).get('changes') or [] %}
+  {% if changes %}
+  <ul class="mt-4 space-y-2">
+    {% for change in changes %}
+    <li class="rounded border border-slate-100 p-3 text-sm">
+      <span class="font-medium">
+        {{ change.from_slot }} &rarr; {{ change.to_slot }}
+      </span>
+      <p class="mt-1 text-slate-600">{{ change.reasoning }}</p>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="mt-4 rounded bg-slate-50 p-3 text-sm text-slate-600">
+    No changes — Claude agrees with the current lineup.
+  </p>
+  {% endif %}
+
+  {% if run.citations %}
+  <ul class="mt-3 space-y-1 text-xs text-slate-500">
+    {% for citation in run.citations %}
+    <li><a href="{{ citation }}" class="hover:underline">{{ citation }}</a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <div class="mt-5 flex gap-2">
+    <button hx-post="/season/runs/{{ run.id }}/apply" hx-swap="none"
+            hx-on::after-request="window.location.reload()"
+            class="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-white">
+      Apply
+    </button>
+    <button hx-post="/season/runs/{{ run.id }}/discard" hx-swap="none"
+            hx-on::after-request="window.location.reload()"
+            class="rounded border border-slate-300 px-4 py-2 text-sm font-medium">
+      Discard
+    </button>
+  </div>
+</div>
+
+{% else %}
+<div class="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
+  Proposal {{ run.status }}.
+</div>
+{% endif %}
