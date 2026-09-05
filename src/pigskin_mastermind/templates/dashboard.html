@@ -169,7 +169,8 @@
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {% for team in recent_teams %}
-            <a href="/teams/{{ team.id }}" class="flex items-center gap-3 p-3 rounded-lg border border-slate-200 hover:border-pigskin-300 transition-colors card-hover">
+            {% set season_url = '/season/' ~ team.league_id ~ '/teams/' ~ team.id if team.league_id in season_leagues else None %}
+            <a href="{{ season_url or '/teams/' ~ team.id }}" class="flex items-center gap-3 p-3 rounded-lg border border-slate-200 hover:border-pigskin-300 transition-colors card-hover">
                 <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-field-700 to-field-900 flex items-center justify-center text-white font-bold text-sm">
                     {{ team.name[:2]|upper }}
                 </div>

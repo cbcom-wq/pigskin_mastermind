@@ -2,9 +2,16 @@
 {% block title %}Week {{ week }} scoreboard · {{ league.name }}{% endblock %}
 {% block page_title %}{{ league.name }} &middot; Week {{ week }}{% endblock %}
 {% block content %}
+  <nav class="mb-3 flex items-center gap-2 text-sm text-slate-500">
+    <a href="/leagues" class="hover:text-slate-700 hover:underline">Leagues</a>
+    <span>&rsaquo;</span>
+    <a href="/season/{{ league.league_id }}"
+       class="hover:text-slate-700 hover:underline">{{ league.name }}</a>
+    <span>&rsaquo;</span>
+    <span class="font-medium text-slate-700">Week {{ week }}</span>
+  </nav>
+
 <div class="mb-6">
-  <a href="/season/{{ league.league_id }}"
-     class="text-sm text-slate-500 hover:underline">&larr; {{ league.name }}</a>
   <h1 class="text-2xl font-bold text-slate-900">Week {{ week }} scoreboard</h1>
 </div>
 

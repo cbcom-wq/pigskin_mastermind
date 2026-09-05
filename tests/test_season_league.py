@@ -310,3 +310,76 @@ class TestErrorCodes:
                 state["draft_id"], name="L", user_team_name="M", owner="B", year=YEAR,
             )
         assert exc.value.code == "invalid"
+
+
+# ---------------------------------------------------------------------------
+# Archived ESPN seasons
+# ---------------------------------------------------------------------------
+
+
+def _archived_league_with_roster(db):
+    """A frozen past ESPN season: ownership lives in DBRosterSpot, and
+    ``DBPlayer.team_id`` has already moved on to the new season's rows."""
+    league = DBLeague(
+        league_id="1977617326-2025", name="Pigskin Throne 2.0 (2025)",
+        year=2025, kind="archive",
+    )
+    db.add(league)
+    db.flush()
+
+    team = DBTeam(
+        team_id="espn_1977617326-2025_1", name="Stable of Stars", owner="Brandon__COOK",
+        league_id=league.league_id, espn_team_id="1", wins=10, losses=4,
+    )
+    current_team = DBTeam(
+        team_id="espn_1977617326_1", name="Bozos Dubbed Over", owner="Brandon__COOK",
+        league_id="1977617326", espn_team_id="1",
+    )
+    db.add_all([team, current_team])
+    db.flush()
+
+    player = DBPlayer(
+        player_id="espn_1", name="Saquon Barkley", position="RB", nfl_team="PHI",
+        # the live 2026 league now owns this player globally
+        team_id=current_team.id,
+    )
+    db.add(player)
+    db.flush()
+
+    db.add(DBRosterSpot(
+        league_id=league.id, team_id=team.id, player_id=player.id,
+        acquired_via="archive",
+    ))
+    db.commit()
+    return league, team, player
+
+
+def test_archived_league_reads_roster_from_roster_spots(db):
+    """An archived season keeps its roster even after DBPlayer.team_id moves on."""
+    from pigskin_mastermind.services.season_league import roster_players
+
+    league, team, player = _archived_league_with_roster(db)
+
+    names = [p.name for p in roster_players(db, team, league=league)]
+    assert names == ["Saquon Barkley"]
+
+
+def test_archived_league_roster_resolves_without_passing_league(db):
+    """The league lookup by team.league_id must reach the same branch."""
+    from pigskin_mastermind.services.season_league import roster_players
+
+    league, team, player = _archived_league_with_roster(db)
+
+    names = [p.name for p in roster_players(db, team)]
+    assert names == ["Saquon Barkley"]
+
+
+def test_live_espn_league_still_reads_player_team_id(db):
+    """Archiving must not change how a live ESPN league resolves ownership."""
+    from pigskin_mastermind.services.season_league import roster_players
+
+    league, team, player = _archived_league_with_roster(db)
+    live = db.query(DBTeam).filter_by(team_id="espn_1977617326_1").one()
+
+    names = [p.name for p in roster_players(db, live)]
+    assert names == ["Saquon Barkley"]

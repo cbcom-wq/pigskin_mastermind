@@ -334,6 +334,55 @@ column holds one team per player across the whole application, which cannot
 express a 12-team league sharing player rows with an ESPN-synced one. The ESPN
 path is untouched: `espn_sync` still uses `DBPlayer.team_id`.
 
+**Two storage paths means every roster read needs
+`season_league.py::roster_players(db, team, league=None)`**, which branches on
+`DBLeague.kind`. Reading `DBPlayer.team_id` (or the `DBTeam.players`
+relationship) directly renders a freshly drafted season team as having zero
+players — that was the bug on `/leagues/{id}`, `/teams`, `/teams/{id}`,
+`/lineups`, `/trades/team-players`, and the dashboard totals. It branches on
+`kind` rather than falling back when one query comes up empty, so a season team
+that really did drop everyone is not silently re-read through the ESPN column.
+**Player-facing pages need `fantasy_teams_for(db, player_ids)` instead**, which
+returns `TeamRef` rows (name, url, kind) for *every* team rostering a player.
+One `DBPlayer` row is shared by all leagues, so the same person is routinely on
+an ESPN roster and one or more season rosters at once, and `DBPlayer.team_id`
+can only name one of them. It is batched because the search table renders 100
+rows; the per-row alternative is 100 round trips for one column.
+
+### Rolling an ESPN league into a new year
+
+`DBLeague.year` is a single column, so a reactivated league cannot hold two
+seasons at once. Three things are **not** year-scoped and are destroyed by the
+next sync: `DBTeam.wins/losses/total_points`, the `DBPlayer.team_id` rosters,
+and `weekly_team_stats` / `weekly_player_stats` — whose
+`UniqueConstraint('team_id', 'week')` has no year column, so 2026 week 1
+overwrites 2025 week 1. (`player_season_stats`, `player_game_logs` and
+`player_projections` all carry `year` and are safe.)
+
+The season is therefore **archived before the year is flipped**: the league row
+is renamed to `<espn_id>-<year>`, its `kind` set to `archive`, its credentials
+cleared, and its team rows re-pointed at the new `league_id`. Team records and
+weekly stats hang off `teams.id` and follow those rows untouched. The roster is
+copied into `DBRosterSpot` first, because `DBPlayer.team_id` is global and the
+next draft re-points it.
+
+**`kind='archive'` therefore reads rosters from `DBRosterSpot`, exactly like a
+season league** — that is what `ROSTER_SPOT_KINDS` in `season_league.py` is for.
+Adding a fourth kind means deciding which side of that set it belongs on. An
+archived league keeps the `/leagues/{league_id}` ESPN grid (it is still an ESPN
+season, just a finished one), but every action that would call ESPN is hidden
+and guarded server-side: `settings.sync_league`, `leagues.import_all_players`,
+and the two Sync buttons on `/teams/{id}`. Its `league_id` is not an ESPN id, so
+an unguarded path fails on `int(league.league_id)` before it ever reaches ESPN.
+
+**A season league's canonical page is `/season/{league_id}`, not
+`/leagues/{league_id}`.** The latter is the ESPN team grid, and both of its
+actions — Import All Players, Claim team — need ESPN credentials a drafted
+league never has, so it 302s to the season home. Templates that mix both kinds
+get `season_league_ids(db)` and link a season team to
+`/season/{league_id}/teams/{team_id}`; the generic `/teams/{id}` page can show
+that roster but cannot set its lineup.
+
 `services/lineup_manager.py::plan_lineup()` is the only place a lineup decision
 is made — the AI manager, the auto-fill fallback, the web auto-set button, and
 the agent's baseline all call it. It is strictly deterministic (stable sort on

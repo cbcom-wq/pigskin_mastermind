@@ -14,7 +14,20 @@
     </td>
     <td class="px-6 py-3">{{ position_badge(p.position, "sm") }}</td>
     <td class="px-6 py-3 text-sm text-slate-600">{{ p.nfl_team }}</td>
-    <td class="px-6 py-3 text-sm text-slate-600">{{ p.team.name if p.team else "—" }}</td>
+    <td class="px-6 py-3 text-sm text-slate-600">
+        {%- set refs = fantasy_teams.get(p.id, []) -%}
+        {%- if refs -%}
+        <div class="flex flex-wrap gap-x-1.5 gap-y-0.5">
+            {%- for ref in refs %}
+            <a href="{{ ref.url }}"
+               onclick="event.stopPropagation()"
+               class="hover:underline {% if ref.kind == 'season' %}text-emerald-700{% else %}text-slate-600{% endif %}">{{ ref.name }}{% if not loop.last %},{% endif %}</a>
+            {%- endfor %}
+        </div>
+        {%- else -%}
+        <span class="text-slate-300">—</span>
+        {%- endif -%}
+    </td>
     <td class="px-6 py-3 text-sm text-center">
         {%- if p.bye_week %}{{ bye_badge(p.bye_week) }}{% else %}<span class="text-slate-300">—</span>{% endif -%}
     </td>

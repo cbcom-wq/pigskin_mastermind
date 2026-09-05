@@ -13,20 +13,30 @@
 <div id="leagues-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
     {% if leagues %}
         {% for league in leagues %}
-        <a href="/leagues/{{ league.league_id }}" class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden card-hover group block transition-all hover:shadow-md">
+        {# A season league's canonical home is /season/{id}; /leagues/{id}
+           redirects there anyway, but linking straight there skips the hop. #}
+        {% set is_season = league.kind == 'season' %}
+        <a href="{% if is_season %}/season/{{ league.league_id }}{% else %}/leagues/{{ league.league_id }}{% endif %}"
+           data-league-kind="{{ league.kind }}"
+           class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden card-hover group block transition-all hover:shadow-md">
             <!-- League header stripe -->
-            <div class="h-1.5 bg-gradient-to-r from-pigskin-500 to-pigskin-700"></div>
+            <div class="h-1.5 bg-gradient-to-r {% if is_season %}from-emerald-500 to-emerald-700{% else %}from-pigskin-500 to-pigskin-700{% endif %}"></div>
             <div class="p-5">
                 <div class="flex items-start justify-between mb-3">
                     <div class="flex items-center gap-3">
-                        <div class="w-11 h-11 rounded-xl bg-gradient-to-br from-pigskin-700 to-pigskin-900 flex items-center justify-center text-white font-bold text-sm shadow">
-                            🏆
+                        <div class="w-11 h-11 rounded-xl bg-gradient-to-br {% if is_season %}from-emerald-700 to-emerald-900{% else %}from-pigskin-700 to-pigskin-900{% endif %} flex items-center justify-center text-white font-bold text-sm shadow">
+                            {% if is_season %}🏈{% else %}🏆{% endif %}
                         </div>
                         <div>
                             <h3 class="text-base font-bold text-slate-800 leading-tight">{{ league.name }}</h3>
                             <p class="text-xs text-slate-500 mt-0.5">{{ league.year }} Season</p>
                         </div>
                     </div>
+                    {% if is_season %}
+                    <span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-wide">Season</span>
+                    {% else %}
+                    <span class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-bold uppercase tracking-wide">ESPN</span>
+                    {% endif %}
                 </div>
 
                 <div class="border-t border-slate-100 pt-3 mt-3">
@@ -43,8 +53,8 @@
                 </div>
 
                 <div class="mt-4 pt-3 border-t border-slate-100">
-                    <div class="flex items-center justify-end gap-2 text-xs text-pigskin-600 font-semibold">
-                        View Teams
+                    <div class="flex items-center justify-end gap-2 text-xs {% if is_season %}text-emerald-600{% else %}text-pigskin-600{% endif %} font-semibold">
+                        {% if is_season %}Open League{% else %}View Teams{% endif %}
                         <svg class="w-4 h-4 transition-transform group-hover:translate-x-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                         </svg>

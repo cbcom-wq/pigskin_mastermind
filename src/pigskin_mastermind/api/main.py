@@ -12,7 +12,7 @@ from sqlalchemy import func
 import os
 
 from pigskin_mastermind.api.database import get_db, engine
-from pigskin_mastermind.models.database import DBTeam, DBPlayer, DBLeague, Base
+from pigskin_mastermind.models.database import DBTeam, DBLeague, Base
 
 logger = logging.getLogger(__name__)
 
@@ -142,24 +142,27 @@ async def health_check():
 @app.get("/")
 async def dashboard(request: Request, db: Session = Depends(get_db)):
     """Dashboard page with real statistics."""
-    team_count = db.query(DBTeam).filter(DBTeam.is_user_team == True).count()
-    # Player count should only include players from user's teams
-    user_team_ids = [t.id for t in db.query(DBTeam.id).filter(DBTeam.is_user_team == True).all()]
-    player_count = db.query(DBPlayer).filter(DBPlayer.team_id.in_(user_team_ids)).count() if user_team_ids else 0
+    from pigskin_mastermind.services.season_league import (
+        roster_players, season_league_ids,
+    )
+
+    user_teams = db.query(DBTeam).filter(DBTeam.is_user_team == True).all()
+    team_count = len(user_teams)
     total_points = db.query(func.coalesce(func.sum(DBTeam.total_points), 0.0)).filter(DBTeam.is_user_team == True).scalar()
+
+    # Counting `DBPlayer.team_id` directly misses every season league: those
+    # rosters live in DBRosterSpot, so a drafted team contributed nothing here.
+    # See services/season_league.py::roster_players().
+    rosters = {t.id: roster_players(db, t) for t in user_teams}
+    player_count = sum(len(players) for players in rosters.values())
 
     # Position breakdown - only for user's teams
     position_counts = {}
-    if user_team_ids:
-        pos_rows = (
-            db.query(DBPlayer.position, func.count(DBPlayer.id))
-            .filter(DBPlayer.team_id.in_(user_team_ids))
-            .group_by(DBPlayer.position)
-            .order_by(DBPlayer.position)
-            .all()
-        )
-        for pos, count in pos_rows:
-            position_counts[pos] = count
+    for players in rosters.values():
+        for player in players:
+            if player.position:
+                position_counts[player.position] = position_counts.get(player.position, 0) + 1
+    position_counts = dict(sorted(position_counts.items()))
 
     # Recent teams (up to 6) - only user's teams
     recent_teams = db.query(DBTeam).filter(DBTeam.is_user_team == True).order_by(DBTeam.created_at.desc()).limit(6).all()
@@ -173,5 +176,6 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
             "total_points": total_points,
             "position_counts": position_counts,
             "recent_teams": recent_teams,
+            "season_leagues": season_league_ids(db),
         }
     )

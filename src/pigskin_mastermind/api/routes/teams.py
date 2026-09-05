@@ -15,6 +15,9 @@ from pigskin_mastermind.models.database import (
     DBTeam, DBPlayer, DBLeague, DBWeeklyTeamStats, DBWeeklyPlayerStats,
     DBNFLTeamStats, DBPlayerGameLog,
 )
+from pigskin_mastermind.services.season_league import (
+    roster_players, season_league_ids,
+)
 
 
 class SlotChange(BaseModel):
@@ -45,9 +48,15 @@ async def list_teams(request: Request, db: Session = Depends(get_db)):
     """List all teams."""
     from pigskin_mastermind.api.main import templates
     teams = db.query(DBTeam).filter(DBTeam.is_user_team == True).order_by(DBTeam.created_at.desc()).all()
+    # See roster_players(): season teams own players through DBRosterSpot, so
+    # the legacy `team.players` relationship reports them as empty.
+    roster_counts = {t.id: len(roster_players(db, t)) for t in teams}
     return templates.TemplateResponse(
         "teams/list.html",
-        {"request": request, "teams": teams}
+        {
+            "request": request, "teams": teams, "roster_counts": roster_counts,
+            "season_leagues": season_league_ids(db),
+        }
     )
 
 
@@ -135,8 +144,25 @@ async def team_detail(
     # NOTE: legacy mixed-unit column. The draft pool reads player_projections
     # (services/projection_refresh.py) instead; this route has not been migrated.
     players = sorted(
-        db.query(DBPlayer).filter(DBPlayer.team_id == team_db_id).all(),
+        roster_players(db, team),
         key=lambda p: (_POSITION_ORDER.get(p.position, 7), -p.projected_points),
+    )
+
+    # A season team's real home is the season league page — that is where the
+    # lineup editor, the locks and the Claude manager live. This page can show
+    # the roster but cannot set it.
+    season_team_url = (
+        f"/season/{team.league_id}/teams/{team.id}"
+        if team.league_id in season_league_ids(db) else None
+    )
+
+    # A team in an archived season has an espn_team_id but no live league to
+    # sync against, so the ESPN actions must not be offered for it.
+    is_archived = bool(
+        team.league_id
+        and db.query(DBLeague)
+        .filter_by(league_id=team.league_id, kind="archive")
+        .first()
     )
 
     return templates.TemplateResponse(
@@ -145,6 +171,8 @@ async def team_detail(
             "request": request,
             "team": team,
             "players": players,
+            "season_team_url": season_team_url,
+            "is_archived": is_archived,
             "available_weeks": available_weeks,
             "selected_week": week,
             "weekly_team": weekly_team,

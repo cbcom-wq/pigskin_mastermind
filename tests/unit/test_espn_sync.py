@@ -36,7 +36,7 @@ def test_import_team_from_espn(mock_league, db):
     mock_team = Mock()
     mock_team.team_id = 1
     mock_team.team_name = "ESPN Team"
-    mock_team.owner = "ESPN Owner"
+    mock_team.owners = [{"displayName": "ESPN Owner"}]
     mock_team.wins = 5
     mock_team.losses = 3
     mock_team.ties = 0
@@ -90,6 +90,86 @@ def test_import_team_not_found(mock_league, db):
             espn_s2="test_s2",
             swid="test_swid",
         )
+
+
+def _make_mock_espn_team(team_id, name, owner_display, wins, losses, points):
+    team = Mock()
+    team.team_id = team_id
+    team.team_name = name
+    team.owners = [{"displayName": owner_display}]
+    team.wins = wins
+    team.losses = losses
+    team.ties = 0
+    team.points_for = points
+    team.roster = []
+    return team
+
+
+@patch('pigskin_mastermind.services.espn_sync.League')
+def test_import_team_scopes_lookup_to_its_league(mock_league, db):
+    """ESPN team ids restart at 1 in every league, so team 1 of league A and
+    team 1 of league B are different teams and must not share a row."""
+    service = ESPNSyncService(db)
+
+    mock_league.return_value.teams = [
+        _make_mock_espn_team(1, "Stable of Stars", "Brandon__COOK", 10, 4, 2237.8)
+    ]
+    first = service.import_team(
+        league_id="1977617326", team_id=1,
+        espn_s2="s2", swid="swid", year=2025,
+    )
+
+    mock_league.return_value.teams = [
+        _make_mock_espn_team(1, "55 burgers 55 fries 55 TDs", "Brandon__COOK", 0, 0, 0.0)
+    ]
+    second = service.import_team(
+        league_id="878627004", team_id=1,
+        espn_s2="s2", swid="swid", year=2026,
+    )
+
+    assert first.id != second.id
+    assert db.query(DBTeam).count() == 2
+
+    # The first league's row is untouched by the second league's sync.
+    kept = db.query(DBTeam).filter_by(
+        espn_team_id="1", league_id="1977617326"
+    ).one()
+    assert kept.name == "Stable of Stars"
+    assert kept.wins == 10
+    assert kept.total_points == 2237.8
+
+    added = db.query(DBTeam).filter_by(
+        espn_team_id="1", league_id="878627004"
+    ).one()
+    assert added.name == "55 burgers 55 fries 55 TDs"
+    assert added.team_id == "espn_878627004_1"
+
+
+@patch('pigskin_mastermind.services.espn_sync.League')
+def test_import_team_reuses_row_on_resync_of_same_league(mock_league, db):
+    """A second sync of the same league updates in place rather than duplicating."""
+    service = ESPNSyncService(db)
+
+    mock_league.return_value.teams = [
+        _make_mock_espn_team(1, "Stable of Stars", "Brandon__COOK", 10, 4, 2237.8)
+    ]
+    first = service.import_team(
+        league_id="1977617326", team_id=1,
+        espn_s2="s2", swid="swid", year=2025,
+    )
+
+    mock_league.return_value.teams = [
+        _make_mock_espn_team(1, "Stable of Stars 2.0", "Brandon__COOK", 1, 0, 121.4)
+    ]
+    again = service.import_team(
+        league_id="1977617326", team_id=1,
+        espn_s2="s2", swid="swid", year=2026,
+    )
+
+    assert first.id == again.id
+    assert db.query(DBTeam).count() == 1
+    assert again.name == "Stable of Stars 2.0"
+    assert again.wins == 1
 
 
 # ---------------------------------------------------------------------------

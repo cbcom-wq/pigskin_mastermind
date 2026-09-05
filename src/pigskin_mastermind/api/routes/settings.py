@@ -109,6 +109,14 @@ async def sync_league(league_db_id: int, db: Session = Depends(get_db)):
     if not league:
         raise HTTPException(status_code=404, detail="League not found")
 
+    # An archived season is a frozen record of a year that is over. Its
+    # league_id carries a "-<year>" suffix and is not an ESPN id, so syncing it
+    # would fail on the int() cast below even before reaching ESPN.
+    if league.kind == "archive":
+        return _toast_response(
+            f"{league.name} is an archived season and cannot be re-synced", "info"
+        )
+
     if not league.espn_s2 or not league.swid:
         return _toast_response("Missing ESPN credentials for this league", "error")
 

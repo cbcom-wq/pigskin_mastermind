@@ -10,6 +10,7 @@ from pigskin_mastermind.models.database import DBTeam, DBPlayer
 from pigskin_mastermind.models.player import Player
 from pigskin_mastermind.models.team import Team
 from pigskin_mastermind.services.decision_tools import TradeAnalyzer
+from pigskin_mastermind.services.season_league import roster_players
 
 router = APIRouter(prefix="/trades", tags=["trades"])
 
@@ -56,9 +57,10 @@ async def team_players_for_trade(
 
     # NOTE: legacy mixed-unit column. The draft pool reads player_projections
     # (services/projection_refresh.py) instead; this route has not been migrated.
-    players = db.query(DBPlayer).filter(
-        DBPlayer.team_id == team_id
-    ).order_by(DBPlayer.position, DBPlayer.projected_points.desc()).all()
+    players = sorted(
+        roster_players(db, team),
+        key=lambda p: (p.position or "", -(p.projected_points or 0.0)),
+    )
 
     if not players:
         return _empty("No players on this team")

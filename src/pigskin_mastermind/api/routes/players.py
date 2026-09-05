@@ -7,6 +7,7 @@ from typing import Optional
 
 from pigskin_mastermind.api.database import get_db
 from pigskin_mastermind.models.database import DBPlayer, DBTeam, DBPlayerSeasonStats, DBPlayerGameLog
+from pigskin_mastermind.services.season_league import fantasy_teams_for
 from pigskin_mastermind.services.stats_service import StatsService
 from pigskin_mastermind.services.player_news_service import PlayerNewsService
 
@@ -85,8 +86,9 @@ async def player_detail_page(
     if trend.get("num_weeks", 0) == 0:
         trend = None
 
-    # Fantasy team name (if rostered)
-    fantasy_team = player.team.name if player.team else None
+    # Every tracked team rostering this player -- one player row is shared by
+    # the ESPN league and every drafted season league.
+    fantasy_teams = fantasy_teams_for(db, [player.id]).get(player.id, [])
 
     # On-demand player news (ESPN)
     news_svc = PlayerNewsService(db)
@@ -107,7 +109,7 @@ async def player_detail_page(
             "adp_season": adp_season,
             "game_logs": game_logs,
             "trend": trend,
-            "fantasy_team": fantasy_team,
+            "fantasy_teams": fantasy_teams,
             "news_items": news_items,
             "back_url": back,
         },
@@ -139,8 +141,8 @@ async def player_modal_fragment(
     seasons = player_stats.get("seasons", [])
     latest_season = seasons[0] if seasons else None
 
-    # Fantasy team name
-    fantasy_team = player.team.name if player.team else None
+    # See the detail route: a player can be on several tracked teams at once.
+    fantasy_teams = fantasy_teams_for(db, [player.id]).get(player.id, [])
 
     # On-demand news (cached, fast after first fetch)
     news_svc = PlayerNewsService(db)
@@ -152,7 +154,7 @@ async def player_modal_fragment(
             "request": request,
             "player": player,
             "latest_season": latest_season,
-            "fantasy_team": fantasy_team,
+            "fantasy_teams": fantasy_teams,
             "news_items": news_items,
         },
     )
@@ -249,6 +251,12 @@ async def search_players(
             {"request": request, "players": [p for p, _ in results], "side": "receive"},
         )
 
+    rostered = fantasy_teams_for(db, [p.id for p, _ in results])
+
+    def _subtitle(player):
+        names = ", ".join(ref.name for ref in rostered.get(player.id, []))
+        return f"{player.nfl_team} — {names}" if names else player.nfl_team
+
     return templates.TemplateResponse(
         "players/_search_result.html",
         {
@@ -257,7 +265,7 @@ async def search_players(
                 {
                     "player": p,
                     "adp": season.adp if season else None,
-                    "subtitle": f"{p.nfl_team} — {p.team.name}" if p.team else p.nfl_team,
+                    "subtitle": _subtitle(p),
                 }
                 for p, season in results
             ],
@@ -292,5 +300,8 @@ async def list_players(
 
     return templates.TemplateResponse(
         "players/_list_row.html",
-        {"request": request, "players": players},
+        {
+            "request": request, "players": players,
+            "fantasy_teams": fantasy_teams_for(db, [p.id for p in players]),
+        },
     )

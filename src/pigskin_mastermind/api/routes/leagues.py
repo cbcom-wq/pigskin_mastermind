@@ -1,12 +1,13 @@
 """Leagues routes: listing leagues, viewing league details and teams."""
 
 from fastapi import APIRouter, Depends, Request, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 import json
 
 from pigskin_mastermind.api.database import get_db
 from pigskin_mastermind.models.database import DBLeague, DBTeam
+from pigskin_mastermind.services.season_league import roster_players
 
 router = APIRouter(prefix="/leagues", tags=["leagues"])
 
@@ -38,32 +39,71 @@ async def league_detail(request: Request, league_id: str, db: Session = Depends(
     league = db.query(DBLeague).filter(DBLeague.league_id == league_id).first()
     if not league:
         raise HTTPException(status_code=404, detail="League not found")
+
+    # A season league has its own home — standings, matchups, scoreboard, the
+    # lineup editor and the Claude manager. This page is the ESPN team grid,
+    # and both of its actions (Import All Players, Claim team) need ESPN
+    # credentials and an ESPN roster that a drafted league never has.
+    if league.kind == "season":
+        return RedirectResponse(
+            url=f"/season/{league.league_id}", status_code=302,
+        )
     
     teams = db.query(DBTeam).filter(DBTeam.league_id == league_id).order_by(DBTeam.total_points.desc()).all()
-    
+
+    # `team.players` is the legacy `DBPlayer.team_id` relationship, which a
+    # season league never populates — it would render every drafted team as
+    # empty. `league` is passed through so the kind is resolved once, not once
+    # per team.
+    roster_counts = {t.id: len(roster_players(db, t, league)) for t in teams}
+
     return templates.TemplateResponse(
         "leagues/detail.html",
-        {"request": request, "league": league, "teams": teams}
+        {
+            "request": request, "league": league, "teams": teams,
+            "roster_counts": roster_counts,
+        }
     )
 
 
 @router.post("/{league_id}/teams/{team_id}/claim")
-async def claim_team(league_id: str, team_id: str, db: Session = Depends(get_db)):
-    """Toggle the is_user_team status for a team."""
+async def claim_team(
+    request: Request, league_id: str, team_id: str,
+    db: Session = Depends(get_db),
+):
+    """Toggle the is_user_team status for a team, and re-render its card."""
+    from pigskin_mastermind.api.main import templates
+
+    league = db.query(DBLeague).filter(DBLeague.league_id == league_id).first()
     team = db.query(DBTeam).filter(
         DBTeam.team_id == team_id,
         DBTeam.league_id == league_id
     ).first()
-    
-    if not team:
+
+    if not team or not league:
         raise HTTPException(status_code=404, detail="Team not found")
-    
+
     # Toggle the is_user_team status
     team.is_user_team = not team.is_user_team
     db.commit()
-    
+
+    # The button swaps this card's outerHTML, so the card itself is the
+    # response. Returning the bare toast (an empty body) removed the team from
+    # the grid until the page was reloaded.
     message = f"{'Claimed' if team.is_user_team else 'Unclaimed'} team: {team.name}"
-    return _toast_response(message, "success")
+    response = templates.TemplateResponse(
+        "leagues/_team_card.html",
+        {
+            "request": request,
+            "team": team,
+            "league": league,
+            "roster_count": len(roster_players(db, team, league)),
+        },
+    )
+    response.headers["HX-Trigger"] = json.dumps(
+        {"showToast": {"message": message, "type": "success"}}
+    )
+    return response
 
 
 @router.post("/{league_id}/import-all-players")
@@ -82,7 +122,14 @@ async def import_all_players(
     league = db.query(DBLeague).filter(DBLeague.league_id == league_id).first()
     if not league:
         raise HTTPException(status_code=404, detail="League not found")
-    
+
+    # An archived season keeps no credentials, and its league_id is not an ESPN
+    # id -- there is nothing to import for a year that is already over.
+    if league.kind == "archive":
+        return _toast_response(
+            f"{league.name} is an archived season", "info"
+        )
+
     try:
         service = ESPNSyncService(db)
         count = service.import_all_players(

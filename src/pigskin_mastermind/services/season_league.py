@@ -7,13 +7,15 @@ committed.
 """
 
 import uuid
+from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.models.database import (
-    DBLeague, DBMatchup, DBRosterSpot, DBTeam,
+    DBLeague, DBMatchup, DBPlayer, DBRosterSpot, DBTeam,
 )
 from pigskin_mastermind.services.mock_draft import (
     DEFAULT_LINEUP_SLOTS, draft_engine,
@@ -22,6 +24,10 @@ from pigskin_mastermind.services.player_identity import PlayerIdentityService
 from pigskin_mastermind.services.season_schedule import (
     clamp_playoff_teams, playoff_rounds, regular_season_schedule,
 )
+
+#: Host-parameter budget for one IN () clause. SQLite's older default limit is
+#: 999; staying well under it keeps a large batch from failing at the driver.
+_ID_CHUNK = 500
 
 
 class DraftCommitError(ValueError):
@@ -43,6 +49,136 @@ class DraftCommitError(ValueError):
         super().__init__(message)
         self.unresolved = unresolved or []
         self.code = code
+
+
+# Kinds whose ownership lives in ``DBRosterSpot`` rather than the global
+# ``DBPlayer.team_id`` column: drafted season leagues, and past ESPN seasons
+# frozen by ``pigskin`` archiving before the league is re-synced for a new year.
+ROSTER_SPOT_KINDS = frozenset({"season", "archive"})
+
+
+def roster_players(
+    db: Session, team: DBTeam, league: Optional[DBLeague] = None,
+) -> List[DBPlayer]:
+    """Every player ``team`` currently owns, whichever table holds them.
+
+    Ownership has two storage paths and a page that reads only one of them
+    reports the other kind of team as empty. A season league keeps ownership in
+    league-scoped ``DBRosterSpot`` rows and never writes ``DBPlayer.team_id``;
+    the live ESPN path is the reverse. Which one applies is decided by the
+    league's ``kind``, not by which query happens to return rows — falling back
+    on an empty result would report a season team that genuinely dropped
+    everyone as an ESPN team instead, and quietly re-introduce this bug the day
+    someone adds a season roster move.
+
+    An ``archive`` league is a past ESPN season frozen at year end. It reads
+    from ``DBRosterSpot`` for the same reason a season league does: once the
+    league is reactivated for the next year, the next sync re-points
+    ``DBPlayer.team_id`` at the new season's team rows, and a global column can
+    only ever name the current owner.
+
+    ``league`` is accepted so a caller looping over one league's teams does not
+    re-query it per team.
+    """
+    if league is None and team.league_id:
+        league = db.query(DBLeague).filter_by(league_id=team.league_id).first()
+
+    if league is not None and league.kind in ROSTER_SPOT_KINDS:
+        return (
+            db.query(DBPlayer)
+            .join(DBRosterSpot, DBRosterSpot.player_id == DBPlayer.id)
+            .filter(
+                DBRosterSpot.team_id == team.id,
+                DBRosterSpot.dropped_at.is_(None),
+            )
+            .all()
+        )
+
+    return db.query(DBPlayer).filter(DBPlayer.team_id == team.id).all()
+
+
+def season_league_ids(db: Session) -> Set[str]:
+    """Every ``league_id`` whose league is a drafted season league.
+
+    Templates that mix both kinds — the dashboard, the team list — need to know
+    which teams belong to a season league so they can link to that league's own
+    pages instead of the ESPN-shaped ones. One query beats a per-team lookup.
+    """
+    return {
+        row[0]
+        for row in db.query(DBLeague.league_id).filter(DBLeague.kind == "season")
+    }
+
+
+@dataclass(frozen=True)
+class TeamRef:
+    """One fantasy team that rosters a player, and where to go to see it."""
+
+    team_id: int
+    name: str
+    url: str
+    kind: str  # 'espn' | 'season'
+
+
+def fantasy_teams_for(
+    db: Session, player_ids: Iterable[int],
+) -> Dict[int, List[TeamRef]]:
+    """Map each player id to every tracked team rostering that player.
+
+    One ``DBPlayer`` row is shared by every league in the database, so the same
+    person is routinely on an ESPN roster *and* one or more drafted season
+    rosters. ``DBPlayer.team_id`` can only name one of them, which is why the
+    player pages used to credit the ESPN team and silently drop the rest.
+
+    Batched deliberately: the search table renders 100 rows, and a per-row
+    lookup is 100 round trips for a column.
+    """
+    ids = list(dict.fromkeys(player_ids))
+    if not ids:
+        return {}
+
+    season_ids = season_league_ids(db)
+    found: Dict[int, Dict[int, TeamRef]] = defaultdict(dict)
+
+    def _ref(team: DBTeam) -> TeamRef:
+        is_season = team.league_id in season_ids
+        return TeamRef(
+            team_id=team.id,
+            name=team.name,
+            url=(
+                f"/season/{team.league_id}/teams/{team.id}"
+                if is_season else f"/teams/{team.id}"
+            ),
+            kind="season" if is_season else "espn",
+        )
+
+    # SQLite caps host parameters per statement, so never build one IN () over
+    # an unbounded caller-supplied list.
+    for start in range(0, len(ids), _ID_CHUNK):
+        chunk = ids[start:start + _ID_CHUNK]
+
+        espn_rows = (
+            db.query(DBPlayer.id, DBTeam)
+            .join(DBTeam, DBPlayer.team_id == DBTeam.id)
+            .filter(DBPlayer.id.in_(chunk))
+            .all()
+        )
+        season_rows = (
+            db.query(DBRosterSpot.player_id, DBTeam)
+            .join(DBTeam, DBRosterSpot.team_id == DBTeam.id)
+            .filter(
+                DBRosterSpot.player_id.in_(chunk),
+                DBRosterSpot.dropped_at.is_(None),
+            )
+            .all()
+        )
+        for player_id, team in list(espn_rows) + list(season_rows):
+            found[player_id][team.id] = _ref(team)
+
+    return {
+        player_id: sorted(refs.values(), key=lambda r: (r.name, r.team_id))
+        for player_id, refs in found.items()
+    }
 
 
 class SeasonLeagueService:

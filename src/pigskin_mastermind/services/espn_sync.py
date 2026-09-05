@@ -300,8 +300,13 @@ class ESPNSyncService:
         if not espn_team:
             raise ValueError(f"Team {team_id} not found in league {league_id}")
 
-        # Create or update team
-        db_team = self.db.query(DBTeam).filter_by(espn_team_id=str(team_id)).first()
+        # Create or update team. ESPN numbers teams from 1 within each league,
+        # so espn_team_id alone is not unique across leagues -- scoping to
+        # league_id is what stops league B's team 1 from overwriting league A's.
+        db_team = self.db.query(DBTeam).filter_by(
+            espn_team_id=str(team_id),
+            league_id=league_id,
+        ).first()
         if not db_team:
             db_team = DBTeam(
                 team_id=f"espn_{league_id}_{team_id}",

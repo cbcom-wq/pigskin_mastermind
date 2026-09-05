@@ -59,13 +59,15 @@
                     </div>
                     <div class="bg-slate-50 rounded-lg px-3 py-2 text-center">
                         <p class="text-xs text-slate-500">Players</p>
-                        <p class="text-sm font-bold text-slate-700">{{ team.players|length }}</p>
+                        <p class="text-sm font-bold text-slate-700">{{ roster_counts[team.id] }}</p>
                     </div>
                 </div>
 
                 <!-- Action Buttons -->
                 <div class="flex gap-2">
-                    <a href="/teams/{{ team.id }}"
+                    {# A season team is managed on its league's own page. #}
+                    {% set season_url = '/season/' ~ team.league_id ~ '/teams/' ~ team.id if team.league_id in season_leagues else None %}
+                    <a href="{{ season_url or '/teams/' ~ team.id }}"
                        class="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium text-field-700 bg-field-50 hover:bg-field-100 rounded-lg transition-colors">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>

@@ -22,7 +22,7 @@
                     <option value="">Choose a team…</option>
                     {% for team in teams %}
                     <option value="{{ team.id }}" {% if selected_team_id == team.id %}selected{% endif %}>
-                        {{ team.name }} ({{ team.owner }}) — {{ team.players|length }} players
+                        {{ team.name }} ({{ team.owner }}) — {{ roster_counts[team.id] }} players
                     </option>
                     {% endfor %}
                 </select>

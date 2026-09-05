@@ -5,10 +5,11 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 from pigskin_mastermind.api.database import get_db
-from pigskin_mastermind.models.database import DBTeam, DBPlayer
+from pigskin_mastermind.models.database import DBTeam
 from pigskin_mastermind.models.player import Player
 from pigskin_mastermind.models.team import Team
 from pigskin_mastermind.services.decision_tools import LineupOptimizer
+from pigskin_mastermind.services.season_league import roster_players
 from pigskin_mastermind.utils.positions import normalize_position
 
 router = APIRouter(prefix="/lineups", tags=["lineups"])
@@ -65,9 +66,15 @@ async def lineup_page(
     """Lineup optimizer page."""
     from pigskin_mastermind.api.main import templates
     teams = db.query(DBTeam).filter(DBTeam.is_user_team == True).order_by(DBTeam.name).all()
+    # See roster_players(): season teams own players through DBRosterSpot, so
+    # the legacy `team.players` relationship reports them as empty.
+    roster_counts = {t.id: len(roster_players(db, t)) for t in teams}
     return templates.TemplateResponse(
         "lineups/optimizer.html",
-        {"request": request, "teams": teams, "selected_team_id": team}
+        {
+            "request": request, "teams": teams, "selected_team_id": team,
+            "roster_counts": roster_counts,
+        }
     )
 
 
@@ -88,7 +95,7 @@ async def optimize_lineup(
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found or not claimed")
 
-    db_players = db.query(DBPlayer).filter(DBPlayer.team_id == team_db_id).all()
+    db_players = roster_players(db, db_team)
     if not db_players:
         from fastapi.responses import HTMLResponse
         return HTMLResponse(

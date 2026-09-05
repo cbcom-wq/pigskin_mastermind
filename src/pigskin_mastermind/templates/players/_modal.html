@@ -32,7 +32,7 @@
             <p class="text-sm text-slate-300 mt-0.5">
                 {{ player.nfl_team }}
                 {% if player.pos_rank %} &middot; <span class="text-slate-400">{{ player.position }}{{ player.pos_rank }}</span>{% endif %}
-                {% if fantasy_team %} &middot; <span class="text-pigskin-300 font-medium">{{ fantasy_team }}</span>{% endif %}
+                {% for ref in fantasy_teams %} &middot; <a href="{{ ref.url }}" class="text-pigskin-300 font-medium hover:underline">{{ ref.name }}</a>{% endfor %}
             </p>
         </div>
         <div class="flex gap-4 text-center flex-shrink-0">
