@@ -36,35 +36,6 @@
             <span class="text-sm text-slate-500">{{ weekly_players|length }} players</span>
         </div>
         <div class="flex items-center gap-2">
-            <button
-                id="generate-projections-btn"
-                onclick="generateProjections({{ team.id }}, {{ selected_week }})"
-                class="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors"
-            >
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
-                </svg>
-                <span id="proj-btn-text">Generate Projections</span>
-                <svg class="w-4 h-4 animate-spin hidden" id="proj-spinner" fill="none" viewBox="0 0 24 24">
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                </svg>
-            </button>
-            <button
-                id="generate-sb-projections-btn"
-                onclick="generateSportsbookProjections({{ team.id }}, {{ selected_week }})"
-                class="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors"
-                title="Generate projections from sportsbook player prop lines"
-            >
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                </svg>
-                <span id="sb-proj-btn-text">Sportsbook Proj</span>
-                <svg class="w-4 h-4 animate-spin hidden" id="sb-proj-spinner" fill="none" viewBox="0 0 24 24">
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                </svg>
-            </button>
             <div id="swap-hint" class="text-xs text-slate-400 hidden">
                 Click a player to select, then click another to swap slots
             </div>
@@ -81,8 +52,6 @@
                     <th class="px-4 py-3 w-14">Pos</th>
                     <th class="px-4 py-3">Matchup</th>
                     <th class="px-4 py-3 text-right">ESPN Proj</th>
-                    <th class="px-4 py-3 text-right">Our Proj</th>
-                    <th class="px-4 py-3 text-right">Sportsbook</th>
                     <th class="px-4 py-3 text-right">Actual</th>
                     <th class="px-4 py-3 text-right">+/-</th>
                 </tr>
@@ -140,12 +109,6 @@
                         {% endif %}
                     </td>
                     <td class="px-4 py-3 text-sm font-semibold text-slate-700 text-right">{{ "%.1f"|format(wp.projected_points) }}</td>
-                    <td class="px-4 py-3 text-sm text-right our-proj-cell" data-player-id="{{ player.id }}">
-                        <span class="text-slate-300">—</span>
-                    </td>
-                    <td class="px-4 py-3 text-sm text-right sb-proj-cell" data-player-id="{{ player.id }}">
-                        <span class="text-slate-300">—</span>
-                    </td>
                     <td class="px-4 py-3 text-sm font-semibold text-slate-700 text-right">{{ "%.1f"|format(wp.actual_points) }}</td>
                     <td class="px-4 py-3 text-sm font-semibold text-right
                         {% if wp.actual_points - wp.projected_points > 0 %}text-green-600{% elif wp.actual_points - wp.projected_points < 0 %}text-red-500{% else %}text-slate-500{% endif %}">

@@ -433,6 +433,60 @@ settings dict.
 
 CLI: `pigskin season {evidence,propose-lineup,set-lineup,standings,tick}`.
 
+### Multi-source weekly projections
+
+`services/projection_sources/` holds one provider per source behind a single
+protocol (`base.py`), registered in order by `registry.py`: `model`, `espn`,
+`sportsbook`, `nflverse_xp`, `llm`, `consensus`.
+`weekly_projection_refresh.refresh_week_all()` runs them all and writes into
+`player_projections`, the same table the season path uses.
+
+**Partial success is the normal outcome, not an error.** The six sources have
+unrelated failure modes — one needs an API key, one scrapes HTML, one covers a
+few dozen players. Each provider gets its own try/except and its own
+`projection_source_runs` row; one raising must leave the other five on screen.
+A provider that covered nobody is recorded `skipped`, not `ok`, because for a
+scrape those mean very different things.
+
+**The consensus is stored as `blend_multi`, never `blend`.** `_READ_PRIORITY`
+in `projection_refresh.py` is `(blend, model)` and backs
+`weekly_projection_map()`, which `lineup_manager.plan_lineup()` calls for every
+lineup decision — AI managers, first-kickoff auto-fill, the auto-set button. No
+weekly `blend` row exists, so that read falls through to `model` today. Writing
+the consensus under the name `blend` would silently switch all of them onto it
+as a side effect of a display feature. A regression test guards this.
+
+**Ranks are derived at read time and always carry their denominator.**
+`projection_rankings.weekly_source_table()` ranks per `(source, position)` over
+every stored row for the week, never just the roster. Coverage differs by an
+order of magnitude — the model ranks ~870 players, ESPN ~37 — so `WR7 of 13`
+and `WR7 of 304` are different claims and `rank_of` is part of the return type
+rather than something a caller can forget.
+
+Two rules that produce wrong numbers if broken:
+
+- **A model `0.0` is not a projection.** `max(0, base_score)` in
+  `projection_service` is a clamp meaning "no signal"; `refresh_season` already
+  skips it and the weekly model source must too, or ~166 players the model
+  could not score get ranked below every player it scored low.
+- **A refresh prunes as well as upserts.** The Refresh button re-runs the same
+  week, so rows a source no longer covers would survive with a stale number and
+  a stale rank. `_prune()` is restricted to the players the pass examined, so a
+  `--sources` run cannot delete what it never looked at.
+
+`nflverse_xp` computes expected points itself — the installed `nfl_data_py` has
+no `import_ff_opportunity`. It prices opportunity (attempts/carries/targets) at
+league-average rates, then EWMAs the last 4 games. It returns nothing at week 1:
+there is no history, and the season frame is not published yet, so fetching
+404s and would look like a broken source.
+
+`consensus` is off unless `PIGSKIN_CONSENSUS_URL` is set, and everything
+site-specific is one injected `fetch_rows` callable.
+
+CLI: `pigskin projections refresh-week --year Y --week N [--sources a,b]`.
+Daily refresh runs from `season_scheduler.tick()` behind a
+`projection_source_runs` guard.
+
 
 ### Web layer conventions
 

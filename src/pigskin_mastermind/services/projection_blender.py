@@ -28,6 +28,26 @@ WEEKLY_WEIGHTS: Dict[str, float] = {
     "espn": 0.20,
 }
 
+#: Weekly scope across all six sources, for the multi-source projections view.
+#:
+#: The result is stored as ``blend_multi``, never ``blend`` -- see
+#: ``projection_sources.base.SOURCE_BLEND_MULTI`` for why that name is
+#: load-bearing.
+#:
+#: ``llm`` is present at weight zero on purpose. It is a real column in the
+#: table and worth reading, but an agent has run for a few dozen players
+#: against the model's ~1000, so a nonzero weight would shift the consensus for
+#: exactly those players and no others -- making the one number meant to be
+#: comparable across the table the one number that is not.
+WEEKLY_MULTI_WEIGHTS: Dict[str, float] = {
+    "sportsbook": 0.30,
+    "model": 0.25,
+    "espn": 0.20,
+    "consensus": 0.15,
+    "nflverse_xp": 0.10,
+    "llm": 0.0,
+}
+
 
 @dataclass
 class BlendResult:

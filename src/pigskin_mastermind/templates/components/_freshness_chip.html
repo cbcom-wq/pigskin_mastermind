@@ -1,0 +1,17 @@
+{#
+  Projection freshness for the top bar.
+
+  Renders nothing at all when no projections have ever been refreshed: a
+  permanent "Never refreshed" badge on every page of an app that may not use
+  this feature is noise, not information.
+#}
+{% if freshness.latest_at %}
+<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs
+            {% if freshness.stale %}bg-amber-50 text-amber-700{% else %}bg-slate-100 text-slate-500{% endif %}"
+     title="{% for key, state in freshness.sources.items() %}{{ key }}: {{ state.status }}{% if state.rows %} ({{ state.rows }}){% endif %}&#10;{% endfor %}">
+  <span class="w-1.5 h-1.5 rounded-full
+    {%- if freshness.stale %} bg-amber-500{% else %} bg-emerald-500{% endif %}"></span>
+  <span class="hidden sm:inline">Projections</span>
+  <span class="font-medium">{{ age_label }}</span>
+</div>
+{% endif %}

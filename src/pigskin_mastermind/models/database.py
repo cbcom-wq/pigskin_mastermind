@@ -601,6 +601,40 @@ class DBManagerRun(Base):
     error = Column(String, nullable=True)
 
 
+class DBProjectionSourceRun(Base):
+    """One refresh attempt for one projection source at one scope.
+
+    The projections view renders six sources whose failure modes have nothing
+    in common: one needs an API key, one scrapes HTML, one covers a few dozen
+    players because an agent had to run for each. ``player_projections`` cannot
+    answer "did sportsbook fail, or does this player simply have no props?" —
+    a missing row looks identical either way. This table is what separates the
+    two, and it is the only thing the header freshness chip reads.
+    """
+    __tablename__ = "projection_source_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            'source', 'year', 'week', name='uq_projection_source_run',
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source = Column(String, nullable=False, index=True)
+    year = Column(Integer, nullable=False)
+
+    # NULL is the season scope, matching DBPlayerProjection.week. Weekly
+    # refreshes always set it.
+    week = Column(Integer, nullable=True)
+
+    # ok | error | skipped
+    status = Column(String, nullable=False, default='ok')
+    rows_written = Column(Integer, default=0)
+    error = Column(String, nullable=True)
+
+    started_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+
+
 DEFAULT_SCORING_SETTINGS = {
     # Offense — unchanged, 0.5 PPR
     "pass_yd": 0.04,

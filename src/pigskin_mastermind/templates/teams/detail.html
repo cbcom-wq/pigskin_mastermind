@@ -185,6 +185,24 @@
     {% include "teams/_weekly_lineup.html" %}
 </div>
 
+<!-- Multi-source projections. Loaded lazily: it ranks every player league-wide,
+     which is a bigger query than the lineup table needs to render. -->
+<div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mt-6">
+    <div class="px-6 py-4 border-b border-slate-200">
+        <h3 class="text-lg font-bold text-slate-800">Projections by source</h3>
+        <p class="text-xs text-slate-500 mt-0.5">
+            What each source expects this week, and where it ranks him among
+            every player it covers.
+        </p>
+    </div>
+    <div class="p-6"
+         hx-get="/teams/{{ team.id }}/projections?week={{ selected_week }}"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+        <p class="text-sm text-slate-400">Loading projections…</p>
+    </div>
+</div>
+
 {% else %}
 <!-- Season Roster Table (default view) -->
 <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
@@ -353,91 +371,6 @@ function performSwap(player1Id, newSlot1, player2Id, newSlot2) {
     })
     .catch(function(err) {
         if (typeof showToast === 'function') showToast('Failed to update lineup', 'error');
-    });
-}
-
-/* ---------- Batch Projection Generation ---------- */
-function generateProjections(teamId, week) {
-    var btn = document.getElementById('generate-projections-btn');
-    var spinner = document.getElementById('proj-spinner');
-    var btnText = document.getElementById('proj-btn-text');
-    btn.disabled = true;
-    spinner.classList.remove('hidden');
-    btnText.textContent = 'Generating…';
-
-    fetch('/api/stats/teams/' + teamId + '/weekly-projections?week=' + week + '&year=2025')
-    .then(function(resp) {
-        if (!resp.ok) throw new Error('Projection failed');
-        return resp.json();
-    })
-    .then(function(data) {
-        var projections = data.projections || {};
-        var cells = document.querySelectorAll('.our-proj-cell');
-        cells.forEach(function(cell) {
-            var pid = cell.getAttribute('data-player-id');
-            var proj = projections[pid];
-            if (proj && proj.projected_points !== null) {
-                cell.innerHTML = '<span class="font-semibold text-indigo-700">' + proj.projected_points.toFixed(1) + '</span>';
-            } else {
-                cell.innerHTML = '<span class="text-slate-400 text-xs">N/A</span>';
-            }
-        });
-        btnText.textContent = 'Projections Generated';
-        if (typeof showToast === 'function') showToast('Projections generated', 'success');
-    })
-    .catch(function(err) {
-        btnText.textContent = 'Generate Projections';
-        if (typeof showToast === 'function') showToast('Failed to generate projections', 'error');
-    })
-    .finally(function() {
-        btn.disabled = false;
-        spinner.classList.add('hidden');
-    });
-}
-
-/* ---------- Sportsbook Projection Generation ---------- */
-function generateSportsbookProjections(teamId, week) {
-    var btn = document.getElementById('generate-sb-projections-btn');
-    var spinner = document.getElementById('sb-proj-spinner');
-    var btnText = document.getElementById('sb-proj-btn-text');
-    btn.disabled = true;
-    spinner.classList.remove('hidden');
-    btnText.textContent = 'Loading…';
-
-    fetch('/api/stats/teams/' + teamId + '/sportsbook-projections?week=' + week)
-    .then(function(resp) {
-        if (!resp.ok) throw new Error('Sportsbook projection failed');
-        return resp.json();
-    })
-    .then(function(data) {
-        var projections = data.projections || {};
-        var cells = document.querySelectorAll('.sb-proj-cell');
-        cells.forEach(function(cell) {
-            var pid = cell.getAttribute('data-player-id');
-            var proj = projections[pid];
-            if (proj && proj.projected_points !== null && proj.projected_points > 0) {
-                // Build a tooltip showing the category breakdown
-                var tooltip = '';
-                if (proj.categories && proj.categories.length) {
-                    tooltip = proj.categories.map(function(c) {
-                        return c.label + ': ' + c.expected_stat + ' × ' + c.multiplier + ' = ' + c.fantasy_points + ' pts';
-                    }).join('\n');
-                }
-                cell.innerHTML = '<span class="font-semibold text-emerald-700 cursor-help" title="' + tooltip.replace(/"/g, '&quot;') + '">' + proj.projected_points.toFixed(1) + '</span>';
-            } else {
-                cell.innerHTML = '<span class="text-slate-400 text-xs">N/A</span>';
-            }
-        });
-        btnText.textContent = 'Sportsbook Done';
-        if (typeof showToast === 'function') showToast('Sportsbook projections loaded', 'success');
-    })
-    .catch(function(err) {
-        btnText.textContent = 'Sportsbook Proj';
-        if (typeof showToast === 'function') showToast('Failed to load sportsbook projections', 'error');
-    })
-    .finally(function() {
-        btn.disabled = false;
-        spinner.classList.add('hidden');
     });
 }
 

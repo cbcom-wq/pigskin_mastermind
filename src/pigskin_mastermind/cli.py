@@ -288,6 +288,52 @@ def projections_refresh(year, limit):
         db.close()
 
 
+@projections.command('refresh-week')
+@click.option('--year', type=int, default=None,
+              help='Season (defaults to the current fantasy season)')
+@click.option('--week', type=int, required=True, help='NFL week to project')
+@click.option('--sources', default=None,
+              help='Comma-separated source keys; omit to run all of them')
+def projections_refresh_week(year, week, sources):
+    """Run every weekly projection source and rebuild the consensus.
+
+    Writes one ``player_projections`` row per player per source for the week,
+    then a ``blend_multi`` consensus over them. This is what the per-source
+    table on a team page reads, and what gives each source a weekly track
+    record for ``pigskin agent score``.
+
+    Partial success is normal and is not an error: sportsbook covers only
+    players with posted props, ``llm`` covers only players an agent has been
+    run on, and the ``consensus`` source does nothing unless
+    ``PIGSKIN_CONSENSUS_URL`` is set. Each source's outcome is recorded in
+    ``projection_source_runs`` and printed below::
+
+        pigskin projections refresh-week --year 2026 --week 5
+    """
+    from pigskin_mastermind.services.weekly_projection_refresh import (
+        refresh_week_all,
+    )
+    from pigskin_mastermind.utils.season import current_fantasy_season
+
+    year = year or current_fantasy_season()
+    keys = [s.strip() for s in sources.split(',')] if sources else None
+
+    db = _get_stats_db()
+    try:
+        click.echo(f"Projecting week {week} of {year} across all sources...")
+        result = refresh_week_all(db, year, week, sources=keys)
+        click.echo(f"  {result['players']} players in the ranking pool")
+        for source, entry in result['sources'].items():
+            if entry['status'] == 'error':
+                click.echo(f"  {source}: FAILED — {entry['error']}")
+            else:
+                click.echo(
+                    f"  {source}: {entry['status']} ({entry.get('rows', 0)} rows)",
+                )
+    finally:
+        db.close()
+
+
 @main.group()
 def agent():
     """Commands that serve the Claude Code projection agents.

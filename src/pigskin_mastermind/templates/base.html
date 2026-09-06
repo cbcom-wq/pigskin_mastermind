@@ -138,6 +138,12 @@
                         </h1>
                     </div>
                     <div class="flex items-center gap-3">
+                        {# Projection freshness. Loaded after the page so a slow
+                           or failing query never delays the shell rendering. #}
+                        <div id="projection-freshness"
+                             hx-get="/api/projections/freshness-chip"
+                             hx-trigger="load"
+                             hx-swap="innerHTML"></div>
                         <button onclick="document.getElementById('player-search-modal').classList.remove('hidden'); setTimeout(() => document.getElementById('player-search-input').focus(), 100)"
                                 class="flex items-center gap-2 px-3 py-1.5 text-sm text-slate-500 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

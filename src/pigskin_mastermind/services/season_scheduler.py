@@ -107,8 +107,17 @@ def tick(db: Session, now: datetime, client=None) -> Dict[str, Any]:
 
     summary = {
         "leagues": 0, "ai_lineups": 0, "autofilled": 0,
-        "scored": 0, "errors": 0,
+        "scored": 0, "errors": 0, "projections": 0,
     }
+
+    # Projections are global, not league-scoped, so this runs whether or not
+    # any season league exists — the multi-source view is on ESPN teams.
+    try:
+        summary["projections"] = _refresh_projections_daily(db, now)
+    except Exception:
+        logger.exception("Daily projection refresh failed")
+        db.rollback()
+        summary["errors"] += 1
 
     for league in leagues:
         summary["leagues"] += 1
@@ -132,6 +141,31 @@ def tick(db: Session, now: datetime, client=None) -> Dict[str, Any]:
             summary["errors"] += 1
 
     return summary
+
+
+def _refresh_projections_daily(db: Session, now: datetime) -> int:
+    """Run the multi-source projection refresh at most once a day.
+
+    Guarded on ``projection_source_runs`` rather than on a timer, so a restart
+    does not re-run a refresh that already succeeded an hour ago, and a machine
+    that was asleep at the scheduled hour still catches up on the next tick.
+    """
+    from pigskin_mastermind.services.weekly_projection_refresh import (
+        current_nfl_week, needs_daily_refresh, refresh_week_all,
+    )
+
+    week = current_nfl_week(db, now.year, now)
+    if week is None:
+        # No schedule imported. Refreshing against a guessed week would store
+        # projections under the wrong one.
+        return 0
+    if not needs_daily_refresh(db, now.year, week, now):
+        return 0
+
+    result = refresh_week_all(db, now.year, week)
+    return sum(
+        entry.get("rows", 0) for entry in result["sources"].values()
+    )
 
 
 async def run_scheduler(stop_event: Optional[asyncio.Event] = None) -> None:

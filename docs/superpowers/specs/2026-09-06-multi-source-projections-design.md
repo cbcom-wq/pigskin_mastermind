@@ -1,19 +1,23 @@
 # Multi-source weekly projections view
 
 **Date:** 2026-09-06
-**Status:** approved for implementation
+**Status:** implemented
 
 ## Problem
 
-A roster page shows one projected number per player, and which number it is
-depends on which button was pressed last. `/teams/{id}` has two buttons that
-each overwrite the *same* "Projected" column — one runs the weekly model, one
-runs sportsbook props — so the two can never be compared, and pressing the
-second destroys the first. Neither works for an upcoming week: both endpoints
-require a `DBWeeklyTeamStats` row, which only exists for weeks already synced.
+The weekly lineup table has two on-demand buttons that fill two columns —
+`our-proj-cell` (the house model) and `sb-proj-cell` (sportsbook props). So a
+crude three-way comparison already exists. What is wrong with it:
 
-There is also no rank anywhere. A projection of 12.4 is not actionable without
-knowing whether that is WR8 or WR40 this week.
+- **Nothing is persisted.** Each press recomputes and throws the result away,
+  so no source can be ranked against another, and none accumulates a track
+  record `agent_scoring.py` could score against actuals.
+- **No ranks at all.** 12.4 points is not actionable without knowing whether
+  that is WR8 or WR40 this week.
+- **The year is hardcoded to `2025`** in both fetch calls.
+- **Neither works for an upcoming week.** Both endpoints require a
+  `DBWeeklyTeamStats` row, which exists only for weeks already synced — the
+  weeks whose results are already known.
 
 ## Goal
 
@@ -150,15 +154,18 @@ would be the most misleading thing this view could do.
 ## Web layer
 
 - `GET /teams/{id}/projections?week=N` — HTMX fragment, tab on team detail.
-- `GET /api/stats/teams/{id}/source-projections?week=N&year=Y` — JSON.
+- `GET /api/projections/teams/{id}?week=N&year=Y` — JSON. (Kept with the rest
+  of this feature rather than wedged into `stats.py`, which already serves two
+  unrelated concerns.)
 - `POST /api/projections/refresh-week` — manual refresh.
-- `GET /api/projections/freshness` — header chip.
+- `GET /api/projections/freshness` — JSON status.
+- `GET /api/projections/freshness-chip` — the rendered header chip.
 
 Table columns: player · pos · one per source (points + rank badge) ·
 `blend_multi` · spread (max−min). Sortable client-side.
 
-The two buttons at `teams/detail.html:361` and `:400` are removed; this view
-replaces them.
+The two on-demand buttons, their two columns, and their two JS functions are
+removed; this view supersedes them. The lineup table stays a lineup editor.
 
 **Roster resolution:** use the `DBWeeklyTeamStats` snapshot for that week when
 it exists, else fall back to the team's current roster. Without the fallback
@@ -184,9 +191,34 @@ columns (target share, air-yards share, WOPR, carries, red-zone touches),
 scored through `get_scoring_settings()`, then a 4-week exponentially-weighted
 average carried forward flat. No opponent adjustment.
 
-Bye weeks are excluded via `ScheduleIndex.is_bye()`. An EWMA that averages in a
-stored 0.0 bye drags the rate down for every player who has had one — the same
-divisor trap already documented for `games_played`.
+Byes need no `ScheduleIndex` lookup here, unlike stored game logs: the
+nflverse weekly frame has no row for a week a player did not play, the same
+property that keeps snap counts free of the `games_played` divisor bug. A
+zero-opportunity filter makes that robust rather than assumed.
+
+**Week 1 returns nothing and does not fetch.** There are no completed games to
+average, and nflverse has not published the season's frame yet — attempting it
+404s and would be recorded as a broken source rather than the ordinary "no
+history yet" it is.
+
+## Rules discovered during implementation
+
+Three behaviours that were not in the original design and are load-bearing:
+
+- **A model `0.0` is not a projection.** `max(0, base_score)` in
+  `projection_service` is a clamp meaning "no signal"; `refresh_season` already
+  skips it. Storing it weekly ranked 166 players the model could not score
+  *below* every player it scored low, as though the model had made that call.
+  The model source now skips non-positive values.
+- **A refresh must prune, not only upsert.** The Refresh button re-runs the
+  same week, so rows a source no longer covers would otherwise survive
+  indefinitely with a stale number and a stale rank. `_prune` deletes them,
+  restricted to the players the pass actually examined so a `--sources` or
+  partial-roster run cannot delete what it never looked at. The same applies to
+  `blend_multi`, whose consensus would otherwise outlive its inputs.
+- **A provider covering nobody is `skipped`, not `ok`.** For a scrape those
+  mean very different things, and the header must not report "fresh" on the
+  strength of a source that ran and found nothing.
 
 ## Testing
 
