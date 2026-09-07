@@ -1311,3 +1311,75 @@ def test_gsis_index_prefers_the_named_row_over_a_placeholder(db):
     index = NFLDataService(db)._gsis_index()
     assert index["00-0012345"] == real.id
     assert index["00-0012345"] != stub.id
+
+
+def test_merging_identities_repoints_injury_rows(db):
+    """Every child table needs an explicit mover in merge_duplicates.
+
+    A table added without one does not fail loudly — its rows are left
+    pointing at a deleted player id, and the only symptom is an injury
+    designation silently vanishing from a lineup.
+    """
+    from pigskin_mastermind.models.database import DBPlayerInjury
+    from pigskin_mastermind.services.player_identity import PlayerIdentityService
+
+    # The id prefixes matter: merge_duplicates only treats `nfl_*` / `ffc_*`
+    # rows as duplicates and folds them into an ESPN survivor. A pair built
+    # with any other prefix is never considered, and the test passes without
+    # exercising a single line of the merge.
+    survivor = DBPlayer(
+        player_id="espn_9999", name="Real Player", position="RB",
+        nfl_team="KC", gsis_id="00-0099887", espn_id="9999",
+    )
+    duplicate = DBPlayer(
+        player_id="nfl_00-0099887", name="Unknown", position="RB",
+        nfl_team="KC", gsis_id="00-0099887", espn_id="9999",
+    )
+    db.add_all([survivor, duplicate])
+    db.flush()
+
+    # The report sits on the row that gets deleted — that is the case an
+    # explicit mover exists for.
+    _injury(db, duplicate, WEEK, report="Out")
+    db.commit()
+
+    PlayerIdentityService(db).merge_duplicates(dry_run=False)
+    db.commit()
+
+    player_ids = {p.id for p in db.query(DBPlayer).all()}
+    rows = db.query(DBPlayerInjury).all()
+
+    assert rows, "the merge dropped the injury report entirely"
+    orphans = [row for row in rows if row.player_id not in player_ids]
+    assert not orphans, (
+        "injury rows left pointing at a deleted player — merge_duplicates "
+        "needs an explicit mover for every child table"
+    )
+
+
+def test_an_injury_report_alone_keeps_a_row_from_being_deleted(db):
+    """_has_no_data guards a deletion, so every child table must appear in it.
+
+    A placeholder row that looks empty is dropped outright, without any mover
+    running — so a table missing from that check is not merely orphaned, its
+    rows are destroyed along with the player they described.
+    """
+    from pigskin_mastermind.models.database import DBPlayerInjury
+    from pigskin_mastermind.services.player_identity import PlayerIdentityService
+
+    # No ESPN counterpart, so no survivor: the only question is whether this
+    # row counts as empty.
+    orphaned = DBPlayer(
+        player_id="nfl_00-0055555", name="Unknown", position="RB",
+        nfl_team="KC", gsis_id="00-0055555",
+    )
+    db.add(orphaned)
+    db.flush()
+    _injury(db, orphaned, WEEK, report="Out")
+    db.commit()
+
+    PlayerIdentityService(db).merge_duplicates(dry_run=False)
+    db.commit()
+
+    assert db.query(DBPlayerInjury).count() == 1
+    assert db.query(DBPlayer).filter_by(id=orphaned.id).first() is not None

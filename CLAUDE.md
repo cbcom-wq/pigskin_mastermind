@@ -131,6 +131,16 @@ can never work, and every import used to create another row. `resolve()` takes a
 and checks `find_defense()` first; there is exactly one defense per team, so the team *is* the
 identity. Team matching applies to `DEF` only, or two RBs on one roster would collapse together.
 
+**Adding a table with a `player_id` means editing `player_identity.py` in two
+places**, neither of which fails loudly if you forget:
+
+- a `_move_*` helper called from `merge_duplicates`, or its rows are left
+  pointing at a deleted player;
+- the model list in `_has_no_data()`, which guards a *deletion* — a row that
+  looks empty and carries a placeholder name is dropped outright without any
+  mover running, so a missing table means those rows are destroyed rather than
+  merely orphaned.
+
 `merge_duplicates(dry_run=True)` folds existing duplicates together — exposed as
 `pigskin players merge-identities [--dry-run|--apply] [--position DEF]`. Re-run it after a bulk
 import. It calls `canonicalize_positions()` first, because a defense stored as `D/ST` matches

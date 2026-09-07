@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 from pigskin_mastermind.models.database import (
     DBPlayer,
     DBPlayerGameLog,
+    DBPlayerInjury,
     DBPlayerSeasonStats,
     DBWeeklyPlayerStats,
 )
@@ -82,7 +83,9 @@ class MergeReport:
     game_log_rows_moved: int = 0
     game_log_collisions: int = 0
     weekly_rows_moved: int = 0
+    injury_rows_moved: int = 0
     weekly_collisions: int = 0
+    injury_collisions: int = 0
     fields_backfilled: int = 0
     details: List[str] = field(default_factory=list)
 
@@ -472,6 +475,7 @@ class PlayerIdentityService:
             self._move_season_stats(duplicate, survivor, report)
             self._move_game_logs(duplicate, survivor, report)
             self._move_weekly_stats(duplicate, survivor, report)
+            self._move_injuries(duplicate, survivor, report)
             report.fields_backfilled += self._backfill_profile(duplicate, survivor)
             self.stamp_ids(
                 survivor,
@@ -550,8 +554,20 @@ class PlayerIdentityService:
             player.position = entry["position"]
 
     def _has_no_data(self, player: DBPlayer) -> bool:
-        """True when nothing references this player row."""
-        for model in (DBPlayerSeasonStats, DBPlayerGameLog, DBWeeklyPlayerStats):
+        """True when nothing references this player row.
+
+        Every child table has to appear here. This guards a *deletion*: a row
+        that looks empty and carries a placeholder name is dropped outright,
+        without any of the movers running. So a table missing from this list
+        does not merely get orphaned — its rows are destroyed, and the player
+        they described disappears with them.
+        """
+        for model in (
+            DBPlayerSeasonStats,
+            DBPlayerGameLog,
+            DBWeeklyPlayerStats,
+            DBPlayerInjury,
+        ):
             if self.db.query(model).filter_by(player_id=player.id).first() is not None:
                 return False
         return True
@@ -636,6 +652,33 @@ class PlayerIdentityService:
                 continue
 
             report.weekly_collisions += 1
+            self.db.delete(row)
+
+    def _move_injuries(
+        self, duplicate: DBPlayer, survivor: DBPlayer, report: MergeReport
+    ) -> None:
+        """Re-point weekly injury reports at the surviving row.
+
+        Every child table has to be listed here explicitly. A table added
+        without a mover does not fail loudly — its rows are simply left
+        pointing at a player id that no longer exists, and the only symptom is
+        an injury designation silently vanishing from a lineup.
+        """
+        rows = self.db.query(DBPlayerInjury).filter_by(player_id=duplicate.id).all()
+        for row in rows:
+            existing = (
+                self.db.query(DBPlayerInjury)
+                .filter_by(
+                    player_id=survivor.id, year=row.year, week=row.week,
+                )
+                .first()
+            )
+            if existing is None:
+                row.player_id = survivor.id
+                report.injury_rows_moved += 1
+                continue
+
+            report.injury_collisions += 1
             self.db.delete(row)
 
     def _backfill_profile(self, duplicate: DBPlayer, survivor: DBPlayer) -> int:
