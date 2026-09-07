@@ -82,6 +82,15 @@ class DBTeam(Base):
     # there is no users table; it exists so adding one is not a migration of
     # every team row.
     owner_user_id = Column(String, nullable=True)
+
+    # Per-source weighting for the multi-source projections view, as
+    # ``{source_key: weight}``. NULL means "never customised" and reads as the
+    # tuned defaults — distinct from an all-zero dict, which is a viewer who
+    # deliberately unticked everything. Resetting nulls the column rather than
+    # writing the defaults into it, so a later change to those defaults still
+    # reaches a team that never expressed a preference.
+    projection_weights = Column(JSON, nullable=True)
+
     last_synced_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -492,6 +492,21 @@ reweighting is a *view* and never reaches AI managers or auto-fill. The stored
 `blend_multi` row is also skipped as an *input* to that live blend; counting it
 would fold every source in twice, once directly and once via its own average.
 
+**The weighting is saved per team** on `DBTeam.projection_weights`, so
+reopening the page restores it. That splits the endpoints by side effect:
+`GET /teams/{id}/projections` is read-only and restores the saved weighting,
+while `POST /teams/{id}/projections/weights` is the only thing that writes one
+— a page load or a Refresh can never quietly become a preference change.
+Precedence is form, then storage, then defaults; a request carrying its own
+weights is honoured but *not* saved, which keeps the JSON endpoint usable for a
+one-off query.
+
+**Reset must null the column, not store the defaults.** Rendering the default
+view without clearing storage makes Reset a no-op that the next load undoes.
+NULL also means "never customised", so a team that has expressed no preference
+keeps following `WEEKLY_MULTI_WEIGHTS` if those are ever retuned, where a stored
+copy would freeze it on today's numbers.
+
 The weighting form has one non-obvious rule. The number shown in an unchecked
 source's box is its tuned default, **not** its effective weight of zero.
 Rendering the zero means re-ticking the checkbox posts `w_<key>=0`, the source

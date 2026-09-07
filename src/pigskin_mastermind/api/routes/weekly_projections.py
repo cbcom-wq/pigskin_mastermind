@@ -153,6 +153,49 @@ def parse_weights(params) -> Dict[str, float]:
     return weights
 
 
+def stored_controls(team: DBTeam):
+    """The team's saved weighting, as ``(weights, checked, shown)``.
+
+    ``checked`` is every source with a positive stored weight. A zero cannot be
+    distinguished from "unticked" once stored, and that is fine: both mean the
+    source does not vote, and the box still shows a usable number so it can be
+    ticked back on.
+    """
+    defaults = dict(WEEKLY_MULTI_WEIGHTS)
+    saved = team.projection_weights or {}
+
+    weights: Dict[str, float] = {}
+    shown: Dict[str, float] = {}
+    for key in defaults:
+        try:
+            value = max(0.0, float(saved.get(key, defaults[key])))
+        except (TypeError, ValueError):
+            value = defaults[key]
+        weights[key] = value
+        shown[key] = value if value > 0 else defaults[key]
+
+    checked = {key for key, value in weights.items() if value > 0}
+    return weights, checked, shown
+
+
+def resolve_controls(team: DBTeam, params):
+    """Where this request's weighting comes from.
+
+    Precedence is form, then storage, then defaults. A request that carries its
+    own weighting is honoured verbatim and *not* saved — that keeps the JSON
+    endpoint usable for a one-off query without the caller's weights becoming
+    the team's sticky preference. Saving is the POST's job alone.
+    """
+    if params.get(WEIGHTS_ACTIVE_FIELD):
+        return parse_source_controls(params)
+    if team.projection_weights:
+        return stored_controls(team)
+
+    defaults = dict(WEEKLY_MULTI_WEIGHTS)
+    active = {key for key, weight in defaults.items() if weight > 0}
+    return dict(defaults), active, dict(defaults)
+
+
 def _serialize(rows) -> List[dict]:
     return [
         {
@@ -188,15 +231,55 @@ async def team_projections_fragment(
     year: Optional[int] = Query(None),
     db: Session = Depends(get_db),
 ):
-    """HTMX fragment: the multi-source table for one team's week."""
-    from pigskin_mastermind.api.main import templates
+    """HTMX fragment: the multi-source table for one team's week.
 
+    Read-only. It restores the team's saved weighting but never writes one —
+    saving belongs to the POST below, so a page load or a Refresh cannot
+    quietly become a preference change.
+    """
     team = db.query(DBTeam).filter_by(id=team_db_id).first()
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
 
-    year = year or _default_year()
-    weights, checked, shown = parse_source_controls(request.query_params)
+    return _render_panel(request, db, team, week, year or _default_year())
+
+
+@router.post("/teams/{team_db_id}/projections/weights")
+async def save_projection_weights(
+    request: Request,
+    team_db_id: int,
+    week: int = Query(..., ge=1, le=22),
+    year: Optional[int] = Query(None),
+    reset: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """Persist this team's source weighting, then re-render the panel.
+
+    ``reset`` nulls the column rather than storing the current defaults. Those
+    are two different states: a null means "never customised" and keeps
+    following the tuned defaults if they are ever retuned, where a stored copy
+    would freeze this team on today's values forever.
+    """
+    team = db.query(DBTeam).filter_by(id=team_db_id).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    form = await request.form()
+    if reset:
+        team.projection_weights = None
+    else:
+        weights, _checked, _shown = parse_source_controls(form)
+        team.projection_weights = weights
+    db.commit()
+
+    return _render_panel(request, db, team, week, year or _default_year())
+
+
+def _render_panel(request: Request, db: Session, team: DBTeam, week: int, year: int):
+    """Build the projections fragment for *team* in *week*."""
+    from pigskin_mastermind.api.main import templates
+
+    weights, checked, shown = resolve_controls(team, request.query_params)
     player_ids = team_week_player_ids(db, team, week)
     rows = weekly_source_table(db, player_ids, year, week, weights=weights)
 
@@ -355,9 +438,10 @@ async def team_projections_json(
         raise HTTPException(status_code=404, detail="Team not found")
 
     year = year or _default_year()
-    # Same weighting the page uses, so the JSON cannot disagree with the table
-    # a caller is looking at.
-    weights = parse_weights(request.query_params)
+    # Same resolution the page uses -- form, then the team's saved weighting,
+    # then defaults -- so the JSON cannot disagree with the table a caller is
+    # looking at.
+    weights, _checked, _shown = resolve_controls(team, request.query_params)
     player_ids = team_week_player_ids(db, team, week)
     rows = weekly_source_table(db, player_ids, year, week, weights=weights)
 

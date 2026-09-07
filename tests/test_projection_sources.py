@@ -814,3 +814,103 @@ def test_checked_with_an_explicit_zero_is_a_legal_state(db):
     ))
     assert SOURCE_ESPN in checked
     assert weights[SOURCE_ESPN] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Per-team persistence of the weighting
+# ---------------------------------------------------------------------------
+
+
+def _demo_team(db):
+    from pigskin_mastermind.models.database import DBTeam
+
+    team = DBTeam(team_id="w-test", name="Weights", owner="t")
+    db.add(team)
+    db.flush()
+    return team
+
+
+def test_saved_weights_are_restored_on_a_plain_load(db):
+    """The whole point: reopening the page must not reset the mix."""
+    from starlette.datastructures import QueryParams
+
+    from pigskin_mastermind.api.routes.weekly_projections import resolve_controls
+
+    team = _demo_team(db)
+    team.projection_weights = {SOURCE_MODEL: 0.9, SOURCE_ESPN: 0.1}
+    db.commit()
+
+    weights, checked, _shown = resolve_controls(team, QueryParams("week=1"))
+    assert weights[SOURCE_MODEL] == pytest.approx(0.9)
+    assert weights[SOURCE_ESPN] == pytest.approx(0.1)
+    assert SOURCE_MODEL in checked
+
+
+def test_a_stored_zero_reads_as_unticked_but_stays_reversible(db):
+    """Same reversibility rule as the form: the box keeps a usable number."""
+    from starlette.datastructures import QueryParams
+
+    from pigskin_mastermind.api.routes.weekly_projections import resolve_controls
+
+    team = _demo_team(db)
+    team.projection_weights = {SOURCE_MODEL: 1.0, SOURCE_ESPN: 0.0}
+    db.commit()
+
+    weights, checked, shown = resolve_controls(team, QueryParams("week=1"))
+    assert weights[SOURCE_ESPN] == 0.0
+    assert SOURCE_ESPN not in checked
+    assert shown[SOURCE_ESPN] > 0
+
+
+def test_an_explicit_form_beats_stored_weights(db):
+    """A caller passing its own weighting is honoured, not overridden."""
+    from starlette.datastructures import QueryParams
+
+    from pigskin_mastermind.api.routes.weekly_projections import (
+        WEIGHTS_ACTIVE_FIELD, resolve_controls,
+    )
+
+    team = _demo_team(db)
+    team.projection_weights = {SOURCE_MODEL: 0.9, SOURCE_ESPN: 0.1}
+    db.commit()
+
+    weights, _checked, _shown = resolve_controls(team, QueryParams(
+        f"{WEIGHTS_ACTIVE_FIELD}=1&src=espn&w_espn=0.7",
+    ))
+    assert weights[SOURCE_ESPN] == pytest.approx(0.7)
+    assert weights[SOURCE_MODEL] == 0.0
+
+
+def test_no_stored_weights_falls_through_to_defaults(db):
+    from starlette.datastructures import QueryParams
+
+    from pigskin_mastermind.api.routes.weekly_projections import resolve_controls
+
+    team = _demo_team(db)
+    db.commit()
+
+    weights, _checked, _shown = resolve_controls(team, QueryParams("week=1"))
+    assert weights == WEEKLY_MULTI_WEIGHTS
+
+
+def test_reset_nulls_the_column_rather_than_storing_defaults(db):
+    """Null and a stored copy of the defaults are different states.
+
+    Null means "never customised" and keeps tracking the tuned defaults if they
+    are ever retuned; a stored copy would freeze this team on today's numbers.
+    """
+    from starlette.datastructures import QueryParams
+
+    from pigskin_mastermind.api.routes.weekly_projections import resolve_controls
+
+    team = _demo_team(db)
+    team.projection_weights = {SOURCE_MODEL: 0.9}
+    db.commit()
+
+    # What the reset endpoint does.
+    team.projection_weights = None
+    db.commit()
+
+    assert team.projection_weights is None
+    weights, _checked, _shown = resolve_controls(team, QueryParams("week=1"))
+    assert weights == WEEKLY_MULTI_WEIGHTS

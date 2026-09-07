@@ -30,12 +30,12 @@
           Never refreshed
         {%- endif -%}
       </span>
-      {# After the refresh, re-request the panel as an outerHTML swap and carry
-         the current weighting along, so refreshing neither nests a second
-         panel inside this one nor silently resets the controls. #}
+      {# The re-request is an outerHTML swap so the refreshed panel replaces
+         this one rather than nesting inside it. It carries no weights: the GET
+         restores the team's saved weighting on its own now. #}
       <button hx-post="/api/projections/refresh-week?week={{ week }}&year={{ year }}"
               hx-swap="none"
-              hx-on::after-request="htmx.ajax('GET', '/teams/{{ team.id }}/projections?week={{ week }}&year={{ year }}', {target: '#projections-panel', swap: 'outerHTML', source: document.getElementById('source-controls'), values: htmx.values(document.getElementById('source-controls'))})"
+              hx-on::after-request="htmx.ajax('GET', '/teams/{{ team.id }}/projections?week={{ week }}&year={{ year }}', {target: '#projections-panel', swap: 'outerHTML'})"
               class="px-3 py-1.5 text-xs font-medium text-white bg-field-600 hover:bg-field-700 rounded-lg transition-colors">
         Refresh
       </button>
@@ -54,7 +54,7 @@
      stubbed so Enter in a number input cannot navigate away. #}
   <form id="source-controls" onsubmit="return false;"
         class="border border-slate-200 rounded-lg p-3 bg-slate-50"
-        hx-get="/teams/{{ team.id }}/projections?week={{ week }}&year={{ year }}"
+        hx-post="/teams/{{ team.id }}/projections/weights?week={{ week }}&year={{ year }}"
         hx-trigger="change"
         hx-target="#projections-panel"
         hx-swap="outerHTML">
@@ -64,8 +64,13 @@
       <p class="text-xs font-semibold text-slate-600 uppercase tracking-wider">
         Consensus inputs
       </p>
+      {# Reset must CLEAR the saved weighting, not merely render the default
+         view — a plain re-request would reload the very weights being reset
+         and the button would look broken. hx-params="none" keeps the current
+         form values out of the reset request. #}
       <a href="#"
-         hx-get="/teams/{{ team.id }}/projections?week={{ week }}&year={{ year }}"
+         hx-post="/teams/{{ team.id }}/projections/weights?week={{ week }}&year={{ year }}&reset=1"
+         hx-params="none"
          hx-target="#projections-panel"
          hx-swap="outerHTML"
          class="text-xs text-field-600 hover:text-field-800 hover:underline">
