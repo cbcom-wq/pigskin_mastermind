@@ -18,6 +18,9 @@ from pigskin_mastermind.models.database import (
 from pigskin_mastermind.services.season_league import (
     roster_players, season_league_ids,
 )
+from pigskin_mastermind.services.season_scheduler import league_now
+from pigskin_mastermind.services.weekly_projection_refresh import current_nfl_week
+from pigskin_mastermind.utils.season import current_fantasy_season
 
 
 class SlotChange(BaseModel):
@@ -165,11 +168,24 @@ async def team_detail(
         .first()
     )
 
+    # The week to project when no weekly snapshot has been synced. Without
+    # this the projections panel could only ever appear for a league whose
+    # ESPN weeks had been imported -- which excludes every team in a season
+    # league, and any ESPN league not yet synced for the current year.
+    projection_year = current_fantasy_season(league_now().date())
+    projection_week = (
+        week
+        or current_nfl_week(db, projection_year, league_now())
+        or 1
+    )
+
     return templates.TemplateResponse(
         "teams/detail.html",
         {
             "request": request,
             "team": team,
+            "projection_year": projection_year,
+            "projection_week": projection_week,
             "players": players,
             "season_team_url": season_team_url,
             "is_archived": is_archived,

@@ -350,15 +350,29 @@ def test_blend_multi_is_invisible_to_the_lineup_read_path(db, monkeypatch):
 
 def test_espn_source_skips_unprojected_rows(db):
     """0.0 is the column default for a bench row ESPN never projected."""
+    from pigskin_mastermind.models.database import (
+        DBLeague, DBTeam, DBWeeklyTeamStats,
+    )
+
     projected = make_player(db, "Projected Guy")
     unprojected = make_player(db, "Bench Guy")
 
+    # Real parent rows: the source now reaches through them for the season,
+    # because weekly_player_stats has no year column of its own.
+    db.add(DBLeague(league_id="lg", name="L", year=YEAR, kind="espn"))
+    team = DBTeam(team_id="t", name="T", owner="o", league_id="lg")
+    db.add(team)
+    db.flush()
+    weekly = DBWeeklyTeamStats(team_id=team.id, week=WEEK)
+    db.add(weekly)
+    db.flush()
+
     db.add(DBWeeklyPlayerStats(
-        player_id=projected.id, weekly_team_stats_id=1, week=WEEK,
+        player_id=projected.id, weekly_team_stats_id=weekly.id, week=WEEK,
         projected_points=13.2,
     ))
     db.add(DBWeeklyPlayerStats(
-        player_id=unprojected.id, weekly_team_stats_id=1, week=WEEK,
+        player_id=unprojected.id, weekly_team_stats_id=weekly.id, week=WEEK,
         projected_points=0.0,
     ))
     db.commit()
@@ -1110,3 +1124,76 @@ def test_props_are_used_when_the_event_matches_the_game(db):
     events = _events_for_week(db, YEAR, WEEK)
     assert events["KC"] == "the_right_game"
     assert events["DEN"] == "the_right_game"
+
+
+def test_espn_source_is_scoped_to_the_season(db):
+    """weekly_player_stats has no year column; the league supplies it.
+
+    Its parent's UniqueConstraint is ('team_id', 'week'), so 2025 week 1 and
+    2026 week 1 are the same slot. Filtering on week alone served an archived
+    league's projections as though they were this season's.
+    """
+    from pigskin_mastermind.models.database import (
+        DBLeague, DBTeam, DBWeeklyTeamStats,
+    )
+
+    player = make_player(db, "Two Season Guy")
+
+    for year, points in ((YEAR - 1, 25.0), (YEAR, 12.0)):
+        league = DBLeague(
+            league_id=f"lg-{year}", name=str(year), year=year, kind="espn",
+        )
+        db.add(league)
+        team = DBTeam(team_id=f"t-{year}", name=str(year), owner="o",
+                      league_id=f"lg-{year}")
+        db.add(team)
+        db.flush()
+        weekly = DBWeeklyTeamStats(team_id=team.id, week=WEEK)
+        db.add(weekly)
+        db.flush()
+        db.add(DBWeeklyPlayerStats(
+            player_id=player.id, weekly_team_stats_id=weekly.id,
+            week=WEEK, projected_points=points,
+        ))
+    db.commit()
+
+    this_year = EspnProjectionSource().project_week(db, YEAR, WEEK, [player.id])
+    last_year = EspnProjectionSource().project_week(
+        db, YEAR - 1, WEEK, [player.id],
+    )
+
+    assert this_year[player.id].points == 12.0
+    assert last_year[player.id].points == 25.0
+
+
+def test_panel_resolves_a_season_league_roster(db):
+    """The panel must work on DBRosterSpot teams, not just ESPN snapshots.
+
+    A season league is the one actually being played; gating the view on
+    weekly_team_stats meant it could never render there.
+    """
+    from pigskin_mastermind.models.database import DBLeague, DBRosterSpot, DBTeam
+    from pigskin_mastermind.api.routes.weekly_projections import (
+        team_week_player_ids,
+    )
+
+    league = DBLeague(
+        league_id="season-x", name="Season", year=YEAR, kind="season",
+        status="in_season", current_week=WEEK,
+    )
+    db.add(league)
+    team = DBTeam(team_id="season-team", name="Mine", owner="o",
+                  league_id="season-x")
+    db.add(team)
+    db.flush()
+
+    roster = [make_player(db, f"Season Guy {i}") for i in range(3)]
+    for player in roster:
+        db.add(DBRosterSpot(
+            league_id=league.id, team_id=team.id, player_id=player.id,
+        ))
+    db.commit()
+
+    # No DBWeeklyTeamStats exists for this team at all.
+    ids = team_week_player_ids(db, team, WEEK)
+    assert sorted(ids) == sorted(p.id for p in roster)

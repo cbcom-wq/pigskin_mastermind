@@ -185,24 +185,6 @@
     {% include "teams/_weekly_lineup.html" %}
 </div>
 
-<!-- Multi-source projections. Loaded lazily: it ranks every player league-wide,
-     which is a bigger query than the lineup table needs to render. -->
-<div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mt-6">
-    <div class="px-6 py-4 border-b border-slate-200">
-        <h3 class="text-lg font-bold text-slate-800">Projections by source</h3>
-        <p class="text-xs text-slate-500 mt-0.5">
-            What each source expects this week, and where it ranks him among
-            every player it covers.
-        </p>
-    </div>
-    <div class="p-6"
-         hx-get="/teams/{{ team.id }}/projections?week={{ selected_week }}"
-         hx-trigger="load"
-         hx-swap="innerHTML">
-        <p class="text-sm text-slate-400">Loading projections…</p>
-    </div>
-</div>
-
 {% else %}
 <!-- Season Roster Table (default view) -->
 <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
@@ -252,8 +234,32 @@
         <p class="text-xs text-slate-400 mt-1">Import from ESPN or add players via CLI.</p>
     </div>
     {% endif %}
+
+
+
 </div>
 {% endif %}
+
+<!-- Multi-source projections. Outside the weekly-snapshot branch on purpose:
+     gating it on available_weeks meant it could only ever render for a league
+     whose ESPN weeks had been imported, which excluded every season-league
+     team and any ESPN league not yet synced for this year. The fragment
+     resolves the roster itself and works on either storage path. -->
+<div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mt-6">
+    <div class="px-6 py-4 border-b border-slate-200">
+        <h3 class="text-lg font-bold text-slate-800">Projections by source</h3>
+        <p class="text-xs text-slate-500 mt-0.5">
+            Week {{ projection_week }} &middot; what each source expects, and
+            where it ranks him among every player it covers.
+        </p>
+    </div>
+    <div class="p-6"
+         hx-get="/teams/{{ team.id }}/projections?week={{ projection_week }}&year={{ projection_year }}"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+        <p class="text-sm text-slate-400">Loading projections&hellip;</p>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}

@@ -63,6 +63,26 @@
   </table>
 </div>
 
+{# Multi-source projections. Loaded lazily: it ranks every player league-wide,
+   which is a heavier query than this page otherwise needs. The panel is the
+   same fragment the ESPN team page uses -- it resolves the roster through
+   roster_players(), so it works on either storage path. #}
+<div class="mt-6 rounded-xl border border-slate-200 bg-white overflow-hidden">
+  <div class="border-b border-slate-200 px-6 py-4">
+    <h3 class="text-lg font-bold text-slate-800">Projections by source</h3>
+    <p class="mt-0.5 text-xs text-slate-500">
+      What each source expects this week, and where it ranks him among every
+      player it covers.
+    </p>
+  </div>
+  <div class="p-6"
+       hx-get="/teams/{{ team.id }}/projections?week={{ week }}&year={{ league.year }}"
+       hx-trigger="load"
+       hx-swap="innerHTML">
+    <p class="text-sm text-slate-400">Loading projections&hellip;</p>
+  </div>
+</div>
+
 <script>
   const askButton = document.getElementById('ask-claude');
   if (askButton) {

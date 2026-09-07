@@ -16,7 +16,9 @@ from typing import Dict, List
 
 from sqlalchemy.orm import Session
 
-from pigskin_mastermind.models.database import DBWeeklyPlayerStats
+from pigskin_mastermind.models.database import (
+    DBLeague, DBTeam, DBWeeklyPlayerStats, DBWeeklyTeamStats,
+)
 from pigskin_mastermind.services.projection_sources.base import (
     SOURCE_ESPN,
     ProjectionValue,
@@ -40,9 +42,22 @@ class EspnProjectionSource:
         if not player_ids:
             return {}
 
+        # The season MUST come from the owning league, because
+        # ``weekly_player_stats`` has no year column of its own -- its parent's
+        # UniqueConstraint is ('team_id', 'week'), so 2026 week 1 and 2025
+        # week 1 are the same slot. Filtering on ``week`` alone served an
+        # archived 2025 league's projections as though they were this season's:
+        # a plausible number, for the right player, from the wrong year.
         rows = (
             db.query(DBWeeklyPlayerStats)
+            .join(
+                DBWeeklyTeamStats,
+                DBWeeklyTeamStats.id == DBWeeklyPlayerStats.weekly_team_stats_id,
+            )
+            .join(DBTeam, DBTeam.id == DBWeeklyTeamStats.team_id)
+            .join(DBLeague, DBLeague.league_id == DBTeam.league_id)
             .filter(
+                DBLeague.year == year,
                 DBWeeklyPlayerStats.week == week,
                 DBWeeklyPlayerStats.player_id.in_(player_ids),
             )

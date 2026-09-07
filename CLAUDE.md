@@ -519,6 +519,21 @@ reweighting is a *view* and never reaches AI managers or auto-fill. The stored
 `blend_multi` row is also skipped as an *input* to that live blend; counting it
 would fold every source in twice, once directly and once via its own average.
 
+**The panel is not gated on ESPN weekly snapshots.** It renders on
+`/season/{lid}/teams/{tid}` and on `/teams/{id}` in both branches, resolving the
+roster through `team_week_player_ids()` -> the week's `DBWeeklyTeamStats`
+snapshot if one exists, else `roster_players()`. Gating it on `available_weeks`
+(as it first was) meant it could only appear for a league whose ESPN weeks had
+been imported, which excluded every season-league team -- i.e. the only league
+actually being played.
+
+**`espn` must be scoped by the league's year.** `weekly_player_stats` has no
+year column and its parent's UniqueConstraint is `('team_id', 'week')`, so 2025
+week 1 and 2026 week 1 are the same slot. Filtering on `week` alone served an
+archived 2025 league's projections as this season's -- a plausible number, for
+the right player, from the wrong year. The provider joins
+`weekly_team_stats -> teams -> leagues` and filters on `DBLeague.year`.
+
 **The weighting is saved per team** on `DBTeam.projection_weights`, so
 reopening the page restores it. That splits the endpoints by side effect:
 `GET /teams/{id}/projections` is read-only and restores the saved weighting,
