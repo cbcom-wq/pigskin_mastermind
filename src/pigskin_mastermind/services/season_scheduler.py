@@ -172,6 +172,10 @@ def _refresh_projections_daily(db: Session, now: datetime) -> int:
         service = NFLDataService(db)
         service.import_injuries([now.year])
         service.import_depth_charts([now.year])
+        # Rookie season and draft position. Rarely changes, but a waiver
+        # pickup mid-season arrives unstamped and would otherwise never be
+        # recognised as a rookie.
+        service.import_player_bio()
     except Exception:
         logger.exception("Injury/depth refresh failed; continuing to projections")
         db.rollback()

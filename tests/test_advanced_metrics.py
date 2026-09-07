@@ -335,3 +335,100 @@ def test_scan_is_empty_without_a_baseline_window(db):
     _population(db, 8, usage_start=40.0, usage_end=75.0,
                 points_start=9.0, points_end=9.2)
     assert hot_movers(db, YEAR, 2) == []
+
+
+# ---------------------------------------------------------------------------
+# Rookies
+# ---------------------------------------------------------------------------
+
+
+def test_rookie_is_judged_against_the_season_being_scanned(db):
+    """`rookie_season` is a fixed fact; an experience count would age.
+
+    Scanning 2025 must call a 2025 rookie a rookie, and must not call a 2026
+    one a rookie in 2025 — which a "years of experience" number stamped from a
+    current snapshot could not get right.
+    """
+    subject = _population(
+        db, 8, usage_start=40.0, usage_end=75.0,
+        points_start=9.0, points_end=9.2,
+    )
+    subject.rookie_season = YEAR
+    subject.draft_round = 2
+    db.commit()
+
+    hit = next(
+        m for m in hot_movers(db, YEAR, 8) if m.player_id == subject.id
+    )
+    assert hit.is_rookie is True
+    assert hit.draft_label == "R2"
+    assert hit.rookie_rising is True
+
+
+def test_a_later_rookie_is_not_a_rookie_in_an_earlier_season(db):
+    subject = _population(
+        db, 8, usage_start=40.0, usage_end=75.0,
+        points_start=9.0, points_end=9.2,
+    )
+    subject.rookie_season = YEAR + 1
+    db.commit()
+
+    hit = next(
+        m for m in hot_movers(db, YEAR, 8) if m.player_id == subject.id
+    )
+    assert hit.is_rookie is False
+
+
+def test_an_undrafted_rookie_is_labelled_udfa(db):
+    subject = _population(
+        db, 8, usage_start=40.0, usage_end=75.0,
+        points_start=9.0, points_end=9.2,
+    )
+    subject.rookie_season = YEAR
+    subject.draft_round = None
+    db.commit()
+
+    hit = next(
+        m for m in hot_movers(db, YEAR, 8) if m.player_id == subject.id
+    )
+    assert hit.draft_label == "UDFA"
+
+
+def test_a_rookie_losing_opportunity_is_not_rising(db):
+    """The strip is for opportunity *gained*; a fading rookie is not that."""
+    subject = _population(
+        db, 8, usage_start=80.0, usage_end=35.0,
+        points_start=11.0, points_end=11.4,
+    )
+    subject.rookie_season = YEAR
+    db.commit()
+
+    hit = next(
+        m for m in hot_movers(db, YEAR, 8) if m.player_id == subject.id
+    )
+    assert hit.is_rookie is True
+    assert hit.rookie_rising is False
+
+
+def test_rookie_status_does_not_change_the_ranking(db):
+    """Badging is presentation; the gap score stays a measurement.
+
+    Weighting one group would make the number mean something other than what
+    the column header claims.
+    """
+    subject = _population(
+        db, 8, usage_start=40.0, usage_end=75.0,
+        points_start=9.0, points_end=9.2,
+    )
+    before = [
+        (m.player_id, m.divergence) for m in hot_movers(db, YEAR, 8, limit=80)
+    ]
+
+    subject.rookie_season = YEAR
+    subject.draft_round = 1
+    db.commit()
+
+    after = [
+        (m.player_id, m.divergence) for m in hot_movers(db, YEAR, 8, limit=80)
+    ]
+    assert before == after

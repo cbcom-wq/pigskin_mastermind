@@ -40,10 +40,49 @@
       {% endfor %}
     </select>
   </label>
+  <label class="flex items-center gap-2 pb-1.5 text-xs font-medium text-slate-600">
+    <input type="checkbox" name="rookies" value="true"
+           {% if rookies %}checked{% endif %}
+           class="rounded border-slate-300 text-violet-600 focus:ring-violet-500">
+    Rookies only
+  </label>
   <button class="rounded bg-field-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-field-700">
     Apply
   </button>
 </form>
+
+{% if rising_rookies %}
+{#
+  Rookies are called out rather than ranked higher. A first-year player's
+  usage climb is genuinely more informative — the market has no track record
+  to price him from — but weighting one group would quietly turn the gap
+  score into something other than the measurement it claims to be.
+#}
+<div class="mb-5 rounded-lg border border-violet-200 bg-violet-50 p-4">
+  <div class="mb-2 flex items-baseline gap-2">
+    <h2 class="text-sm font-bold text-violet-900">Rookies gaining opportunity</h2>
+    <span class="text-xs text-violet-700">
+      {{ rising_rookies|length }} first-year player{{ '' if rising_rookies|length == 1 else 's' }}
+      whose role is growing
+    </span>
+  </div>
+  <div class="flex flex-wrap gap-2">
+    {% for m in rising_rookies %}
+    <a href="/players/{{ m.player_id }}"
+       class="group flex items-center gap-2 rounded border border-violet-200 bg-white px-2.5 py-1.5 hover:border-violet-400">
+      <span class="rounded bg-violet-600 px-1 py-0.5 text-[9px] font-bold text-white">
+        {{ m.draft_label }}
+      </span>
+      <span class="text-xs font-medium text-slate-800 group-hover:underline">{{ m.name }}</span>
+      <span class="text-[10px] text-slate-400">{{ m.position }} · {{ m.nfl_team or '' }}</span>
+      <span class="text-xs font-semibold tabular-nums text-emerald-700">
+        {{ '%+.2f'|format(m.usage_delta) }}
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
 
 {% if not movers %}
 <div class="rounded-lg border border-dashed border-slate-200 p-12 text-center">
@@ -81,6 +120,12 @@
              class="text-sm font-medium text-field-700 hover:text-field-900 hover:underline">
             {{ m.name }}
           </a>
+          {% if m.is_rookie %}
+          <span class="ml-1 inline-block rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold text-violet-700"
+                title="Rookie in {{ year }} &mdash; drafted {{ m.draft_label }}">
+            R &middot; {{ m.draft_label }}
+          </span>
+          {% endif %}
           <span class="ml-1 text-xs text-slate-400">{{ m.nfl_team or '' }}</span>
         </td>
         <td class="px-4 py-3 text-xs font-medium text-slate-500">{{ m.position }}</td>

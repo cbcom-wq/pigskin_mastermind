@@ -1304,6 +1304,26 @@ def stats_import_depth_charts(years):
         db.close()
 
 
+@stats.command('import-player-bio')
+def stats_import_player_bio():
+    """Stamp rookie season and draft position from nflverse.
+
+    Free, no API key. Takes no year — rookie season is a fixed fact, and
+    storing it (rather than a years-of-experience count) is what lets a past
+    season be asked about correctly::
+
+        pigskin stats import-player-bio
+    """
+    from pigskin_mastermind.services.nfl_data_service import NFLDataService
+
+    db = _get_stats_db()
+    try:
+        count = NFLDataService(db).import_player_bio()
+        click.echo(f"{count} player(s) stamped with draft origin.")
+    finally:
+        db.close()
+
+
 @stats.command('import-advanced')
 @click.option('--years', default=None, help='Comma-separated years (default: current season)')
 def stats_import_advanced(years):

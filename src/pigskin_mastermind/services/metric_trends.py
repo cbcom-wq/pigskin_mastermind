@@ -90,9 +90,30 @@ class Mover:
     drivers: List[Tuple[str, float]] = field(default_factory=list)
     weeks_covered: int = 0
 
+    #: A rookie *in the season being scanned* — from ``rookie_season``, not a
+    #: current experience count, so a backfill of an earlier year is still
+    #: right about who was a rookie then.
+    is_rookie: bool = False
+    draft_round: Optional[int] = None
+
     @property
     def verdict(self) -> str:
         return "buy" if self.divergence > 0 else "sell"
+
+    @property
+    def draft_label(self) -> str:
+        """``R1``..``R7``, or ``UDFA`` when undrafted.
+
+        Worth showing beside the rookie badge: a first-rounder's role expanding
+        is a team confirming an investment, an undrafted rookie's is a team
+        discovering something. Same signal, different confidence.
+        """
+        return f"R{self.draft_round}" if self.draft_round else "UDFA"
+
+    @property
+    def rookie_rising(self) -> bool:
+        """A rookie whose opportunity is genuinely growing."""
+        return self.is_rookie and self.usage_delta > 0
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +301,8 @@ def hot_movers(
             name=player.name,
             position=player.position,
             nfl_team=player.nfl_team,
+            is_rookie=player.rookie_season == year,
+            draft_round=player.draft_round,
             usage_delta=round(usage_delta, 2),
             production_delta=round(production_delta, 2),
             divergence=round(divergence, 2),

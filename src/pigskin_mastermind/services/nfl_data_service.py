@@ -667,6 +667,43 @@ class NFLDataService:
         self.db.commit()
         return count
 
+    def import_player_bio(self) -> int:
+        """Stamp rookie season and draft position from nflverse's player table.
+
+        Takes no year: ``import_players()`` is the whole historical roster and
+        ``rookie_season`` is a fixed fact about a person, not a per-season
+        value. That is exactly why it is stored rather than a years-of-
+        experience count — experience ages, so a 2026 snapshot of it cannot say
+        who was a rookie in 2025, and the metrics backfill needs to.
+        """
+        if nfl is None:
+            raise ImportError("nfl_data_py is not installed. Run: pip install nfl_data_py")
+
+        df = nfl.import_players()
+        if df.empty:
+            return 0
+
+        by_gsis = self._gsis_index()
+        count = 0
+        for _, row in df.iterrows():
+            player_id = by_gsis.get(_safe_str(row.get('gsis_id')))
+            if player_id is None:
+                continue
+            rookie = _safe_int(row.get('rookie_season'))
+            if not rookie:
+                continue
+
+            player = self.db.query(DBPlayer).filter_by(id=player_id).first()
+            if player is None:
+                continue
+            player.rookie_season = rookie
+            player.draft_round = _safe_int(row.get('draft_round')) or None
+            player.draft_pick = _safe_int(row.get('draft_pick')) or None
+            count += 1
+
+        self.db.commit()
+        return count
+
     def import_depth_charts(self, years: List[int]) -> int:
         """Stamp each player's current depth-chart rank.
 

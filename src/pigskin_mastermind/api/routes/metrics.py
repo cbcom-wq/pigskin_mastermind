@@ -71,6 +71,7 @@ async def hot_metrics_page(
     year: Optional[int] = Query(None),
     week: Optional[int] = Query(None),
     position: Optional[str] = Query(None),
+    rookies: bool = Query(False),
     db: Session = Depends(get_db),
 ):
     """Players whose opportunity has moved ahead of, or behind, their scoring."""
@@ -80,10 +81,15 @@ async def hot_metrics_page(
     resolved = _latest_season_with_metrics(db, requested)
 
     movers = []
+    rising = []
     target_week = week
     if resolved is not None:
         target_week = week or _last_week(db, resolved)
-        movers = hot_movers(db, resolved, target_week, position=position)
+        # Scan wider than the table shows, so the rookie strip can surface a
+        # first-year player who is real but outside the top rows.
+        scanned = hot_movers(db, resolved, target_week, position=position, limit=80)
+        rising = [m for m in scanned if m.rookie_rising]
+        movers = [m for m in scanned if m.is_rookie] if rookies else scanned[:40]
 
     return templates.TemplateResponse(
         "metrics/hot.html",
@@ -93,6 +99,8 @@ async def hot_metrics_page(
             "requested_year": requested,
             "week": target_week,
             "position": position,
+            "rookies": rookies,
+            "rising_rookies": rising,
             "movers": movers,
             # True when we are showing a season the user did not ask for.
             "fell_back": resolved is not None and resolved != requested,

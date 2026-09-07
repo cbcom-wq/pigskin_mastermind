@@ -642,6 +642,20 @@ added. Deltas are z-scaled against each metric's own observed spread, so a
 snap-share move and a separation move are comparable; a flat test cohort gives
 that scale a near-zero denominator and makes any move look enormous.
 
+**Rookies are badged, never boosted.** `Mover.is_rookie` compares
+`DBPlayer.rookie_season` to the season being scanned, and the page shows a
+strip of rookies whose usage is rising plus a per-row `R · R1`/`R · UDFA`
+badge. The divergence score is deliberately untouched: weighting one group
+would make the number mean something other than what its column claims, and a
+regression test asserts the ranking is identical with and without rookie
+status set.
+
+`rookie_season` rather than a years-of-experience count, because experience is
+a *current* value that ages — from a 2026 snapshot it cannot say who was a
+rookie in 2025, which the backfill needs. (`DBPlayer.years_exp` and
+`draft_number` are unpopulated ESPN profile columns, left alone rather than
+repurposed.) Stamped by `import_player_bio()`, which takes no year.
+
 `/metrics/hot` defaults to the newest week with league-wide coverage, not
 `max(week)` — a season's last stored weeks are the playoffs, where almost
 nobody has six continuous weeks and the page would render empty on a full

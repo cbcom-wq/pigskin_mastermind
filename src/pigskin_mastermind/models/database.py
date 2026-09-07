@@ -36,6 +36,19 @@ class DBPlayer(Base):
     depth_chart_rank = Column(Integer, nullable=True)
     depth_chart_at = Column(DateTime, nullable=True)
 
+    # Draft origin, from nflverse's player table.
+    #
+    # ``rookie_season`` rather than a years-of-experience count on purpose: an
+    # experience number is a *current* value that ages, so from a 2026 snapshot
+    # it cannot answer "was he a rookie in 2025" — which a backfill needs.
+    # A season is a fixed fact and stays correct for every year we look at.
+    # (The older ``years_exp`` and ``draft_number`` columns below are ESPN
+    # profile fields and have never been populated; left alone rather than
+    # repurposed, so nothing that reads them changes meaning.)
+    rookie_season = Column(Integer, nullable=True)
+    draft_round = Column(Integer, nullable=True)
+    draft_pick = Column(Integer, nullable=True)
+
     # Profile / bio. Deliberately real columns rather than keys in ``stats``:
     # ``stats`` holds ESPN's raw scoring-period payload and is replaced
     # wholesale on every sync, so anything stored there does not survive.
