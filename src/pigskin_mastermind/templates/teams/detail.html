@@ -1,16 +1,12 @@
 {% extends "base.html" %}
+{% import "components/_nav.html" as nav %}
 {% from "components/_player.html" import player_headshot, position_badge, injury_badge, bye_badge %}
 
 {% block page_title %}{{ team.name }}{% endblock %}
 
 {% block content %}
 <div class="mb-6">
-    <a href="/teams" class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 transition-colors">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
-        </svg>
-        Back to Teams
-    </a>
+    {{ nav.back_link(back) }}
 </div>
 
 <!-- Team Header -->
@@ -59,14 +55,7 @@
                     Sync Weekly Data
                 </button>
                 {% endif %}
-                <a href="/lineups?team={{ team.id }}"
-                   class="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-field-700 bg-field-50 hover:bg-field-100 rounded-lg transition-colors">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/>
-                    </svg>
-                    Optimize
-                </a>
-                <a href="/visualizations/season-animation/{{ team.id }}"
+                <a href="/visualizations/season-animation/{{ team.id }}?back={{ self_url | urlencode }}"
                    class="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-pigskin-700 bg-pigskin-50 hover:bg-pigskin-100 rounded-lg transition-colors">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z"/>
@@ -74,7 +63,7 @@
                     Season Animation
                 </a>
                 {% if selected_week %}
-                <a href="/teams/{{ team.id }}/simulation?week={{ selected_week }}&back=/teams/{{ team.id }}?week={{ selected_week }}"
+                <a href="/teams/{{ team.id }}/simulation?week={{ selected_week }}&back={{ self_url | urlencode }}"
                    class="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-lg transition-colors">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>

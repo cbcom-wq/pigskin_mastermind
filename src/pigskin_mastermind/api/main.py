@@ -100,7 +100,6 @@ Base.metadata.create_all(bind=engine)
 # Register routers
 from pigskin_mastermind.api.routes.teams import router as teams_router
 from pigskin_mastermind.api.routes.leagues import router as leagues_router
-from pigskin_mastermind.api.routes.lineups import router as lineups_router
 from pigskin_mastermind.api.routes.trades import router as trades_router
 from pigskin_mastermind.api.routes.players import router as players_router
 from pigskin_mastermind.api.routes.settings import router as settings_router
@@ -121,7 +120,6 @@ from pigskin_mastermind.api.routes.weekly_projections import (
 
 app.include_router(teams_router)
 app.include_router(leagues_router)
-app.include_router(lineups_router)
 app.include_router(trades_router)
 app.include_router(players_router)
 app.include_router(settings_router)

@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from pigskin_mastermind.api.main import app
 from pigskin_mastermind.models.database import (
-    DBLeague, DBPlayer, DBRosterSpot, DBTeam,
+    DBLeague, DBPlayer, DBPlayerProjection, DBRosterSpot, DBTeam,
 )
 
 client = TestClient(app)
@@ -108,15 +108,23 @@ def test_teams_list_counts_a_season_roster(db, season_league):
     assert _player_counts(response.text) == [len(ROSTER)]
 
 
-def test_lineup_optimizer_sees_a_season_roster(db, season_league):
-    _, team = season_league
-    page = client.get("/lineups")
-    assert page.status_code == 200
-    assert f"{len(ROSTER)} players" in page.text
+def test_projections_panel_sees_a_season_roster(db, season_league):
+    """Lineup optimization lives on the team's projections panel.
 
-    result = client.post(f"/lineups/{team.id}/optimize")
-    assert result.status_code == 200
-    assert "This team has no players" not in result.text
+    The standalone /lineups page is gone; this fragment is the only place a
+    lineup is optimized in the UI, so it is the surface that has to resolve a
+    season roster through ``roster_players()``.
+    """
+    _, team = season_league
+    for player in db.query(DBPlayer).all():
+        db.add(DBPlayerProjection(player_id=player.id, year=YEAR, week=1,
+                                  source="model", projected_points=11.0))
+    db.commit()
+
+    response = client.get(f"/teams/{team.id}/projections?week=1&year={YEAR}")
+    assert response.status_code == 200
+    for name, _, _ in ROSTER:
+        assert name in response.text
 
 
 def test_trade_analyzer_sees_a_season_roster(db, season_league):

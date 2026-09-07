@@ -8,7 +8,7 @@
     <td class="px-6 py-3 text-sm font-medium">
         <div class="flex items-center gap-2">
             {{ player_headshot(p, "sm") }}
-            <a href="/players/{{ p.id }}" class="text-field-700 hover:text-field-900 hover:underline" onclick="event.stopPropagation()">{{ p.name }}</a>
+            <a href="/players/{{ p.id }}?back=/players" class="text-field-700 hover:text-field-900 hover:underline" onclick="event.stopPropagation()">{{ p.name }}</a>
             {{ injury_badge(p.injury_status) }}
         </div>
     </td>

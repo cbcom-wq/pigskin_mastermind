@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "components/_nav.html" as nav %}
 {% block title %}Draft Board — Pigskin Mastermind{% endblock %}
 {% block page_title %}
 <span class="text-slate-300">Draft Board</span>
@@ -11,6 +12,11 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@800;900&family=Barlow+Semi+Condensed:wght@600&display=swap">
+
+{{ nav.breadcrumbs([
+    {"label": "Draft", "url": "/draft"},
+    {"label": "Board"},
+]) }}
 
 <div id="draft-app" data-draft-id="{{ state.draft_id }}" class="space-y-3">
 

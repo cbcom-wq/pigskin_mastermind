@@ -167,7 +167,7 @@ what the strip renders.
 ### Sections
 
 ```python
-ALL_SECTIONS = frozenset({"pulse", "attention", "players", "slate", "movers"})
+ALL_SECTIONS = frozenset({"attention", "players", "slate", "movers"})
 
 def build_view(db, now, sections=ALL_SECTIONS) -> DashboardView: ...
 ```
@@ -195,7 +195,9 @@ biggest problem would contribute no players to the strip and no
 ### Which year and week
 
 `build_view` derives one `(year, week)` for the whole page from the newest
-non-archive league (`max(DBLeague.year)` among `kind != 'archive'`, then that
+non-archive league (`max(DBLeague.year)` among `kind != 'archive'`, falling back
+to `utils/season.py::current_fantasy_season(now.date())` when there is no such
+league at all, then that
 league's `current_week or 1`). A per-card week would mean the hero's "Week 1"
 could disagree with a card beside it.
 

@@ -4,7 +4,7 @@
 <div class="px-4 py-6 text-center text-sm text-slate-400">No players found</div>
 {% else %}
 {% for row in results %}
-<a href="/players/{{ row.player.id }}" class="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-slate-50 transition-colors cursor-pointer">
+<a href="/players/{{ row.player.id }}?back=/players" class="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-slate-50 transition-colors cursor-pointer">
     {{ player_chip(row.player, size="sm", show_bye=True, subtitle=row.subtitle) }}
     <div class="text-right flex-shrink-0">
         <p class="text-sm font-semibold text-slate-700">

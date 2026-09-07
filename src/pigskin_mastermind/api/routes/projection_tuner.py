@@ -28,6 +28,7 @@ from pigskin_mastermind.services.master_coefficients import (
     reset_master_coefficients,
     get_effective_coefficients,
 )
+from pigskin_mastermind.utils.back_nav import resolve_back
 
 router = APIRouter(tags=["projection-tuner"])
 
@@ -494,6 +495,7 @@ async def projection_tuner_page(
 async def projection_tuner_run_detail_page(
     request: Request,
     run_id: str,
+    back: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     """Render a detail page for one persisted algorithm tuning run."""
@@ -506,6 +508,7 @@ async def projection_tuner_run_detail_page(
             "projection_tuner_run_detail.html",
             {
                 "request": request,
+                "back": resolve_back(back, "/projection-tuner", "Projection Tuner"),
                 "run_id": run_id,
                 "error": f"Run {run_id} not found",
                 "summary": None,
@@ -522,6 +525,7 @@ async def projection_tuner_run_detail_page(
         "projection_tuner_run_detail.html",
         {
             "request": request,
+            "back": resolve_back(back, "/projection-tuner", "Projection Tuner"),
             "run_id": run_id,
             "error": None,
             "summary": _build_algorithm_run_summary(run),

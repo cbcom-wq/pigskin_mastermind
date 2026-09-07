@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "components/_nav.html" as nav %}
 {% block title %}Your Team — Draft Recap{% endblock %}
 {% block page_title %}Draft Recap{% endblock %}
 
@@ -26,6 +27,10 @@
 
 {% block content %}
 <div class="rc">
+  {{ nav.breadcrumbs([
+      {"label": "Draft", "url": "/draft"},
+      {"label": "Recap"},
+  ]) }}
 
   <!-- ══ Hero ══════════════════════════════════════════════════════════ -->
   <section class="rc-hero" aria-labelledby="rc-headline">
@@ -304,7 +309,7 @@
           {{ headshot(player, 56) }}
           <div class="rc-card-id">
             {% if player.db_id %}
-              <a class="rc-card-name" href="/players/{{ player.db_id }}">{{ player.name }}</a>
+              <a class="rc-card-name" href="/players/{{ player.db_id }}?back=/draft/recap/{{ recap.draft_id }}">{{ player.name }}</a>
             {% else %}
               <span class="rc-card-name">{{ player.name }}</span>
             {% endif %}
@@ -395,7 +400,7 @@
   </section>
 
   <div class="rc-actions">
-    <a class="rc-btn rc-btn-ghost" href="/draft/board/{{ recap.draft_id }}">Back to the board</a>
+    <a class="rc-btn rc-btn-ghost" href="/draft/board/{{ recap.draft_id }}">View the draft board</a>
     <a class="rc-btn rc-btn-solid" href="/draft">Draft another team</a>
   </div>
 </div>

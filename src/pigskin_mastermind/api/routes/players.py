@@ -10,6 +10,7 @@ from pigskin_mastermind.models.database import DBPlayer, DBTeam, DBPlayerSeasonS
 from pigskin_mastermind.services.season_league import fantasy_teams_for
 from pigskin_mastermind.services.stats_service import StatsService
 from pigskin_mastermind.services.player_news_service import PlayerNewsService
+from pigskin_mastermind.utils.back_nav import resolve_back
 
 router = APIRouter(tags=["players"])
 
@@ -99,6 +100,8 @@ async def player_detail_page(
     latest_season = seasons[0] if seasons else None
     adp_season = next((s for s in seasons if s.get("adp") is not None), None)
 
+    back_target = resolve_back(back, "/players", "Players")
+
     return templates.TemplateResponse(
         "players/details.html",
         {
@@ -111,7 +114,11 @@ async def player_detail_page(
             "trend": trend,
             "fantasy_teams": fantasy_teams,
             "news_items": news_items,
-            "back_url": back,
+            "back": back_target,
+            # Links out of this page (the simulation view) carry this URL
+            # as their back target, so returning from one lands on the
+            # profile just read rather than skipping past it.
+            "self_url": f"/players/{player_id}?back={back_target.url}",
         },
     )
 
@@ -184,7 +191,7 @@ async def player_simulation_page(
             "player": player,
             "default_year": year or datetime.utcnow().year,
             "default_week": week or 1,
-            "back_url": back,
+            "back": resolve_back(back, f"/players/{player_id}", "Player"),
         },
     )
 

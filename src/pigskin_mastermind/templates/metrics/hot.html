@@ -68,7 +68,7 @@
   </div>
   <div class="flex flex-wrap gap-2">
     {% for m in rising_rookies %}
-    <a href="/players/{{ m.player_id }}"
+    <a href="/players/{{ m.player_id }}?back=/metrics/hot"
        class="group flex items-center gap-2 rounded border border-violet-200 bg-white px-2.5 py-1.5 hover:border-violet-400">
       <span class="rounded bg-violet-600 px-1 py-0.5 text-[9px] font-bold text-white">
         {{ m.draft_label }}
@@ -116,7 +116,7 @@
                        {% else %}bg-rose-100 text-rose-700{% endif %}">
             {{ m.verdict|upper }}
           </span>
-          <a href="/players/{{ m.player_id }}"
+          <a href="/players/{{ m.player_id }}?back=/metrics/hot"
              class="text-sm font-medium text-field-700 hover:text-field-900 hover:underline">
             {{ m.name }}
           </a>

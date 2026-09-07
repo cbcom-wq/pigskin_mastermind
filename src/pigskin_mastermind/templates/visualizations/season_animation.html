@@ -1,10 +1,13 @@
 {% extends "base.html" %}
+{% import "components/_nav.html" as nav %}
 
 {% block title %}Season Animation - {{ summary.team_name }} | Pigskin Mastermind{% endblock %}
 {% block page_title %}Season Animation{% endblock %}
 
 {% block content %}
 <div class="max-w-7xl mx-auto">
+    {{ nav.back_link(back, "mb-4") }}
+
     <!-- Header -->
     <div class="bg-white rounded-lg shadow-sm p-6 mb-6">
         <div class="flex items-start justify-between mb-4">
