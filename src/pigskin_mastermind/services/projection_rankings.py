@@ -15,11 +15,15 @@ something a caller may forget to ask for.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, FrozenSet, List, Optional
 
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.models.database import DBPlayer, DBPlayerProjection
+from pigskin_mastermind.services.projection_blender import (
+    WEEKLY_MULTI_WEIGHTS,
+    blend,
+)
 from pigskin_mastermind.services.projection_sources.base import SOURCE_BLEND_MULTI
 
 
@@ -44,27 +48,33 @@ class PlayerProjectionRow:
     nfl_team: Optional[str]
     cells: Dict[str, SourceCell] = field(default_factory=dict)
 
+    #: Sources the consensus was actually built from — the ones the viewer
+    #: gave a positive weight. Everything else still renders as a column; it
+    #: just does not vote.
+    counted: FrozenSet[str] = frozenset()
+
+    #: Consensus over ``counted``, computed per request from the viewer's
+    #: weights rather than read from the stored ``blend_multi`` row.
+    consensus: Optional[float] = None
+
     @property
     def spread(self) -> Optional[float]:
-        """Max minus min across the *forecasting* sources.
+        """Max minus min across the sources that are actually counted.
 
-        The consensus is excluded: it is an average of the others, so including
-        it can only ever pull the spread in and would understate exactly the
-        disagreement this column exists to surface.
+        Scoped to ``counted`` for the same reason the consensus is: a source
+        the viewer excluded should not still contribute its disagreement. The
+        consensus itself is never in this set — it is an average of the others,
+        so including it could only pull the spread in and understate exactly
+        what this column exists to surface.
         """
         values = [
             cell.points
             for key, cell in self.cells.items()
-            if key != SOURCE_BLEND_MULTI
+            if key != SOURCE_BLEND_MULTI and key in self.counted
         ]
         if len(values) < 2:
             return None
         return round(max(values) - min(values), 2)
-
-    @property
-    def consensus(self) -> Optional[float]:
-        cell = self.cells.get(SOURCE_BLEND_MULTI)
-        return cell.points if cell else None
 
 
 def weekly_source_table(
@@ -72,15 +82,28 @@ def weekly_source_table(
     player_ids: List[int],
     year: int,
     week: int,
+    weights: Optional[Dict[str, float]] = None,
 ) -> List[PlayerProjectionRow]:
     """Build the projections table for *player_ids*, ranked league-wide.
 
     Two queries regardless of roster size: one for every stored projection in
     the week (needed for the global ranks), one for the requested players'
     identities.
+
+    *weights* is the viewer's per-source weighting; omitted, it is the tuned
+    default. The consensus is **computed here from those weights**, not read
+    from the stored ``blend_multi`` row, because the viewer can reweight
+    sources on the page and a stored row can only ever hold one answer. With
+    default weights the two agree.
+
+    The stored row is still written by every refresh and is what
+    ``agent_scoring`` measures — nothing here overwrites it. Reweighting is a
+    view, and it never reaches what AI managers or auto-fill act on.
     """
     if not player_ids:
         return []
+
+    weights = WEEKLY_MULTI_WEIGHTS if weights is None else weights
 
     # Every row for the week, not just the roster's -- a rank is only global if
     # it is computed against everyone.
@@ -120,6 +143,11 @@ def weekly_source_table(
         row = rows_by_player.get(player_id)
         if row is None:
             continue
+        # The stored consensus is not a source and must never be blended back
+        # into a freshly computed one -- that would count every source twice,
+        # once directly and once through the average of itself.
+        if source == SOURCE_BLEND_MULTI:
+            continue
         key = (source, position)
         row.cells[source] = SourceCell(
             source=source,
@@ -129,8 +157,18 @@ def weekly_source_table(
             components=dict(components or {}),
         )
 
-    # Sort by consensus, then by whatever the model said, so a roster with no
-    # consensus yet still comes back in a sensible order rather than by id.
+    counted = frozenset(
+        key for key, weight in weights.items() if weight and weight > 0
+    )
+    for row in rows_by_player.values():
+        row.counted = counted
+        result = blend(
+            {key: cell.points for key, cell in row.cells.items()}, weights,
+        )
+        row.consensus = round(result.points, 2) if result else None
+
+    # Sort by consensus, then by whatever the best source said, so a roster
+    # with no consensus still comes back in a sensible order rather than by id.
     return sorted(
         rows_by_player.values(),
         key=lambda r: (
@@ -139,6 +177,20 @@ def weekly_source_table(
         ),
         reverse=True,
     )
+
+
+def consensus_map(rows: List[PlayerProjectionRow]) -> Dict[int, float]:
+    """``player_id -> consensus``, for feeding ``plan_lineup``.
+
+    Players with no consensus are omitted rather than sent as 0.0, so
+    ``plan_lineup`` reports them as "no projection available" instead of
+    benching them behind a number nobody produced.
+    """
+    return {
+        row.player_id: row.consensus
+        for row in rows
+        if row.consensus is not None
+    }
 
 
 def _rank_index(all_rows):

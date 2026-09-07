@@ -483,9 +483,37 @@ there is no history, and the season frame is not published yet, so fetching
 `consensus` is off unless `PIGSKIN_CONSENSUS_URL` is set, and everything
 site-specific is one injected `fetch_rows` callable.
 
+**The displayed consensus is computed per request, not read from storage.**
+`weekly_source_table(..., weights=...)` blends each row live, because the
+viewer reweights sources on the page and a stored row can hold only one
+answer. Default weights reproduce the stored `blend_multi` exactly. The stored
+row is still written by every refresh and is what `agent_scoring` measures —
+reweighting is a *view* and never reaches AI managers or auto-fill. The stored
+`blend_multi` row is also skipped as an *input* to that live blend; counting it
+would fold every source in twice, once directly and once via its own average.
+
+The weighting form has one non-obvious rule. The number shown in an unchecked
+source's box is its tuned default, **not** its effective weight of zero.
+Rendering the zero means re-ticking the checkbox posts `w_<key>=0`, the source
+stays silent, the checkbox bounces back off, and it can never be re-enabled.
+For the same reason `checked` comes from the checkbox set rather than from
+`weight > 0` — which also leaves "checked with weight 0" as a legal state a
+viewer can type. The controls are a `<form>`: htmx 1.x includes a form's own
+fields on a GET automatically, where `hx-include` on a plain `<div>` silently
+sends nothing and the page looks like it ignored the controls.
+
+The **optimal lineup** panel calls `plan_lineup()` with `players` and
+`projections` injected rather than optimizing locally. Those two parameters
+exist only so this view can supply an ESPN weekly-snapshot roster and a
+viewer-weighted consensus; everything after them — bye zeroing, injury
+exclusions and haircuts, locked-slot preservation, the stable tie-break,
+required-then-FLEX filling — still runs, so there is exactly one lineup
+decision in the codebase. It is display-only and writes no `DBLineupSlot` rows.
+
 CLI: `pigskin projections refresh-week --year Y --week N [--sources a,b]`.
 Daily refresh runs from `season_scheduler.tick()` behind a
-`projection_source_runs` guard.
+`projection_source_runs` guard. `pigskin dev seed-projection-demo` builds a
+throwaway team spanning every coverage level for evaluating the view.
 
 
 ### Web layer conventions

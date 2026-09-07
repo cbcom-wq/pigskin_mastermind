@@ -93,27 +93,47 @@ def plan_lineup(
     week: int,
     now: datetime,
     league: Optional[DBLeague] = None,
+    players: Optional[List[DBPlayer]] = None,
+    projections: Optional[Dict[int, float]] = None,
 ) -> LineupPlan:
-    """Best legal lineup for *team* in *week*, as of *now*."""
+    """Best legal lineup for *team* in *week*, as of *now*.
+
+    *players* and *projections* override the two lookups this normally does for
+    itself. They exist for the multi-source projections view, where the roster
+    comes from an ESPN weekly snapshot rather than ``DBRosterSpot`` and the
+    numbers are a consensus the user weighted on the page — neither of which
+    the default queries can produce.
+
+    Injecting rather than writing a second optimizer is deliberate. Everything
+    below this point — bye-week zeroing, injury exclusion and haircuts,
+    preserving a locked player's existing slot, the stable tie-break, and
+    required-slots-then-FLEX filling — is the lineup decision, and it must have
+    exactly one implementation. A caller supplying its own inputs still gets
+    all of it.
+    """
     if league is None:
         league = db.query(DBLeague).filter_by(league_id=team.league_id).first()
     roster_slots = (
         (league.roster_slots if league else None) or dict(DEFAULT_LINEUP_SLOTS)
     )
 
-    players = (
-        db.query(DBPlayer)
-        .join(DBRosterSpot, DBRosterSpot.player_id == DBPlayer.id)
-        .filter(
-            DBRosterSpot.team_id == team.id,
-            DBRosterSpot.dropped_at.is_(None),
+    if players is None:
+        players = (
+            db.query(DBPlayer)
+            .join(DBRosterSpot, DBRosterSpot.player_id == DBPlayer.id)
+            .filter(
+                DBRosterSpot.team_id == team.id,
+                DBRosterSpot.dropped_at.is_(None),
+            )
+            .all()
         )
-        .all()
-    )
     if not players:
         return LineupPlan(team_id=team.id, year=year, week=week)
 
-    projections = weekly_projection_map(db, [p.id for p in players], year, week)
+    if projections is None:
+        projections = weekly_projection_map(
+            db, [p.id for p in players], year, week,
+        )
     locks = LockIndex(db)
     schedule = ScheduleIndex(db)
 

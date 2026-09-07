@@ -6,16 +6,20 @@ two endpoints that feed it stay in one file.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.api.database import get_db
 from pigskin_mastermind.models.database import (
-    DBLeague, DBTeam, DBWeeklyPlayerStats, DBWeeklyTeamStats,
+    DBLeague, DBPlayer, DBTeam, DBWeeklyPlayerStats, DBWeeklyTeamStats,
 )
-from pigskin_mastermind.services.projection_rankings import weekly_source_table
+from pigskin_mastermind.services.lineup_manager import plan_lineup
+from pigskin_mastermind.services.projection_blender import WEEKLY_MULTI_WEIGHTS
+from pigskin_mastermind.services.projection_rankings import (
+    consensus_map, weekly_source_table,
+)
 from pigskin_mastermind.services.projection_sources.base import SOURCE_BLEND_MULTI
 from pigskin_mastermind.services.projection_sources.registry import source_labels
 from pigskin_mastermind.services.season_league import roster_players
@@ -70,6 +74,64 @@ def team_week_player_ids(db: Session, team: DBTeam, week: int) -> List[int]:
     return [p.id for p in roster_players(db, team, league)]
 
 
+#: Marks a request as carrying the viewer's own weighting. Without it, an
+#: unchecked-everything form and a plain first load are indistinguishable, and
+#: the page would silently fall back to defaults the moment you cleared the
+#: last checkbox — looking like the controls were ignored.
+WEIGHTS_ACTIVE_FIELD = "weights_active"
+
+
+def parse_source_controls(params):
+    """Read the weighting form. Returns ``(weights, checked, shown)``.
+
+    ``weights`` is what the consensus actually uses — zero for anything
+    unchecked, so ``blend()`` renormalizes over the rest exactly as it does for
+    a source no provider covered.
+
+    ``shown`` is what goes back into the number inputs, and is deliberately
+    **not** the same thing. Rendering an unchecked source's effective weight
+    would put 0.00 in its box, and re-ticking the checkbox would then send
+    ``w_espn=0`` — the source would stay silent and the checkbox would bounce
+    straight back off, with no way to ever re-enable it. Keeping the last
+    usable number there is what makes the checkbox reversible.
+
+    ``checked`` comes from the checkboxes themselves rather than from
+    ``weight > 0`` for the same reason. It also leaves "checked, weight 0" as a
+    legal state a viewer can type — honest, and visibly their own doing.
+    """
+    defaults = dict(WEEKLY_MULTI_WEIGHTS)
+    if not params.get(WEIGHTS_ACTIVE_FIELD):
+        active = {key for key, weight in defaults.items() if weight > 0}
+        return dict(defaults), active, dict(defaults)
+
+    checked = {key for key in defaults if key in set(params.getlist("src"))}
+    weights: Dict[str, float] = {}
+    shown: Dict[str, float] = {}
+
+    for key in defaults:
+        try:
+            value = float(params.get(f"w_{key}", defaults[key]))
+        except (TypeError, ValueError):
+            # A garbled number falls back to that source's tuned weight rather
+            # than to zero: dropping a source the viewer explicitly checked
+            # would be the more surprising failure.
+            value = defaults[key]
+        value = max(0.0, value)
+
+        # A zero in the box for an unchecked source is the trap described
+        # above, so fall back to the tuned default for display only.
+        shown[key] = value if value > 0 else defaults[key]
+        weights[key] = value if key in checked else 0.0
+
+    return weights, checked, shown
+
+
+def parse_weights(params) -> Dict[str, float]:
+    """The effective per-source weights for *params*."""
+    weights, _checked, _shown = parse_source_controls(params)
+    return weights
+
+
 def _serialize(rows) -> List[dict]:
     return [
         {
@@ -113,14 +175,27 @@ async def team_projections_fragment(
         raise HTTPException(status_code=404, detail="Team not found")
 
     year = year or _default_year()
+    weights, checked, shown = parse_source_controls(request.query_params)
     player_ids = team_week_player_ids(db, team, week)
-    rows = weekly_source_table(db, player_ids, year, week)
+    rows = weekly_source_table(db, player_ids, year, week, weights=weights)
 
     labels = source_labels()
-    # Column order is the registry's order, with the consensus last. Only
-    # columns some player actually has are rendered: six mostly-empty columns
-    # would be worse than four honest ones.
+    # Every registry source gets a control row, even one no player has this
+    # week -- a checkbox that vanishes when a source is empty would look like
+    # the source was removed rather than uncovered.
     present = {key for row in rows for key in row.cells}
+    controls = [
+        {
+            "key": key,
+            "label": label,
+            "weight": shown.get(key, 0.0),
+            "checked": key in checked,
+            "covered": sum(1 for row in rows if key in row.cells),
+            "available": key in present,
+        }
+        for key, label in labels.items()
+        if key != SOURCE_BLEND_MULTI
+    ]
     columns = [
         (key, label)
         for key, label in labels.items()
@@ -136,10 +211,43 @@ async def team_projections_fragment(
             "year": year,
             "rows": rows,
             "columns": columns,
+            "controls": controls,
+            "weights_field": WEIGHTS_ACTIVE_FIELD,
+            "plan": _consensus_lineup(db, team, year, week, rows),
             "consensus_key": SOURCE_BLEND_MULTI,
             "freshness": freshness(db, year, week),
             "empty_reason": _empty_reason(player_ids, rows),
         },
+    )
+
+
+def _consensus_lineup(db: Session, team: DBTeam, year: int, week: int, rows):
+    """The best legal lineup under the viewer's current weighting.
+
+    Goes through ``plan_lineup`` with the roster and consensus injected rather
+    than optimizing here. That function owns bye-week zeroing, injury
+    exclusions and haircuts, locked-slot preservation, the stable tie-break,
+    and required-then-FLEX filling — a second implementation for this panel
+    would fork all of it.
+
+    Display only: it returns a plan and writes no ``DBLineupSlot`` rows.
+    """
+    projections = consensus_map(rows)
+    if not projections:
+        return None
+
+    players = (
+        db.query(DBPlayer)
+        .filter(DBPlayer.id.in_([row.player_id for row in rows]))
+        .all()
+    )
+    league = (
+        db.query(DBLeague).filter_by(league_id=team.league_id).first()
+        if team.league_id else None
+    )
+    return plan_lineup(
+        db, team, year, week, league_now(),
+        league=league, players=players, projections=projections,
     )
 
 
@@ -165,6 +273,7 @@ def _empty_reason(player_ids: List[int], rows) -> Optional[str]:
 
 @router.get("/api/projections/teams/{team_db_id}")
 async def team_projections_json(
+    request: Request,
     team_db_id: int,
     week: int = Query(..., ge=1, le=22),
     year: Optional[int] = Query(None),
@@ -175,14 +284,18 @@ async def team_projections_json(
         raise HTTPException(status_code=404, detail="Team not found")
 
     year = year or _default_year()
+    # Same weighting the page uses, so the JSON cannot disagree with the table
+    # a caller is looking at.
+    weights = parse_weights(request.query_params)
     player_ids = team_week_player_ids(db, team, week)
-    rows = weekly_source_table(db, player_ids, year, week)
+    rows = weekly_source_table(db, player_ids, year, week, weights=weights)
 
     return {
         "team_id": team.id,
         "year": year,
         "week": week,
         "labels": source_labels(),
+        "weights": weights,
         "players": _serialize(rows),
     }
 

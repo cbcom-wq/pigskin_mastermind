@@ -30,15 +30,71 @@
           Never refreshed
         {%- endif -%}
       </span>
+      {# After the refresh, re-request the panel as an outerHTML swap and carry
+         the current weighting along, so refreshing neither nests a second
+         panel inside this one nor silently resets the controls. #}
       <button hx-post="/api/projections/refresh-week?week={{ week }}&year={{ year }}"
-              hx-target="#projections-panel"
               hx-swap="none"
-              hx-on::after-request="htmx.ajax('GET', '/teams/{{ team.id }}/projections?week={{ week }}&year={{ year }}', '#projections-panel')"
+              hx-on::after-request="htmx.ajax('GET', '/teams/{{ team.id }}/projections?week={{ week }}&year={{ year }}', {target: '#projections-panel', swap: 'outerHTML', source: document.getElementById('source-controls'), values: htmx.values(document.getElementById('source-controls'))})"
               class="px-3 py-1.5 text-xs font-medium text-white bg-field-600 hover:bg-field-700 rounded-lg transition-colors">
         Refresh
       </button>
     </div>
   </div>
+
+  {#
+    Source weighting. Every control lives in one container that HTMX re-sends
+    on any change, so the consensus is always recomputed server-side by the
+    same blend() the refresh uses — there is no second copy of the
+    renormalization rules in JavaScript to drift out of sync.
+  #}
+  {# A <form>, not a <div>: htmx 1.x includes a form's own field values on a
+     GET automatically, where hx-include on a plain container silently sends
+     nothing and the page looks like it ignored the controls. onsubmit is
+     stubbed so Enter in a number input cannot navigate away. #}
+  <form id="source-controls" onsubmit="return false;"
+        class="border border-slate-200 rounded-lg p-3 bg-slate-50"
+        hx-get="/teams/{{ team.id }}/projections?week={{ week }}&year={{ year }}"
+        hx-trigger="change"
+        hx-target="#projections-panel"
+        hx-swap="outerHTML">
+    <input type="hidden" name="{{ weights_field }}" value="1">
+
+    <div class="flex items-center justify-between mb-2">
+      <p class="text-xs font-semibold text-slate-600 uppercase tracking-wider">
+        Consensus inputs
+      </p>
+      <a href="#"
+         hx-get="/teams/{{ team.id }}/projections?week={{ week }}&year={{ year }}"
+         hx-target="#projections-panel"
+         hx-swap="outerHTML"
+         class="text-xs text-field-600 hover:text-field-800 hover:underline">
+        Reset to defaults
+      </a>
+    </div>
+
+    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+      {% for c in controls %}
+      <label class="flex items-center gap-2 px-2 py-1.5 bg-white border border-slate-200 rounded
+                    {% if not c.available %}opacity-50{% endif %}"
+             title="{% if c.available %}{{ c.covered }} of this roster covered{% else %}No player on this roster has a {{ c.label }} projection this week{% endif %}">
+        <input type="checkbox" name="src" value="{{ c.key }}"
+               {% if c.checked %}checked{% endif %}
+               class="rounded border-slate-300 text-field-600 focus:ring-field-500">
+        <span class="flex-1 min-w-0">
+          <span class="block text-xs font-medium text-slate-700 truncate">{{ c.label }}</span>
+          <span class="block text-[10px] text-slate-400">{{ c.covered }} covered</span>
+        </span>
+        {# Weights need not sum to 1 — blend() renormalizes over whatever is
+           present, so any positive numbers express the same relative trust. #}
+        <input type="number" name="w_{{ c.key }}" value="{{ "%.2f"|format(c.weight) }}"
+               step="0.05" min="0" max="10"
+               class="w-14 px-1 py-0.5 text-xs text-right border border-slate-200 rounded
+                      tabular-nums focus:ring-1 focus:ring-field-500">
+      </label>
+      {% endfor %}
+    </div>
+  </form>
 
   {% if empty_reason %}
   <div class="p-8 text-center border border-dashed border-slate-200 rounded-lg">
@@ -119,6 +175,59 @@
       </tbody>
     </table>
   </div>
+
+  {% if plan %}
+  {#
+    Built by plan_lineup() with this consensus injected — the same function the
+    AI manager and auto-fill use, so bye weeks, injury haircuts and lock rules
+    apply identically here. Display only: nothing is written.
+  #}
+  <div class="border border-slate-200 rounded-lg overflow-hidden">
+    <div class="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-baseline justify-between">
+      <div>
+        <span class="text-sm font-semibold text-slate-700">Optimal lineup</span>
+        <span class="text-xs text-slate-400 ml-2">under this weighting</span>
+      </div>
+      <span class="text-sm font-bold text-slate-900 tabular-nums">
+        {{ "%.1f"|format(plan.projected_total) }} pts
+      </span>
+    </div>
+
+    <table class="w-full">
+      <tbody class="divide-y divide-slate-100">
+        {% for d in plan.starters() %}
+        <tr class="hover:bg-slate-50">
+          <td class="px-4 py-2 w-16">
+            <span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold
+                         bg-field-100 text-field-700">{{ d.slot }}</span>
+          </td>
+          <td class="px-2 py-2 text-sm text-slate-700">
+            {{ d.name }}
+            {% if d.locked %}
+            <span class="text-slate-300 ml-1" title="Kickoff has passed — this player can no longer be moved.">&#128274;</span>
+            {% endif %}
+            {% if d.reason %}
+            <span class="text-xs text-amber-600 ml-1">{{ d.reason }}</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-2 text-right text-sm font-semibold text-slate-700 tabular-nums">
+            {{ "%.1f"|format(d.projected_points) }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if plan.bench() %}
+    <div class="px-4 py-2 bg-slate-50 border-t border-slate-200">
+      <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Bench</span>
+      <span class="text-xs text-slate-500 ml-2">
+        {% for d in plan.bench() %}{{ d.name }} ({{ "%.1f"|format(d.projected_points) }}){% if not loop.last %} · {% endif %}{% endfor %}
+      </span>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
 
   <div class="flex flex-wrap gap-3 text-xs text-slate-400">
     {% for key, label in columns %}

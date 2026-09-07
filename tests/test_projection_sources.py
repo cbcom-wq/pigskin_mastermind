@@ -228,7 +228,12 @@ def test_spread_excludes_the_consensus(db):
 
     row = weekly_source_table(db, [player.id], YEAR, WEEK)[0]
     assert row.spread == pytest.approx(10.0)
-    assert row.consensus == pytest.approx(15.0)
+
+    # The consensus is recomputed from the default weights, not read from the
+    # stored blend_multi row above: model .25 and espn .20 renormalize to
+    # (10*.25 + 20*.20) / .45. The stored 15.0 is deliberately ignored so a
+    # viewer's reweighting and the default view go through one code path.
+    assert row.consensus == pytest.approx(14.44, abs=0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -571,3 +576,241 @@ def test_prune_never_touches_players_outside_the_pass(db, monkeypatch):
     assert db.query(DBPlayerProjection).filter_by(
         player_id=untouched.id, source=SOURCE_SPORTSBOOK,
     ).count() == 1
+
+
+# ---------------------------------------------------------------------------
+# Viewer-weighted consensus and the optimal lineup
+# ---------------------------------------------------------------------------
+
+
+def test_consensus_follows_the_supplied_weights(db):
+    """Excluding a source must change the consensus, not just hide a column."""
+    player = make_player(db, "Weighted Guy")
+    for source, points in ((SOURCE_MODEL, 10.0), (SOURCE_ESPN, 20.0)):
+        db.add(DBPlayerProjection(
+            player_id=player.id, year=YEAR, week=WEEK,
+            source=source, projected_points=points,
+        ))
+    db.commit()
+
+    model_only = weekly_source_table(
+        db, [player.id], YEAR, WEEK, weights={SOURCE_MODEL: 1.0},
+    )[0]
+    espn_only = weekly_source_table(
+        db, [player.id], YEAR, WEEK, weights={SOURCE_ESPN: 1.0},
+    )[0]
+
+    assert model_only.consensus == pytest.approx(10.0)
+    assert espn_only.consensus == pytest.approx(20.0)
+    # Both columns stay visible either way — excluded is not hidden.
+    assert set(model_only.cells) == {SOURCE_MODEL, SOURCE_ESPN}
+
+
+def test_relative_weights_survive_renormalization(db):
+    """Weights need not sum to 1; only their ratio matters."""
+    player = make_player(db, "Ratio Guy")
+    for source, points in ((SOURCE_MODEL, 10.0), (SOURCE_ESPN, 20.0)):
+        db.add(DBPlayerProjection(
+            player_id=player.id, year=YEAR, week=WEEK,
+            source=source, projected_points=points,
+        ))
+    db.commit()
+
+    def consensus(weights):
+        return weekly_source_table(
+            db, [player.id], YEAR, WEEK, weights=weights,
+        )[0].consensus
+
+    assert consensus({SOURCE_MODEL: 3.0, SOURCE_ESPN: 1.0}) == pytest.approx(12.5)
+    assert consensus({SOURCE_MODEL: 0.3, SOURCE_ESPN: 0.1}) == pytest.approx(12.5)
+
+
+def test_spread_narrows_to_the_counted_sources(db):
+    """A source you excluded should not still contribute its disagreement."""
+    player = make_player(db, "Spread Guy")
+    for source, points in (
+        (SOURCE_MODEL, 10.0), (SOURCE_ESPN, 20.0), (SOURCE_SPORTSBOOK, 14.0),
+    ):
+        db.add(DBPlayerProjection(
+            player_id=player.id, year=YEAR, week=WEEK,
+            source=source, projected_points=points,
+        ))
+    db.commit()
+
+    everything = weekly_source_table(db, [player.id], YEAR, WEEK)[0]
+    assert everything.spread == pytest.approx(10.0)
+
+    without_espn = weekly_source_table(
+        db, [player.id], YEAR, WEEK,
+        weights={SOURCE_MODEL: 1.0, SOURCE_SPORTSBOOK: 1.0},
+    )[0]
+    assert without_espn.spread == pytest.approx(4.0)
+
+
+def test_stored_blend_multi_is_never_an_input_to_the_live_consensus(db):
+    """Counting it would fold every source in twice — once via its own average."""
+    player = make_player(db, "Double Counted")
+    db.add(DBPlayerProjection(
+        player_id=player.id, year=YEAR, week=WEEK,
+        source=SOURCE_MODEL, projected_points=10.0,
+    ))
+    db.add(DBPlayerProjection(
+        player_id=player.id, year=YEAR, week=WEEK,
+        source=SOURCE_BLEND_MULTI, projected_points=999.0,
+    ))
+    db.commit()
+
+    row = weekly_source_table(db, [player.id], YEAR, WEEK)[0]
+    assert SOURCE_BLEND_MULTI not in row.cells
+    assert row.consensus == pytest.approx(10.0)
+
+
+def test_parse_weights_defaults_until_the_form_says_otherwise(db):
+    """A first load and a cleared form must not look identical."""
+    from starlette.datastructures import QueryParams
+
+    from pigskin_mastermind.api.routes.weekly_projections import (
+        WEIGHTS_ACTIVE_FIELD, parse_weights,
+    )
+
+    assert parse_weights(QueryParams("week=1")) == WEEKLY_MULTI_WEIGHTS
+
+    cleared = parse_weights(QueryParams(f"{WEIGHTS_ACTIVE_FIELD}=1"))
+    assert set(cleared.values()) == {0.0}
+
+
+def test_parse_weights_zeroes_unchecked_and_keeps_checked(db):
+    from starlette.datastructures import QueryParams
+
+    from pigskin_mastermind.api.routes.weekly_projections import (
+        WEIGHTS_ACTIVE_FIELD, parse_weights,
+    )
+
+    weights = parse_weights(QueryParams(
+        f"{WEIGHTS_ACTIVE_FIELD}=1&src=model&w_model=0.8&w_espn=0.5",
+    ))
+    assert weights[SOURCE_MODEL] == pytest.approx(0.8)
+    # espn carried a weight but was never checked.
+    assert weights[SOURCE_ESPN] == 0.0
+
+
+def test_parse_weights_falls_back_to_the_tuned_value_on_garbage(db):
+    """A checked source with an unparseable weight keeps its default, not zero."""
+    from starlette.datastructures import QueryParams
+
+    from pigskin_mastermind.api.routes.weekly_projections import (
+        WEIGHTS_ACTIVE_FIELD, parse_weights,
+    )
+
+    weights = parse_weights(QueryParams(
+        f"{WEIGHTS_ACTIVE_FIELD}=1&src=model&w_model=abc",
+    ))
+    assert weights[SOURCE_MODEL] == WEEKLY_MULTI_WEIGHTS[SOURCE_MODEL]
+
+
+def test_consensus_map_omits_players_without_one(db):
+    """A missing consensus must not reach plan_lineup as a projected 0.0."""
+    from pigskin_mastermind.services.projection_rankings import consensus_map
+
+    covered = make_player(db, "Covered")
+    uncovered = make_player(db, "Uncovered")
+    db.add(DBPlayerProjection(
+        player_id=covered.id, year=YEAR, week=WEEK,
+        source=SOURCE_MODEL, projected_points=11.0,
+    ))
+    db.commit()
+
+    rows = weekly_source_table(db, [covered.id, uncovered.id], YEAR, WEEK)
+    assert consensus_map(rows) == {covered.id: 11.0}
+
+
+def test_injected_plan_lineup_matches_the_uninjected_one(db):
+    """Injection must change the inputs and nothing about the decision."""
+    from datetime import datetime
+
+    from pigskin_mastermind.models.database import DBLeague, DBRosterSpot, DBTeam
+    from pigskin_mastermind.services.lineup_manager import plan_lineup
+
+    league = DBLeague(league_id="inject-test", name="Inject", year=YEAR,
+                      kind="season")
+    db.add(league)
+    team = DBTeam(team_id="inject-team", name="Inject", owner="t",
+                  league_id="inject-test")
+    db.add(team)
+    db.flush()
+
+    roster = [
+        make_player(db, "QB One", position="QB"),
+        make_player(db, "RB One", position="RB"),
+        make_player(db, "RB Two", position="RB"),
+        make_player(db, "WR One", position="WR"),
+        make_player(db, "WR Two", position="WR"),
+        make_player(db, "TE One", position="TE"),
+        make_player(db, "K One", position="K"),
+        make_player(db, "DEF One", position="DEF"),
+    ]
+    for index, player in enumerate(roster):
+        db.add(DBRosterSpot(league_id=league.id, team_id=team.id,
+                            player_id=player.id))
+        db.add(DBPlayerProjection(
+            player_id=player.id, year=YEAR, week=WEEK,
+            source=SOURCE_MODEL, projected_points=20.0 - index,
+        ))
+    db.commit()
+
+    now = datetime(YEAR, 9, 1, 12, 0)
+    natural = plan_lineup(db, team, YEAR, WEEK, now, league=league)
+    injected = plan_lineup(
+        db, team, YEAR, WEEK, now, league=league,
+        players=roster,
+        projections={p.id: 20.0 - i for i, p in enumerate(roster)},
+    )
+
+    assert [(d.player_id, d.slot) for d in natural.decisions] == \
+           [(d.player_id, d.slot) for d in injected.decisions]
+    assert natural.projected_total == injected.projected_total
+
+
+def test_unchecking_a_source_stays_reversible(db):
+    """The box shown for an unchecked source must not be its effective 0.
+
+    Rendering 0.00 there means re-ticking the checkbox sends w_<key>=0, the
+    source stays silent, and the checkbox bounces straight back off — the
+    source becomes impossible to re-enable.
+    """
+    from starlette.datastructures import QueryParams
+
+    from pigskin_mastermind.api.routes.weekly_projections import (
+        WEIGHTS_ACTIVE_FIELD, parse_source_controls,
+    )
+
+    # espn unchecked, and the form echoes back the 0.00 it was rendered with.
+    weights, checked, shown = parse_source_controls(QueryParams(
+        f"{WEIGHTS_ACTIVE_FIELD}=1&src=model&w_model=0.25&w_espn=0.00",
+    ))
+    assert weights[SOURCE_ESPN] == 0.0          # contributes nothing
+    assert SOURCE_ESPN not in checked           # renders unchecked
+    assert shown[SOURCE_ESPN] > 0               # but the box keeps a usable value
+
+    # Re-ticking it with that shown value restores a real contribution.
+    weights, checked, _ = parse_source_controls(QueryParams(
+        f"{WEIGHTS_ACTIVE_FIELD}=1&src=model&src=espn"
+        f"&w_model=0.25&w_espn={shown[SOURCE_ESPN]}",
+    ))
+    assert SOURCE_ESPN in checked
+    assert weights[SOURCE_ESPN] > 0
+
+
+def test_checked_with_an_explicit_zero_is_a_legal_state(db):
+    """Typing 0 into a checked source's box is the viewer's own decision."""
+    from starlette.datastructures import QueryParams
+
+    from pigskin_mastermind.api.routes.weekly_projections import (
+        WEIGHTS_ACTIVE_FIELD, parse_source_controls,
+    )
+
+    weights, checked, _ = parse_source_controls(QueryParams(
+        f"{WEIGHTS_ACTIVE_FIELD}=1&src=model&src=espn&w_model=1&w_espn=0",
+    ))
+    assert SOURCE_ESPN in checked
+    assert weights[SOURCE_ESPN] == 0.0
