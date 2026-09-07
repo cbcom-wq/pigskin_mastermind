@@ -13,14 +13,15 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.models.database import DBLeague, DBNFLGame
 from pigskin_mastermind.services.ai_manager import (
-    autofill_missing_lineups, set_ai_lineups,
+    autofill_missing_lineups,
+    set_ai_lineups,
 )
 from pigskin_mastermind.services.lineup_locks import first_kickoff
 from pigskin_mastermind.services.live_scoring import refresh_week
@@ -58,14 +59,28 @@ def league_now() -> datetime:
     return datetime.now(LEAGUE_TZ).replace(tzinfo=None)
 
 
+def in_game_window(now: datetime, kickoffs: Iterable[datetime]) -> bool:
+    """True while any of *kickoffs* is inside its GAME_WINDOW_HOURS window.
+
+    The single definition of "a game is on". The scheduler polls ESPN against
+    it and the dashboard decides whether to poll itself against it; two copies
+    would drift and the page would keep refreshing after the scheduler had
+    stopped fetching anything new.
+
+    Half-open: a game is live at its kickoff minute and over exactly
+    GAME_WINDOW_HOURS later.
+    """
+    window = timedelta(hours=GAME_WINDOW_HOURS)
+    return any(kickoff <= now < kickoff + window for kickoff in kickoffs)
+
+
 def next_poll_at(now: datetime, kickoffs: List[datetime]) -> datetime:
     """When the loop should wake next.
 
     Fast inside a game window, otherwise at the next kickoff, never later than
     the idle cap.
     """
-    window = timedelta(hours=GAME_WINDOW_HOURS)
-    if any(kickoff <= now < kickoff + window for kickoff in kickoffs):
+    if in_game_window(now, kickoffs):
         return now + timedelta(seconds=LIVE_POLL_SECONDS)
 
     upcoming = [kickoff for kickoff in kickoffs if kickoff > now]
@@ -106,8 +121,12 @@ def tick(db: Session, now: datetime, client=None) -> Dict[str, Any]:
     )
 
     summary = {
-        "leagues": 0, "ai_lineups": 0, "autofilled": 0,
-        "scored": 0, "errors": 0, "projections": 0,
+        "leagues": 0,
+        "ai_lineups": 0,
+        "autofilled": 0,
+        "scored": 0,
+        "errors": 0,
+        "projections": 0,
     }
 
     # Projections are global, not league-scoped, so this runs whether or not
@@ -129,10 +148,16 @@ def tick(db: Session, now: datetime, client=None) -> Dict[str, Any]:
             if kickoff is not None and now >= kickoff:
                 # Only at first kickoff: before that the manager still has time.
                 summary["autofilled"] += autofill_missing_lineups(
-                    db, league, week, now,
+                    db,
+                    league,
+                    week,
+                    now,
                 )["teams"]
                 summary["scored"] += refresh_week(
-                    db, league, week, client=client,
+                    db,
+                    league,
+                    week,
+                    client=client,
                 )["scored"]
         except Exception:
             # One league's failure must not stop the rest from advancing.
@@ -151,7 +176,9 @@ def _refresh_projections_daily(db: Session, now: datetime) -> int:
     that was asleep at the scheduled hour still catches up on the next tick.
     """
     from pigskin_mastermind.services.weekly_projection_refresh import (
-        current_nfl_week, needs_daily_refresh, refresh_week_all,
+        current_nfl_week,
+        needs_daily_refresh,
+        refresh_week_all,
     )
 
     week = current_nfl_week(db, now.year, now)
@@ -191,9 +218,7 @@ def _refresh_projections_daily(db: Session, now: datetime) -> int:
         db.rollback()
 
     result = refresh_week_all(db, now.year, week)
-    return sum(
-        entry.get("rows", 0) for entry in result["sources"].values()
-    )
+    return sum(entry.get("rows", 0) for entry in result["sources"].values())
 
 
 async def run_scheduler(stop_event: Optional[asyncio.Event] = None) -> None:
@@ -221,7 +246,8 @@ async def run_scheduler(stop_event: Optional[asyncio.Event] = None) -> None:
             db.close()
 
         delay = max(
-            1.0, (next_poll_at(now, kickoffs) - league_now()).total_seconds(),
+            1.0,
+            (next_poll_at(now, kickoffs) - league_now()).total_seconds(),
         )
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=delay)
