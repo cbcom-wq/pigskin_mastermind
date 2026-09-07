@@ -57,3 +57,6 @@ desktop/node_modules/
 # SQLite WAL sidecars (WAL enabled in api/database.py)
 *.db-wal
 *.db-shm
+
+# Superpowers brainstorming visual companion
+.superpowers/
