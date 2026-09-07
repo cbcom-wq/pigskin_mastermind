@@ -13,8 +13,8 @@ from sqlalchemy.orm import Session
 
 from pigskin_mastermind.api.database import get_db
 from pigskin_mastermind.models.database import (
-    DBLeague, DBPlayer, DBTeam, DBWeeklyPlayerStats, DBWeeklyTeamStats,
-    get_scoring_settings,
+    DBLeague, DBNFLGame, DBPlayer, DBTeam, DBWeeklyPlayerStats,
+    DBWeeklyTeamStats,
 )
 from pigskin_mastermind.services.lineup_manager import plan_lineup
 from pigskin_mastermind.services.projection_blender import WEEKLY_MULTI_WEIGHTS
@@ -23,12 +23,9 @@ from pigskin_mastermind.services.projection_rankings import (
 )
 from pigskin_mastermind.services.projection_sources.base import (
     SOURCE_BLEND_MULTI, SOURCE_CONSENSUS, SOURCE_ESPN, SOURCE_LLM,
-    SOURCE_MODEL, SOURCE_NFLVERSE_XP, SOURCE_SPORTSBOOK,
+    SOURCE_MARKET, SOURCE_MODEL, SOURCE_NFLVERSE_XP, SOURCE_SPORTSBOOK,
 )
 from pigskin_mastermind.services.projection_sources.registry import source_labels
-from pigskin_mastermind.services.sportsbook_projection_service import (
-    MARKET_TO_SCORING,
-)
 from pigskin_mastermind.services.season_league import roster_players
 from pigskin_mastermind.services.season_scheduler import league_now
 from pigskin_mastermind.services.weekly_projection_refresh import (
@@ -89,6 +86,7 @@ def team_week_player_ids(db: Session, team: DBTeam, week: int) -> List[int]:
 SOURCE_COLORS = {
     SOURCE_MODEL: "#2a78d6",        # blue
     SOURCE_ESPN: "#eb6834",         # orange
+    SOURCE_MARKET: "#4a3aa7",       # violet
     SOURCE_SPORTSBOOK: "#1baf7a",   # aqua
     SOURCE_NFLVERSE_XP: "#eda100",  # yellow
     SOURCE_LLM: "#e87ba4",          # magenta
@@ -319,7 +317,7 @@ def _render_panel(request: Request, db: Session, team: DBTeam, week: int, year: 
             "controls": controls,
             "weights_field": WEIGHTS_ACTIVE_FIELD,
             "plan": _consensus_lineup(db, team, year, week, rows),
-            "sportsbook": sportsbook_method(db, team, rows),
+            "market": market_method(db, rows, year, week),
             "consensus_key": SOURCE_BLEND_MULTI,
             "freshness": freshness(db, year, week),
             "empty_reason": _empty_reason(player_ids, rows),
@@ -327,52 +325,34 @@ def _render_panel(request: Request, db: Session, team: DBTeam, week: int, year: 
     )
 
 
-def sportsbook_method(db: Session, team: DBTeam, rows):
-    """The market->scoring mapping, plus a worked example off this roster.
+def market_method(db: Session, rows, year: int, week: int):
+    """How the Market column was produced, with a worked example off this roster.
 
-    Both are derived rather than written into the template. A hardcoded
-    multiplier table silently becomes wrong the moment a league overrides its
-    scoring, and a hardcoded worked example becomes a lie as soon as the lines
-    move — and this panel exists precisely to be trusted about the arithmetic.
+    Derived rather than written into the template: a hardcoded example becomes
+    a lie the moment a line moves, and this panel exists to be trusted about
+    the arithmetic.
     """
-    league = (
-        db.query(DBLeague).filter_by(league_id=team.league_id).first()
-        if team.league_id else None
-    )
-    scoring = get_scoring_settings(league)
-
-    markets = [
-        {"market": key, "label": label, "scoring_key": scoring_key,
-         "multiplier": scoring.get(scoring_key, 0)}
-        for key, (scoring_key, label) in sorted(
-            MARKET_TO_SCORING.items(), key=lambda item: item[1][1],
-        )
-    ]
-
-    # The player with the most priced categories, not simply the first row.
-    # The table re-sorts as the viewer reweights sources, so "first row" would
-    # make the worked example jump to a different player mid-session; richest
-    # breakdown is both stable and the most illustrative.
     example = None
-    best = 0
     for row in rows:
-        cell = row.cells.get(SOURCE_SPORTSBOOK)
-        categories = (cell.components or {}).get("categories") if cell else None
-        if categories and len(categories) > best:
-            best = len(categories)
-            example = {
-                "name": row.name,
-                "position": row.position,
-                "total": cell.points,
-                "categories": categories,
-                "books": max(
-                    (c.get("bookmaker_count") or 0 for c in categories),
-                    default=0,
-                ),
-                "is_qb": row.position == "QB",
-            }
+        cell = row.cells.get(SOURCE_MARKET)
+        parts = cell.components if cell else None
+        if parts and parts.get("implied_team_total"):
+            example = dict(parts)
+            example["name"] = row.name
+            example["team"] = row.nfl_team
+            example["total"] = cell.points
+            break
 
-    return {"markets": markets, "example": example}
+    priced = (
+        db.query(DBNFLGame)
+        .filter(
+            DBNFLGame.year == year,
+            DBNFLGame.week == week,
+            DBNFLGame.total_line.isnot(None),
+        )
+        .count()
+    )
+    return {"example": example, "games_priced": priced}
 
 
 def _consensus_lineup(db: Session, team: DBTeam, year: int, week: int, rows):

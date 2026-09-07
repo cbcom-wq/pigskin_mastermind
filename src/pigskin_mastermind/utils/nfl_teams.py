@@ -71,3 +71,55 @@ def normalize_team(team: Optional[str]) -> Optional[str]:
 
     cleaned = _ALIASES.get(cleaned, cleaned)
     return cleaned if cleaned in NFL_TEAMS else None
+
+
+#: Full club names -> canonical abbreviation. Sportsbook feeds (and The Odds
+#: API in particular) identify teams as "Kansas City Chiefs" rather than "KC",
+#: so a join between odds events and ``DBNFLGame`` needs this. Keyed on the
+#: nickname alone, because that is the one part that is stable: "LA Chargers",
+#: "Los Angeles Chargers" and "Chargers" all differ in the city, never the name.
+_NICKNAMES = {
+    'CARDINALS': 'ARI', 'FALCONS': 'ATL', 'RAVENS': 'BAL', 'BILLS': 'BUF',
+    'PANTHERS': 'CAR', 'BEARS': 'CHI', 'BENGALS': 'CIN', 'BROWNS': 'CLE',
+    'COWBOYS': 'DAL', 'BRONCOS': 'DEN', 'LIONS': 'DET', 'PACKERS': 'GB',
+    'TEXANS': 'HOU', 'COLTS': 'IND', 'JAGUARS': 'JAX', 'CHIEFS': 'KC',
+    'CHARGERS': 'LAC', 'RAMS': 'LAR', 'RAIDERS': 'LV', 'DOLPHINS': 'MIA',
+    'VIKINGS': 'MIN', 'PATRIOTS': 'NE', 'SAINTS': 'NO', 'GIANTS': 'NYG',
+    'JETS': 'NYJ', 'EAGLES': 'PHI', 'STEELERS': 'PIT', 'SEAHAWKS': 'SEA',
+    '49ERS': 'SF', 'BUCCANEERS': 'TB', 'TITANS': 'TEN', 'COMMANDERS': 'WAS',
+    # Former names still seen in older feeds.
+    'REDSKINS': 'WAS', 'WASHINGTON': 'WAS', 'FOOTBALL': 'WAS',
+    'OILERS': 'TEN',
+}
+
+
+def resolve_team(team: Optional[str]) -> Optional[str]:
+    """Canonical abbreviation from an abbreviation *or* a full club name.
+
+    Kept separate from :func:`normalize_team` rather than folded into it. That
+    function is called at every import boundary and its contract — ``None``
+    means "leave the stored value alone" — is load-bearing; widening it to
+    match on free text would risk a stray word resolving to a team and
+    overwriting a good value. This one is for the places that genuinely receive
+    prose names, chiefly sportsbook feeds.
+
+    >>> resolve_team('Kansas City Chiefs')
+    'KC'
+    >>> resolve_team('WSH')
+    'WAS'
+    >>> resolve_team('Rochester Jackalopes') is None
+    True
+    """
+    direct = normalize_team(team)
+    if direct:
+        return direct
+    if not team:
+        return None
+
+    words = str(team).strip().upper().replace('.', '').split()
+    # Last word first: "New York Giants" and "Giants" both end in the nickname.
+    for word in reversed(words):
+        hit = _NICKNAMES.get(word)
+        if hit:
+            return hit
+    return None

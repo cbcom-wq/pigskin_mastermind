@@ -27,6 +27,10 @@ from sqlalchemy.orm import Session
 SOURCE_MODEL = "model"
 SOURCE_ESPN = "espn"
 SOURCE_SPORTSBOOK = "sportsbook"
+
+#: Market-implied, from free nflverse game lines. Distinct from
+#: ``sportsbook``, which needs per-player props behind a paid API plan.
+SOURCE_MARKET = "market"
 SOURCE_NFLVERSE_XP = "nflverse_xp"
 SOURCE_LLM = "llm"
 SOURCE_CONSENSUS = "consensus"

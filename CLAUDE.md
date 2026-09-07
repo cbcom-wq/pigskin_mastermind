@@ -474,6 +474,33 @@ Two rules that produce wrong numbers if broken:
   a stale rank. `_prune()` is restricted to the players the pass examined, so a
   `--sources` run cannot delete what it never looked at.
 
+**`sportsbook` needs paid player props and currently has none.** Every provider
+checked gates NFL props behind a paid plan (The Odds API wants its ~$99/mo
+Business tier), and what `sportsbook_odds` held was hand-written fixtures from
+`sportsbook_seed.py` for a 2025 week-10 slate. Those rows have been deleted.
+
+The provider is kept, but props are now **scoped to the game being projected**
+via `_events_for_week()`. Without an `event_id`, `_fetch_props` matches
+`description ILIKE '%name%'` across every odds row ever stored -- no year, no
+week, no event -- which is how a seeded 2025 slate produced confident 2026
+week-1 "sportsbook" numbers. No matching event now means no projection.
+
+That join needs `utils/nfl_teams.py::resolve_team()`, not `normalize_team()`:
+odds feeds name teams as `Kansas City Chiefs` while `DBNFLGame` says `KC`, and
+`normalize_team` returns `None` for prose. The two are deliberately separate --
+`normalize_team`'s `None` means "leave the stored value alone" at every import
+boundary, and widening it to match free text would risk a stray word
+overwriting a good team.
+
+`market` is the free stand-in. `DBNFLGame.spread_line`/`total_line` come from
+`nfl_data_py.import_schedules()` with no API key, and give each side's implied
+team total (`total/2 ± spread/2`). **`spread_line` is positive when the HOME
+team is favoured** -- inverting that sign marks up every underdog and marks
+down every favourite, a wrong number in the right shape. The projection is the
+player's decayed 4-game fantasy average times that total over the week's
+average, capped to 0.75-1.30, because a line prices the team and not one
+player's usage. A defense is scaled by the *opponent's* total, inverted.
+
 `nflverse_xp` computes expected points itself — the installed `nfl_data_py` has
 no `import_ff_opportunity`. It prices opportunity (attempts/carries/targets) at
 league-average rates, then EWMAs the last 4 games. It returns nothing at week 1:

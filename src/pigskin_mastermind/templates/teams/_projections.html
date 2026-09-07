@@ -488,117 +488,90 @@
     number — particularly the missing interception market, which makes every
     QB figure here optimistic by construction.
   #}
+  {#
+    How the market-derived columns are produced. On the page rather than in a
+    docstring because the caveats change how the numbers should be read.
+  #}
   <details class="border border-slate-200 rounded-lg">
     <summary class="px-4 py-2.5 cursor-pointer text-sm font-semibold text-slate-700 hover:bg-slate-50">
-      How the Sportsbook projection is calculated
+      How the Market projection is calculated
     </summary>
     <div class="px-4 py-3 border-t border-slate-200 space-y-3 text-xs text-slate-600">
 
       <p>
-        It is the betting market's own forecast, converted with your league's
-        scoring. Nothing about the house model is involved, which is what makes
-        it a genuinely independent second opinion.
+        Betting lines are the only real market data available without a paid
+        subscription. They price the <em>game</em>, not the player, so this
+        column takes a player's recent form and re-prices it for the game
+        environment the market expects.
       </p>
 
       <ol class="list-decimal ml-4 space-y-1">
         <li>
-          Pull this week's stored player props from every book
-          (currently <strong>DraftKings, FanDuel, BetMGM</strong>).
+          Read the closing <strong>spread</strong> and <strong>total</strong>
+          for each game from nflverse
+          ({{ market.games_priced }} of this week's games priced).
         </li>
         <li>
-          Take <strong>one line per book per market</strong> — the Over row's
-          number. The Under carries the same line, so counting both would
-          double a book's vote.
+          Split them into each side's <strong>implied team total</strong>:
+          <span class="font-mono">total &divide; 2 &plusmn; spread &divide; 2</span>.
         </li>
         <li>
-          Take the <strong>median</strong> across books. Median, not mean, so a
-          single book posting an outlier line cannot drag the number.
+          Compare that to the week's average implied total to get an
+          <strong>environment multiplier</strong>, capped to 0.75&ndash;1.30.
         </li>
         <li>
-          Multiply that expected stat by your scoring weight and sum the
-          categories.
+          Multiply the player's decayed 4-game fantasy average by it.
         </li>
       </ol>
 
-      <div class="overflow-x-auto">
-        <table class="w-full text-xs">
-          <thead>
-            <tr class="text-left text-slate-400 border-b border-slate-200">
-              <th class="py-1 pr-4 font-medium">Prop market</th>
-              <th class="py-1 pr-4 font-medium">Scoring key</th>
-              <th class="py-1 font-medium text-right">Points per unit</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-slate-100">
-            {% for m in sportsbook.markets %}
-            <tr>
-              <td class="py-1 pr-4">{{ m.label }}</td>
-              <td class="py-1 pr-4 font-mono text-slate-400">{{ m.scoring_key }}</td>
-              <td class="py-1 text-right tabular-nums">{{ m.multiplier }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-
-      {% if sportsbook.example %}
-      {# Taken from a real stored breakdown on this roster, so it cannot drift
-         out of step with the numbers in the table above it. #}
+      {% if market.example %}
       <div class="bg-slate-50 border border-slate-200 rounded p-3">
         <p class="font-semibold text-slate-700 mb-1.5">
-          Worked example &mdash; {{ sportsbook.example.name }}
-          <span class="font-normal text-slate-400">
-            (median of {{ sportsbook.example.books }} book{{ '' if sportsbook.example.books == 1 else 's' }})
-          </span>
+          Worked example &mdash; {{ market.example.name }}
+          <span class="font-normal text-slate-400">({{ market.example.team }})</span>
         </p>
-        <table class="font-mono text-[11px] text-slate-600">
-          <tbody>
-            {% for c in sportsbook.example.categories %}
-            <tr>
-              <td class="pr-3">{{ c.label }}</td>
-              <td class="pr-1 text-right tabular-nums">{{ c.expected_stat }}</td>
-              <td class="pr-1 text-slate-400">&times;</td>
-              <td class="pr-3 text-right tabular-nums">{{ c.multiplier }}</td>
-              <td class="pr-1 text-slate-400">=</td>
-              <td class="text-right tabular-nums">{{ "%.2f"|format(c.fantasy_points) }}</td>
-            </tr>
-            {% endfor %}
-            <tr class="border-t border-slate-300 font-semibold text-slate-800">
-              <td class="pr-3 pt-1">Total</td>
-              <td colspan="4"></td>
-              <td class="text-right tabular-nums pt-1">
-                {{ "%.2f"|format(sportsbook.example.total) }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <p class="font-mono text-[11px] leading-5 text-slate-600">
+          recent 4-game average&nbsp;&nbsp; {{ "%.2f"|format(market.example.baseline) }}<br>
+          implied team total&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {{ market.example.implied_team_total }}
+          <span class="text-slate-400">(opponent {{ market.example.opponent_implied_total }})</span><br>
+          week average total&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {{ market.example.week_average_total }}<br>
+          environment&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {{ market.example.implied_team_total }} &divide; {{ market.example.week_average_total }} = {{ market.example.environment }}<br>
+          <span class="font-semibold text-slate-800">projection&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ "%.2f"|format(market.example.baseline) }} &times; {{ market.example.environment }} = {{ "%.2f"|format(market.example.total) }}</span>
+        </p>
       </div>
       {% endif %}
 
       <div class="border-l-2 border-amber-300 pl-3 space-y-1.5">
         <p class="font-semibold text-slate-700">Read it with these in mind</p>
         <p>
-          <strong>Only six markets are converted.</strong> There is no
-          interception, fumble, or two-point market, so nothing here can ever
-          subtract points. Every QB number is optimistic by
-          construction{% if sportsbook.example and sportsbook.example.is_qb %} —
-          the {{ sportsbook.example.name }} total above carries no deduction for
-          interception risk at all{% endif %}.
+          <strong>The line prices the team, not the player.</strong> Every
+          player on a side gets the same multiplier. It cannot know that one
+          receiver is expected to absorb the targets and another is not.
         </p>
         <p>
-          <strong>A TD line is a threshold, not an expected count.</strong>
-          Books post rushing TDs as "over 0.5", so this treats that as half a
-          touchdown for everyone who has the market — a goal-line back and a
-          long-shot both land on 0.5 &times; 6 = 3.0 points.
+          <strong>The baseline is backward-looking.</strong> Recent scoring
+          carries a player's own past usage into it, so a changed role shows up
+          only as those games age into the 4-game window.
         </p>
         <p>
-          <strong>The line is used raw.</strong> No vig is removed and the
-          attached odds are ignored, so this is the market's midpoint rather
-          than a true probability-weighted mean.
+          <strong>A defense is scaled by the opponent's total</strong>, inverted
+          &mdash; a defense facing a low-scoring offense is in a good spot.
         </p>
         <p>
-          <strong>Kickers and defenses get nothing.</strong> No market maps to
-          them, so they show as &mdash; and fall back to the other sources.
+          <strong>The multiplier is capped at 0.75&ndash;1.30.</strong> A line
+          can imply a genuinely extreme game, but the market is not claiming one
+          player's output doubles.
+        </p>
+      </div>
+
+      <div class="border-t border-slate-200 pt-3">
+        <p class="font-semibold text-slate-700 mb-1">Why not real player props?</p>
+        <p>
+          Props (passing yards, receptions, anytime TD) would be the better
+          signal, and the <span class="font-mono">Sportsbook</span> column is
+          wired for them. Every provider checked gates NFL props behind a paid
+          plan, so that column has no data and contributes nothing. It is left
+          in place so it starts working the moment real props are available.
         </p>
       </div>
     </div>

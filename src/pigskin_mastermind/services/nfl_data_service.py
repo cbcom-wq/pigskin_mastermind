@@ -557,6 +557,15 @@ class NFLDataService:
             )
             game.roof = self._sv(row.get('roof'))
             game.surface = self._sv(row.get('surface'))
+
+            # Betting lines. Present for upcoming games in the near window and
+            # NULL for ones the market has not priced yet, so the market-implied
+            # projection source can tell "no line" from "line of zero".
+            game.spread_line = _sf(self._sv(row.get('spread_line')))
+            game.total_line = _sf(self._sv(row.get('total_line')))
+            game.home_moneyline = _sf(self._sv(row.get('home_moneyline')))
+            game.away_moneyline = _sf(self._sv(row.get('away_moneyline')))
+
             game.source = 'nfl_data_py'
             game.updated_at = datetime.utcnow()
             count += 1
@@ -1331,6 +1340,21 @@ def _safe_float(val) -> float:
         return float(val)
     except (ValueError, TypeError):
         return 0.0
+
+
+def _sf(val) -> Optional[float]:
+    """Float or None — distinct from ``_safe_float``, which returns 0.0.
+
+    A betting line of NULL means the market has not priced this game yet, and
+    a 0.0 total is not a thing. Collapsing the two would let the implied-total
+    maths run on a game with no line and produce a confident zero.
+    """
+    if val is None or (isinstance(val, float) and str(val) == 'nan'):
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
 
 
 def _safe_str(val) -> Optional[str]:

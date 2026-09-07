@@ -230,10 +230,18 @@ def test_spread_excludes_the_consensus(db):
     assert row.spread == pytest.approx(10.0)
 
     # The consensus is recomputed from the default weights, not read from the
-    # stored blend_multi row above: model .25 and espn .20 renormalize to
-    # (10*.25 + 20*.20) / .45. The stored 15.0 is deliberately ignored so a
-    # viewer's reweighting and the default view go through one code path.
-    assert row.consensus == pytest.approx(14.44, abs=0.01)
+    # stored blend_multi row above — the stored 15.0 is deliberately ignored so
+    # a viewer's reweighting and the default view go through one code path.
+    #
+    # Derived from the weights rather than pinned to a literal: this test is
+    # about *where the number comes from*, and retuning WEEKLY_MULTI_WEIGHTS
+    # should not break it.
+    wm = WEEKLY_MULTI_WEIGHTS[SOURCE_MODEL]
+    we = WEEKLY_MULTI_WEIGHTS[SOURCE_ESPN]
+    assert row.consensus == pytest.approx(
+        (10.0 * wm + 20.0 * we) / (wm + we), abs=0.01,
+    )
+    assert row.consensus != 15.0
 
 
 # ---------------------------------------------------------------------------
@@ -914,3 +922,191 @@ def test_reset_nulls_the_column_rather_than_storing_defaults(db):
     assert team.projection_weights is None
     weights, _checked, _shown = resolve_controls(team, QueryParams("week=1"))
     assert weights == WEEKLY_MULTI_WEIGHTS
+
+
+# ---------------------------------------------------------------------------
+# Market-implied source, and props scoping
+# ---------------------------------------------------------------------------
+
+
+def _game(db, week, home, away, spread, total, year=YEAR):
+    from pigskin_mastermind.models.database import DBNFLGame
+
+    game = DBNFLGame(
+        year=year, week=week, home_team=home, away_team=away,
+        spread_line=spread, total_line=total,
+    )
+    db.add(game)
+    db.flush()
+    return game
+
+
+def _log(db, player, year, week, points):
+    from pigskin_mastermind.models.database import DBPlayerGameLog
+
+    db.add(DBPlayerGameLog(
+        player_id=player.id, year=year, week=week,
+        fantasy_points=points, rush_att=10,
+    ))
+
+
+def test_implied_totals_follow_the_home_spread_sign(db):
+    """spread_line is positive when the HOME side is favoured.
+
+    Inverting this sign would mark up every underdog and mark down every
+    favourite -- a wrong number in the right shape, which is the hardest kind
+    to notice.
+    """
+    from pigskin_mastermind.services.projection_sources.market_source import (
+        _implied_totals,
+    )
+
+    game = _game(db, WEEK, "SEA", "NE", spread=3.5, total=44.5)
+    totals = _implied_totals([game])
+
+    assert totals["SEA"][0] == pytest.approx(24.0)   # home favourite
+    assert totals["NE"][0] == pytest.approx(20.5)
+    assert sum(t for t, _ in totals.values()) == pytest.approx(44.5)
+
+
+def test_market_marks_up_a_good_environment_and_down_a_bad_one(db):
+    from pigskin_mastermind.services.projection_sources.market_source import (
+        MarketImpliedSource,
+    )
+
+    _game(db, WEEK, "BAL", "IND", spread=3.0, total=47.5)   # BAL 25.25
+    _game(db, WEEK, "ATL", "TB", spread=-3.5, total=42.5)   # ATL 19.5
+
+    good = make_player(db, "Favoured Guy", position="RB", team="BAL")
+    bad = make_player(db, "Underdog Guy", position="RB", team="ATL")
+    for player in (good, bad):
+        for week in range(1, 5):
+            _log(db, player, YEAR - 1, week, 15.0)
+    db.commit()
+
+    values = MarketImpliedSource().project_week(
+        db, YEAR, WEEK, [good.id, bad.id],
+    )
+    assert values[good.id].points > 15.0
+    assert values[bad.id].points < 15.0
+
+
+def test_market_says_nothing_when_the_week_is_unpriced(db):
+    """No line means no implied total. Silence beats a confident zero."""
+    from pigskin_mastermind.services.projection_sources.market_source import (
+        MarketImpliedSource,
+    )
+
+    _game(db, WEEK, "BAL", "IND", spread=None, total=None)
+    player = make_player(db, "Unpriced Guy", position="RB", team="BAL")
+    _log(db, player, YEAR - 1, 1, 15.0)
+    db.commit()
+
+    assert MarketImpliedSource().project_week(db, YEAR, WEEK, [player.id]) == {}
+
+
+def test_market_baseline_reaches_back_into_last_season(db):
+    """Week 1 has no current-season games; refusing to project would make this
+    source useless exactly when a lineup is first set."""
+    from pigskin_mastermind.services.projection_sources.market_source import (
+        MarketImpliedSource,
+    )
+
+    _game(db, 1, "BAL", "IND", spread=3.0, total=47.5)
+    player = make_player(db, "Week One Back", position="RB", team="BAL")
+    for week in range(14, 18):
+        _log(db, player, YEAR - 1, week, 12.0)
+    db.commit()
+
+    values = MarketImpliedSource().project_week(db, YEAR, 1, [player.id])
+    assert player.id in values
+    assert values[player.id].points > 0
+
+
+def test_market_ignores_a_stored_bye_in_the_baseline(db):
+    """A 0.0 with no stat line is a bye, not a game the player was bad in."""
+    from pigskin_mastermind.models.database import DBPlayerGameLog
+    from pigskin_mastermind.services.projection_sources.market_source import (
+        _recent_average,
+    )
+
+    player = make_player(db, "Bye Guy", position="RB", team="BAL")
+    for week in (1, 2, 3):
+        _log(db, player, YEAR, week, 12.0)
+    db.add(DBPlayerGameLog(
+        player_id=player.id, year=YEAR, week=4, fantasy_points=0.0,
+    ))
+    db.commit()
+
+    assert _recent_average(db, player.id, YEAR, 5) == pytest.approx(12.0)
+
+
+def test_defense_is_scaled_by_the_opponent_total(db):
+    """A defense facing a low-scoring offense is in a good spot, not a bad one."""
+    from pigskin_mastermind.services.projection_sources.market_source import (
+        MarketImpliedSource,
+    )
+
+    # SF hosts a heavy underdog: opponent implied total is low.
+    _game(db, WEEK, "SF", "CAR", spread=10.0, total=40.0)   # CAR 15.0
+    _game(db, WEEK, "KC", "BUF", spread=0.0, total=50.0)    # both 25.0
+
+    good = make_player(db, "49ers D/ST", position="DEF", team="SF")
+    plain = make_player(db, "Chiefs D/ST", position="DEF", team="KC")
+    for player in (good, plain):
+        for week in range(1, 5):
+            _log(db, player, YEAR - 1, week, 8.0)
+    db.commit()
+
+    values = MarketImpliedSource().project_week(db, YEAR, WEEK, [good.id, plain.id])
+    assert values[good.id].points > values[plain.id].points
+
+
+def test_props_are_scoped_to_the_week_being_projected(db):
+    """The bug that let a seeded 2025 slate produce 2026 week-1 numbers.
+
+    Without an event scope, _fetch_props matches a player's name across every
+    odds row ever stored -- no year, no week, no event.
+    """
+    from pigskin_mastermind.models.database import DBSportsbookOdds
+    from pigskin_mastermind.services.projection_sources.sportsbook_source import (
+        SportsbookProjectionSource,
+    )
+
+    player = make_player(db, "Propped Guy", position="RB", team="BAL")
+    # An odds event for a completely different game.
+    db.add(DBSportsbookOdds(
+        event_id="other_game", sport_key="americanfootball_nfl",
+        home_team="Kansas City Chiefs", away_team="Denver Broncos",
+        bookmaker="draftkings", market="player_rush_yds",
+        outcome_name="Over", point=80.0, description="Propped Guy",
+    ))
+    # The week being projected is a game those props have nothing to do with.
+    _game(db, WEEK, "BAL", "IND", spread=3.0, total=47.5)
+    db.commit()
+
+    values = SportsbookProjectionSource().project_week(
+        db, YEAR, WEEK, [player.id],
+    )
+    assert values == {}
+
+
+def test_props_are_used_when_the_event_matches_the_game(db):
+    """Full club names on the odds side must still join to abbreviations."""
+    from pigskin_mastermind.models.database import DBSportsbookOdds
+    from pigskin_mastermind.services.projection_sources.sportsbook_source import (
+        _events_for_week,
+    )
+
+    _game(db, WEEK, "KC", "DEN", spread=3.0, total=47.5)
+    db.add(DBSportsbookOdds(
+        event_id="the_right_game", sport_key="americanfootball_nfl",
+        home_team="Kansas City Chiefs", away_team="Denver Broncos",
+        bookmaker="draftkings", market="player_rush_yds",
+        outcome_name="Over", point=80.0, description="Somebody",
+    ))
+    db.commit()
+
+    events = _events_for_week(db, YEAR, WEEK)
+    assert events["KC"] == "the_right_game"
+    assert events["DEN"] == "the_right_game"

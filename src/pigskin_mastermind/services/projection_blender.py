@@ -34,17 +34,24 @@ WEEKLY_WEIGHTS: Dict[str, float] = {
 #: ``projection_sources.base.SOURCE_BLEND_MULTI`` for why that name is
 #: load-bearing.
 #:
+#: ``sportsbook`` keeps a real weight despite currently having no coverage:
+#: renormalization means an absent source costs nothing, so the weight simply
+#: takes effect if per-player props ever become available. ``market`` is the
+#: free stand-in derived from game lines and is weighted below it, because a
+#: line prices the *team* rather than the player.
+#:
 #: ``llm`` is present at weight zero on purpose. It is a real column in the
 #: table and worth reading, but an agent has run for a few dozen players
 #: against the model's ~1000, so a nonzero weight would shift the consensus for
 #: exactly those players and no others -- making the one number meant to be
 #: comparable across the table the one number that is not.
 WEEKLY_MULTI_WEIGHTS: Dict[str, float] = {
-    "sportsbook": 0.30,
-    "model": 0.25,
-    "espn": 0.20,
-    "consensus": 0.15,
-    "nflverse_xp": 0.10,
+    "sportsbook": 0.25,
+    "model": 0.22,
+    "market": 0.20,
+    "espn": 0.16,
+    "nflverse_xp": 0.12,
+    "consensus": 0.05,
     "llm": 0.0,
 }
 

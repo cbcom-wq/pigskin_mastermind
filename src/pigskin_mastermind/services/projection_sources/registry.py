@@ -23,6 +23,9 @@ from pigskin_mastermind.services.projection_sources.espn_source import (
 from pigskin_mastermind.services.projection_sources.llm_source import (
     LlmProjectionSource,
 )
+from pigskin_mastermind.services.projection_sources.market_source import (
+    MarketImpliedSource,
+)
 from pigskin_mastermind.services.projection_sources.model_source import (
     ModelProjectionSource,
 )
@@ -56,6 +59,7 @@ def build_registry(
     providers: List[WeeklyProjectionProvider] = [
         ModelProjectionSource(),
         EspnProjectionSource(),
+        MarketImpliedSource(),
         SportsbookProjectionSource(league_id=league_id),
         NflverseExpectedPointsSource(),
         LlmProjectionSource(),

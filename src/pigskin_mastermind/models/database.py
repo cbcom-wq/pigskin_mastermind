@@ -281,6 +281,21 @@ class DBNFLGame(Base):
     roof = Column(String, nullable=True)  # dome, outdoors, closed, open
     surface = Column(String, nullable=True)
 
+    # Closing betting lines, shipped free by nfl_data_py.import_schedules().
+    # This is the only real market data in the schema — the sportsbook_odds
+    # table needs a paid Odds API plan for player props, and what it currently
+    # holds is hand-written seed fixtures.
+    #
+    # ``spread_line`` is from the HOME team's perspective and positive when the
+    # home team is favoured (SEA 3.5 with a -180 home moneyline means Seattle
+    # laying 3.5). Getting that sign backwards inverts every implied team total
+    # derived from it, so it is stored exactly as nflverse publishes it and
+    # interpreted at the point of use.
+    spread_line = Column(Float, nullable=True)
+    total_line = Column(Float, nullable=True)
+    home_moneyline = Column(Float, nullable=True)
+    away_moneyline = Column(Float, nullable=True)
+
     source = Column(String, default='nfl_data_py')
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
