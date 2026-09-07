@@ -1197,3 +1197,117 @@ def test_panel_resolves_a_season_league_roster(db):
     # No DBWeeklyTeamStats exists for this team at all.
     ids = team_week_player_ids(db, team, WEEK)
     assert sorted(ids) == sorted(p.id for p in roster)
+
+
+# ---------------------------------------------------------------------------
+# Week-scoped injury status
+# ---------------------------------------------------------------------------
+
+
+def _injury(db, player, week, report=None, practice=None, year=YEAR):
+    from pigskin_mastermind.models.database import DBPlayerInjury
+
+    db.add(DBPlayerInjury(
+        player_id=player.id, year=year, week=week,
+        report_status=report, practice_status=practice,
+    ))
+
+
+def test_a_weeks_report_overrides_the_undated_column(db):
+    """The whole point: a season-old ESPN flag must not survive a real report.
+
+    Absence from an injury report IS the report saying he is healthy, so a
+    player the week does not mention comes back clear even though the legacy
+    column still says QUESTIONABLE.
+    """
+    from pigskin_mastermind.services.injury_status import InjuryIndex
+
+    stale = make_player(db, "Stale Flag Guy")
+    stale.injury_status = "QUESTIONABLE"
+    reported = make_player(db, "Actually Hurt Guy")
+    _injury(db, reported, WEEK, report="Out")
+    db.commit()
+
+    index = InjuryIndex(db, YEAR, WEEK)
+    assert index.has_reports is True
+    assert index.verdict(stale.id).status is None
+    assert index.verdict(reported.id).excluded is True
+
+
+def test_the_legacy_column_is_used_only_when_no_report_exists(db):
+    """Without the import, behaviour must not silently become 'nobody is hurt'."""
+    from pigskin_mastermind.services.injury_status import InjuryIndex
+
+    player = make_player(db, "Legacy Guy")
+    player.injury_status = "QUESTIONABLE"
+    db.commit()
+
+    verdict = InjuryIndex(db, YEAR, WEEK).verdict(player.id)
+    assert verdict.status == "QUESTIONABLE"
+    assert verdict.multiplier == pytest.approx(0.85)
+    # Marked so the UI can say it is unverified rather than imply a designation.
+    assert verdict.dated is False
+    assert "unverified" in verdict.reason
+
+
+def test_doubtful_is_discounted_not_benched(db):
+    """Existing deliberate behaviour: a doubtful star still beats a healthy WR4."""
+    from pigskin_mastermind.services.injury_status import InjuryIndex
+
+    player = make_player(db, "Doubtful Star")
+    _injury(db, player, WEEK, report="Doubtful")
+    db.commit()
+
+    verdict = InjuryIndex(db, YEAR, WEEK).verdict(player.id)
+    assert verdict.excluded is False
+    assert verdict.multiplier == pytest.approx(0.50)
+
+
+def test_practice_status_carries_until_the_friday_designation(db):
+    """report_status is NULL until ~Friday; a full non-participant still counts."""
+    from pigskin_mastermind.services.injury_status import InjuryIndex
+
+    absent = make_player(db, "Did Not Practice")
+    limited = make_player(db, "Limited Practice")
+    _injury(db, absent, WEEK, practice="Did Not Participate In Practice")
+    _injury(db, limited, WEEK, practice="Limited Participation in Practice")
+    db.commit()
+
+    index = InjuryIndex(db, YEAR, WEEK)
+    assert index.verdict(absent.id).multiplier < 1.0
+    assert index.verdict(absent.id).dated is True
+    # A limited practice is barely a signal and must not silently discount.
+    assert index.verdict(limited.id).multiplier == 1.0
+
+
+def test_injury_index_is_week_scoped(db):
+    """Last week's Out must not bench a player who has since been cleared."""
+    from pigskin_mastermind.services.injury_status import InjuryIndex
+
+    player = make_player(db, "Recovered Guy")
+    _injury(db, player, WEEK - 1, report="Out")
+    _injury(db, player, WEEK, report=None, practice="Full Participation in Practice")
+    db.commit()
+
+    assert InjuryIndex(db, YEAR, WEEK - 1).verdict(player.id).excluded is True
+    assert InjuryIndex(db, YEAR, WEEK).verdict(player.id).status is None
+
+
+def test_gsis_index_prefers_the_named_row_over_a_placeholder(db):
+    """570 gsis ids here are held by two rows; the real player must win.
+
+    A plain dict comprehension keeps whichever row came last, which sent depth
+    ranks and injury reports to nameless stubs while the rostered player got
+    nothing.
+    """
+    from pigskin_mastermind.services.nfl_data_service import NFLDataService
+
+    real = make_player(db, "Real Player")
+    real.gsis_id = "00-0012345"
+    stub = make_player(db, "Unknown")
+    stub.gsis_id = "00-0012345"
+    db.commit()
+
+    index = NFLDataService(db)._gsis_index()
+    assert index["00-0012345"] == real.id
+    assert index["00-0012345"] != stub.id

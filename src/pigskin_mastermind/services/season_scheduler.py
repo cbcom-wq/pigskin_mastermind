@@ -162,6 +162,20 @@ def _refresh_projections_daily(db: Session, now: datetime) -> int:
     if not needs_daily_refresh(db, now.year, week, now):
         return 0
 
+    # Availability first, and never fatally. Injury reports firm up across the
+    # week — practice participation from Wednesday, the official designation
+    # about Friday — so this has to re-run daily rather than once when the week
+    # opens. A failure here must not cost the projections that follow it.
+    try:
+        from pigskin_mastermind.services.nfl_data_service import NFLDataService
+
+        service = NFLDataService(db)
+        service.import_injuries([now.year])
+        service.import_depth_charts([now.year])
+    except Exception:
+        logger.exception("Injury/depth refresh failed; continuing to projections")
+        db.rollback()
+
     result = refresh_week_all(db, now.year, week)
     return sum(
         entry.get("rows", 0) for entry in result["sources"].values()

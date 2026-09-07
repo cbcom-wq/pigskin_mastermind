@@ -13,8 +13,9 @@ except ImportError:
     nfl = None  # type: ignore[assignment]
 
 from pigskin_mastermind.models.database import (
-    DBPlayer, DBPlayerGameLog, DBPlayerSeasonStats, DBNFLTeamStats, DBNFLGame,
-    DBWeeklyPlayerStats, DBWeeklyTeamStats, DBTeam, DBLeague,
+    DBPlayer, DBPlayerGameLog, DBPlayerInjury, DBPlayerSeasonStats,
+    DBNFLTeamStats, DBNFLGame, DBWeeklyPlayerStats, DBWeeklyTeamStats,
+    DBTeam, DBLeague,
 )
 from pigskin_mastermind.services.player_identity import (
     PlayerIdentityService, is_placeholder_name,
@@ -573,6 +574,134 @@ class NFLDataService:
         self.db.flush()
         for year in years:
             self.sync_team_scores_from_schedule(year)
+
+        self.db.commit()
+        return count
+
+    def _gsis_index(self) -> Dict[str, int]:
+        """``gsis_id -> DBPlayer.id``, resolving duplicates deterministically.
+
+        570 gsis ids in this database are held by more than one row, usually a
+        real player plus a nameless stub an older import created. A plain dict
+        comprehension keeps whichever row the query returned last, so an
+        injury report or depth-chart rank lands on the stub and the real
+        player silently gets nothing.
+
+        Preference order: a row with a real name beats a placeholder, then the
+        lowest id wins -- the earlier row is the one other tables already point
+        at. ``pigskin players merge-identities`` is the actual fix; this only
+        stops the importers being wrong in the meantime.
+        """
+        index: Dict[str, int] = {}
+        best: Dict[str, tuple] = {}
+        rows = (
+            self.db.query(DBPlayer.id, DBPlayer.gsis_id, DBPlayer.name)
+            .filter(DBPlayer.gsis_id.isnot(None))
+            .all()
+        )
+        for player_id, gsis_id, name in rows:
+            if not gsis_id:
+                continue
+            # Lower sorts better: real name first, then lowest id.
+            rank = (1 if is_placeholder_name(name) else 0, player_id)
+            if gsis_id not in best or rank < best[gsis_id]:
+                best[gsis_id] = rank
+                index[gsis_id] = player_id
+        return index
+
+    def import_injuries(self, years: List[int]) -> int:
+        """Import weekly injury reports into ``DBPlayerInjury``.
+
+        Both statuses are kept. ``report_status`` is the official game
+        designation and is not published until roughly Friday;
+        ``practice_status`` appears from Wednesday and is the only signal
+        available for most of the week. Collapsing them would throw away the
+        earlier one.
+
+        Players are matched on ``gsis_id`` only -- an injury report naming
+        someone we cannot identify is skipped rather than resolved by name,
+        because attaching an "Out" to the wrong player is far worse than
+        missing one.
+        """
+        if nfl is None:
+            raise ImportError("nfl_data_py is not installed. Run: pip install nfl_data_py")
+
+        df = nfl.import_injuries(years)
+        if df.empty:
+            return 0
+
+        by_gsis = self._gsis_index()
+
+        count = 0
+        for _, row in df.iterrows():
+            player_id = by_gsis.get(_safe_str(row.get('gsis_id')))
+            if player_id is None:
+                continue
+
+            year = _safe_int(row.get('season'))
+            week = _safe_int(row.get('week'))
+            if not year or not week:
+                continue
+
+            injury = (
+                self.db.query(DBPlayerInjury)
+                .filter_by(player_id=player_id, year=year, week=week)
+                .first()
+            )
+            if injury is None:
+                injury = DBPlayerInjury(
+                    player_id=player_id, year=year, week=week,
+                )
+                self.db.add(injury)
+
+            injury.report_status = _safe_str(row.get('report_status'))
+            injury.practice_status = _safe_str(row.get('practice_status'))
+            injury.primary_injury = (
+                _safe_str(row.get('report_primary_injury'))
+                or _safe_str(row.get('practice_primary_injury'))
+            )
+            injury.source = 'nfl_data_py'
+            injury.updated_at = datetime.utcnow()
+            count += 1
+
+        self.db.commit()
+        return count
+
+    def import_depth_charts(self, years: List[int]) -> int:
+        """Stamp each player's current depth-chart rank.
+
+        The feed is a series of timestamped snapshots rather than weekly rows,
+        so only the most recent one is applied -- an older snapshot would
+        overwrite a newer rank with a stale one. Rank 1 is the starter at that
+        position.
+        """
+        if nfl is None:
+            raise ImportError("nfl_data_py is not installed. Run: pip install nfl_data_py")
+
+        df = nfl.import_depth_charts(years)
+        if df.empty or 'dt' not in df.columns:
+            return 0
+
+        latest = df[df['dt'] == df['dt'].max()]
+        snapshot = _parse_snapshot(latest['dt'].iloc[0]) if len(latest) else None
+
+        by_gsis = self._gsis_index()
+
+        count = 0
+        for _, row in latest.iterrows():
+            player_id = by_gsis.get(_safe_str(row.get('gsis_id')))
+            if player_id is None:
+                continue
+            rank = _safe_int(row.get('pos_rank'))
+            if not rank:
+                continue
+
+            player = self.db.query(DBPlayer).filter_by(id=player_id).first()
+            if player is None:
+                continue
+            player.depth_chart_rank = rank
+            player.depth_chart_at = snapshot
+            count += 1
 
         self.db.commit()
         return count
@@ -1340,6 +1469,19 @@ def _safe_float(val) -> float:
         return float(val)
     except (ValueError, TypeError):
         return 0.0
+
+
+def _parse_snapshot(value) -> Optional[datetime]:
+    """Parse nflverse's ISO snapshot stamp, tolerating the trailing Z."""
+    text = _safe_str(value)
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace('Z', '+00:00')).replace(
+            tzinfo=None,
+        )
+    except ValueError:
+        return None
 
 
 def _sf(val) -> Optional[float]:

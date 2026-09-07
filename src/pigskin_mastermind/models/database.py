@@ -29,6 +29,13 @@ class DBPlayer(Base):
     gsis_id = Column(String, nullable=True, index=True)
     pfr_id = Column(String, nullable=True, index=True)
 
+    # Depth-chart standing, from nflverse's snapshot feed. A single current
+    # value rather than a table: a depth chart is state, not history, and the
+    # only question a lineup asks is "is he the starter right now". Rank 1 is
+    # the starter at his position.
+    depth_chart_rank = Column(Integer, nullable=True)
+    depth_chart_at = Column(DateTime, nullable=True)
+
     # Profile / bio. Deliberately real columns rather than keys in ``stats``:
     # ``stats`` holds ESPN's raw scoring-period payload and is replaced
     # wholesale on every sync, so anything stored there does not survive.
@@ -623,6 +630,40 @@ class DBManagerRun(Base):
     started_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime, nullable=True)
     error = Column(String, nullable=True)
+
+
+class DBPlayerInjury(Base):
+    """One injury-report row per player per week, from nflverse.
+
+    ``DBPlayer.injury_status`` cannot do this job. It is a single undated
+    column written by whatever ESPN sync ran last, so an archived league leaves
+    a season-old ``QUESTIONABLE`` sitting on a player — and ``plan_lineup``
+    discounts projections from it. For a start/sit decision that is worse than
+    having no injury data at all, because it looks current.
+
+    ``report_status`` is the official game designation (Out / Doubtful /
+    Questionable) and is only published from about Friday. ``practice_status``
+    appears from Wednesday and is the earlier signal, which is why both are
+    kept rather than collapsing them into one field.
+    """
+    __tablename__ = "player_injuries"
+    __table_args__ = (
+        UniqueConstraint('player_id', 'year', 'week', name='uq_player_injury'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=False, index=True)
+    year = Column(Integer, nullable=False, index=True)
+    week = Column(Integer, nullable=False)
+
+    # Out | Doubtful | Questionable — NULL until the Friday report.
+    report_status = Column(String, nullable=True)
+    # Did Not Participate / Limited / Full — available from Wednesday.
+    practice_status = Column(String, nullable=True)
+    primary_injury = Column(String, nullable=True)
+
+    source = Column(String, default='nfl_data_py')
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class DBProjectionSourceRun(Base):

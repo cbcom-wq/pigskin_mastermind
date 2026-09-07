@@ -16,6 +16,7 @@ from pigskin_mastermind.models.database import (
     DBLeague, DBNFLGame, DBPlayer, DBTeam, DBWeeklyPlayerStats,
     DBWeeklyTeamStats,
 )
+from pigskin_mastermind.services.injury_status import InjuryIndex
 from pigskin_mastermind.services.lineup_manager import plan_lineup
 from pigskin_mastermind.services.projection_blender import WEEKLY_MULTI_WEIGHTS
 from pigskin_mastermind.services.projection_rankings import (
@@ -305,11 +306,27 @@ def _render_panel(request: Request, db: Session, team: DBTeam, week: int, year: 
         if key in present and key != SOURCE_BLEND_MULTI
     ]
 
+    # Availability and depth-chart standing, keyed by player. These are the
+    # signals that actually decide a start/sit call -- a projection cannot see
+    # that a player was ruled out on Friday or lost his starting job.
+    injuries = InjuryIndex(db, year, week)
+    depth = {
+        row[0]: row[1]
+        for row in db.query(DBPlayer.id, DBPlayer.depth_chart_rank)
+        .filter(DBPlayer.id.in_(player_ids)).all()
+    }
+    status = {
+        row.player_id: injuries.verdict(row.player_id) for row in rows
+    }
+
     return templates.TemplateResponse(
         "teams/_projections.html",
         {
             "request": request,
             "team": team,
+            "injuries": status,
+            "injury_reports": injuries.has_reports,
+            "depth": depth,
             "week": week,
             "year": year,
             "rows": rows,

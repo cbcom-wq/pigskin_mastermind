@@ -25,18 +25,15 @@ from pigskin_mastermind.services.mock_draft import (
     BENCH_SLOT, DEFAULT_LINEUP_SLOTS, FLEX_ELIGIBLE,
 )
 from pigskin_mastermind.services.nfl_schedule import ScheduleIndex
+from pigskin_mastermind.services.injury_status import (
+    EXCLUDED, HAIRCUTS, InjuryIndex,
+)
 from pigskin_mastermind.services.projection_refresh import weekly_projection_map
 
-#: Statuses that mean the player will not take the field. Never started.
-INJURY_EXCLUDED: FrozenSet[str] = frozenset({"OUT", "IR", "SUSPENDED", "NA"})
-
-#: Statuses that shade the projection instead of benching outright. A doubtful
-#: star still deserves to beat a healthy WR4 — hard-benching every tag is how an
-#: AI ends up starting nobody in November.
-INJURY_HAIRCUTS: Dict[str, float] = {
-    "QUESTIONABLE": 0.85,
-    "DOUBTFUL": 0.50,
-}
+#: Re-exported from injury_status, which is now the single definition. Kept as
+#: names here because other modules and tests import them from lineup_manager.
+INJURY_EXCLUDED: FrozenSet[str] = EXCLUDED
+INJURY_HAIRCUTS: Dict[str, float] = HAIRCUTS
 
 FLEX_SLOT = "FLEX"
 
@@ -136,6 +133,7 @@ def plan_lineup(
         )
     locks = LockIndex(db)
     schedule = ScheduleIndex(db)
+    injuries = InjuryIndex(db, year, week)
 
     existing = {
         row.player_id: row.slot
@@ -146,7 +144,12 @@ def plan_lineup(
 
     candidates = []
     for player in players:
-        status = (player.injury_status or "").upper()
+        # Availability comes from the week's injury report where one exists,
+        # and only falls back to DBPlayer.injury_status -- an undated column an
+        # old ESPN sync may have left behind -- when the week has no report at
+        # all. Acting on a season-old QUESTIONABLE is worse than acting on
+        # nothing, because it looks current.
+        injury = injuries.verdict(player.id)
         on_bye = schedule.is_bye(player.nfl_team, year, week)
         locked = locks.is_locked(player.nfl_team, year, week, now)
 
@@ -154,12 +157,12 @@ def plan_lineup(
         if on_bye:
             reason = "on bye"
             points = 0.0
-        elif status in INJURY_EXCLUDED:
-            reason = f"ruled {status.lower()}"
+        elif injury.excluded:
+            reason = injury.reason
             points = 0.0
-        elif status in INJURY_HAIRCUTS:
-            reason = f"{status.lower()} — projection discounted"
-            points *= INJURY_HAIRCUTS[status]
+        elif injury.multiplier != 1.0:
+            reason = injury.reason
+            points *= injury.multiplier
         elif player.id not in projections:
             reason = "no projection available"
         else:
@@ -168,7 +171,7 @@ def plan_lineup(
         candidates.append({
             "player": player,
             "points": points,
-            "eligible": not on_bye and status not in INJURY_EXCLUDED,
+            "eligible": not on_bye and not injury.excluded,
             "locked": locked,
             "reason": reason,
         })

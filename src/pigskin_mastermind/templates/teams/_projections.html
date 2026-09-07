@@ -380,6 +380,26 @@
               {{ row.name }}
             </a>
             <span class="text-xs text-slate-400 ml-1">{{ row.nfl_team or '' }}</span>
+            {% set injury = injuries.get(row.player_id) %}
+            {% if injury and injury.status %}
+            {# An undated flag is labelled as such rather than shown like a
+               verified designation — the difference decides whether you trust it. #}
+            <span class="ml-1 px-1.5 py-0.5 rounded text-[10px] font-bold align-middle
+                         {% if injury.excluded %}bg-rose-100 text-rose-700
+                         {% elif injury.dated %}bg-amber-100 text-amber-700
+                         {% else %}bg-slate-100 text-slate-500{% endif %}"
+                  title="{{ injury.reason }}{% if injury.detail %} ({{ injury.detail }}){% endif %}">
+              {{ injury.status[:1] }}{% if not injury.dated %}?{% endif %}
+            </span>
+            {% endif %}
+            {% set rank = depth.get(row.player_id) %}
+            {% if rank and rank > 1 %}
+            {# Only a backup is worth flagging; rank 1 is the unremarkable case. #}
+            <span class="ml-1 text-[10px] font-medium text-slate-400"
+                  title="Depth chart: number {{ rank }} at his position">
+              #{{ rank }}
+            </span>
+            {% endif %}
           </td>
           <td class="px-4 py-3">{{ position_badge(row.position, "sm") }}</td>
 
@@ -576,6 +596,17 @@
       </div>
     </div>
   </details>
+
+  <p class="text-[11px] text-slate-400">
+    {%- if injury_reports -%}
+      Injury badges come from this week's official report. A depth-chart number
+      marks a player who is not the starter at his position.
+    {%- else -%}
+      No injury report imported for this week — badges marked
+      <span class="font-semibold">?</span> come from an undated ESPN flag and
+      may be stale. Run <span class="font-mono">pigskin stats import-injuries</span>.
+    {%- endif -%}
+  </p>
 
   <div class="flex flex-wrap gap-3 text-xs text-slate-400">
     {% for key, label in columns %}

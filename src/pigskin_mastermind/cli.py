@@ -1254,6 +1254,56 @@ def season_tick():
         db.close()
 
 
+@stats.command('import-injuries')
+@click.option('--years', default=None, help='Comma-separated years (default: current season)')
+def stats_import_injuries(years):
+    """Import weekly injury reports from nflverse.
+
+    Free, no API key. ``report_status`` (Out/Doubtful/Questionable) is the
+    official game designation and lands about Friday; ``practice_status``
+    appears from Wednesday and is the only signal before that, so both are
+    stored. Re-run daily through the week as reports firm up::
+
+        pigskin stats import-injuries --years 2026
+    """
+    from pigskin_mastermind.services.nfl_data_service import NFLDataService
+    from pigskin_mastermind.utils.season import current_fantasy_season
+
+    year_list = (
+        [int(y.strip()) for y in years.split(',')] if years
+        else [current_fantasy_season()]
+    )
+    db = _get_stats_db()
+    try:
+        count = NFLDataService(db).import_injuries(year_list)
+        click.echo(f"{count} injury report row(s) imported.")
+    finally:
+        db.close()
+
+
+@stats.command('import-depth-charts')
+@click.option('--years', default=None, help='Comma-separated years (default: current season)')
+def stats_import_depth_charts(years):
+    """Stamp each player's current depth-chart rank from nflverse.
+
+    The feed is timestamped snapshots rather than weekly rows, so only the
+    latest is applied. Rank 1 is the starter at that position.
+    """
+    from pigskin_mastermind.services.nfl_data_service import NFLDataService
+    from pigskin_mastermind.utils.season import current_fantasy_season
+
+    year_list = (
+        [int(y.strip()) for y in years.split(',')] if years
+        else [current_fantasy_season()]
+    )
+    db = _get_stats_db()
+    try:
+        count = NFLDataService(db).import_depth_charts(year_list)
+        click.echo(f"{count} player(s) stamped with a depth-chart rank.")
+    finally:
+        db.close()
+
+
 @main.group()
 def dev():
     """Local development fixtures. Not part of normal operation."""

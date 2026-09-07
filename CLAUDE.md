@@ -419,6 +419,35 @@ on those same wins and points-for, and `_advance_bracket()` reads `seeds[0]`/
 `seeds[1]` to place the bye teams, so counting playoff results would let a
 quarterfinal winner leapfrog the real 1 seed into its own semifinal.
 
+**Injury status for a lineup comes from `services/injury_status.py::InjuryIndex`,
+not `DBPlayer.injury_status`.** That column is a single undated value written by
+whatever ESPN sync ran last, so a database holding an archived season leaves
+year-old `QUESTIONABLE` flags on players — and `plan_lineup` discounts
+projections from them, which is worse than no injury data because it looks
+current. `DBPlayerInjury` carries a year and week, from
+`nfl_data_py.import_injuries()` (free, no key).
+
+The index falls back to the legacy column **only when the week has no report at
+all**. Once week-scoped data exists it is used exclusively, including for
+players it does not mention: absence from an injury report is the report saying
+he is healthy. A legacy verdict is marked `dated=False` so the UI can label it
+unverified rather than imply a real designation.
+
+`report_status` (Out/Doubtful/Questionable) is not published until roughly
+Friday; `practice_status` appears Wednesday, so both are stored and the index
+falls through to practice participation until the designation lands. Re-import
+daily — the scheduler does this before each projection refresh. Doubtful stays a
+0.50 haircut rather than an exclusion, deliberately.
+
+**Depth-chart rank lives on `DBPlayer.depth_chart_rank`** (rank 1 = starter),
+from `import_depth_charts()`. The feed is timestamped snapshots, not weekly
+rows, so only the latest is applied.
+
+**Both importers resolve gsis ids through `NFLDataService._gsis_index()`.** 570
+gsis ids in this database are held by more than one row — usually a real player
+plus a nameless stub — so a plain dict comprehension sends the data to whichever
+row came last. `pigskin players merge-identities` is the real fix.
+
 The Claude team manager (`services/season_agent.py`,
 `.claude/skills/season-team-manager/`) **proposes**; AI teams apply
 automatically, the user's team never does. `validate_lineup_result()` is the
