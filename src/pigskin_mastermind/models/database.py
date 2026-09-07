@@ -632,6 +632,47 @@ class DBManagerRun(Base):
     error = Column(String, nullable=True)
 
 
+class DBPlayerAdvancedMetric(Base):
+    """One advanced metric, for one player, for one week.
+
+    Long rather than wide on purpose. The metrics come from four feeds with
+    very uneven coverage — snap counts reach every player, Next Gen Stats only
+    a few hundred qualifying ones — so a wide table would be mostly NULL, and
+    every new metric would be a migration. Here a new metric is rows.
+
+    The bigger reason is the hot-movers scan: with one row shape, "recent
+    window against prior baseline, direction-aware" is a single implementation
+    covering every metric, instead of a hand-maintained list of column names
+    that goes stale the first time someone adds one and forgets.
+
+    NGS publishes ``week = 0`` rows holding season aggregates. Those are
+    skipped at import; season figures are derived from the weekly rows so there
+    is one definition, and so a season total can never be read as week zero.
+    """
+    __tablename__ = "player_advanced_metrics"
+    __table_args__ = (
+        UniqueConstraint(
+            'player_id', 'year', 'week', 'metric', name='uq_player_metric_week',
+        ),
+        # The league-wide hot scan reads a whole (year, week, metric) slice.
+        Index('ix_metric_week_scan', 'year', 'week', 'metric'),
+        # One player's trend for one metric.
+        Index('ix_metric_player_series', 'player_id', 'metric'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=False, index=True)
+    year = Column(Integer, nullable=False)
+    week = Column(Integer, nullable=False)
+
+    #: A key from ``services/advanced_metrics.py::METRICS``.
+    metric = Column(String, nullable=False)
+    value = Column(Float, nullable=False)
+
+    source = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class DBPlayerInjury(Base):
     """One injury-report row per player per week, from nflverse.
 

@@ -1304,6 +1304,37 @@ def stats_import_depth_charts(years):
         db.close()
 
 
+@stats.command('import-advanced')
+@click.option('--years', default=None, help='Comma-separated years (default: current season)')
+def stats_import_advanced(years):
+    """Import advanced metrics: snap share, NGS, and derived usage shares.
+
+    Each feed runs independently — the nflverse weekly and seasonal releases
+    404 for 2025 onward, so a working feed must not be held back by a broken
+    one. Share metrics are derived from our own game logs for that reason::
+
+        pigskin stats import-advanced --years 2025,2026
+    """
+    from pigskin_mastermind.services.advanced_metrics_import import import_all
+    from pigskin_mastermind.utils.season import current_fantasy_season
+
+    year_list = (
+        [int(y.strip()) for y in years.split(',')] if years
+        else [current_fantasy_season()]
+    )
+    db = _get_stats_db()
+    try:
+        result = import_all(db, year_list)
+        for name in ('snaps', 'ngs', 'shares', 'production'):
+            count = result.get(name, 0)
+            if count < 0:
+                click.echo(f"  {name}: FAILED — {result.get(name + '_error')}")
+            else:
+                click.echo(f"  {name}: {count} metric row(s)")
+    finally:
+        db.close()
+
+
 @main.group()
 def dev():
     """Local development fixtures. Not part of normal operation."""

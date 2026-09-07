@@ -585,6 +585,24 @@
     </div>
 
 </div>
+
+<!-- Advanced metrics. Loaded lazily: it reads a season of weekly rows and
+     computes league percentiles, which the rest of this page does not need. -->
+<div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mt-6">
+    <div class="px-6 py-4 border-b border-slate-200">
+        <h3 class="text-lg font-bold text-slate-800">Advanced metrics</h3>
+        <p class="text-xs text-slate-500 mt-0.5">
+            Opportunity and efficiency, week by week.
+        </p>
+    </div>
+    <div class="p-6"
+         hx-get="/players/{{ player.id }}/advanced"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+        <p class="text-sm text-slate-400">Loading metrics&hellip;</p>
+    </div>
+</div>
+
 {% endblock %}
 
 {% block extra_js %}

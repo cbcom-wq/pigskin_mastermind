@@ -176,6 +176,16 @@ def _refresh_projections_daily(db: Session, now: datetime) -> int:
         logger.exception("Injury/depth refresh failed; continuing to projections")
         db.rollback()
 
+    # Advanced metrics feed the trend and hot-movers views rather than any
+    # projection, so this runs after availability and, like it, never fatally.
+    try:
+        from pigskin_mastermind.services.advanced_metrics_import import import_all
+
+        import_all(db, [now.year])
+    except Exception:
+        logger.exception("Advanced metric refresh failed; continuing")
+        db.rollback()
+
     result = refresh_week_all(db, now.year, week)
     return sum(
         entry.get("rows", 0) for entry in result["sources"].values()

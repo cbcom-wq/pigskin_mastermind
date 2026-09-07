@@ -612,6 +612,50 @@ Daily refresh runs from `season_scheduler.tick()` behind a
 throwaway team spanning every coverage level for evaluating the view.
 
 
+### Advanced metrics
+
+`player_advanced_metrics` is long, not wide: `(player_id, year, week, metric,
+value)`. Four feeds with very uneven coverage — snap counts reach every player,
+NGS only a few hundred qualifying ones — so a wide table would be mostly NULL
+and each new metric a migration. The real reason is the hot scan: one row shape
+means "recent window vs prior baseline, direction-aware" is a single
+implementation covering every metric, instead of a list of column names that
+goes stale the first time someone adds one.
+
+`services/advanced_metrics.py::METRICS` is the registry and the only place a
+metric is described. Two fields are load-bearing: `higher_is_better` (a falling
+`ngs_time_to_throw` is an improvement, a falling `snap_pct` is not) and `kind`
+(`usage` vs `production` — the buy-low signal is the gap between them, so a
+metric filed on the wrong side inverts its own contribution).
+
+**Share metrics take their team from the schedule, never `DBPlayer.nfl_team`.**
+Game logs carry an opponent but no team, and that column holds the player's
+*current* club — so a backfill computed from it puts everyone who has since
+moved into the wrong team's denominator. A team plays one game a week, so the
+opponent identifies one `DBNFLGame` and the player is the other side of it.
+
+**A "buy" requires usage to have actually risen.** `usage - production` alone
+scores a player whose scoring collapsed on flat usage identically to one whose
+role expanded, and the first is not undervalued — he is worse. On real 2025
+data that failure dominated the board before the direction requirement was
+added. Deltas are z-scaled against each metric's own observed spread, so a
+snap-share move and a separation move are comparable; a flat test cohort gives
+that scale a near-zero denominator and makes any move look enormous.
+
+`/metrics/hot` defaults to the newest week with league-wide coverage, not
+`max(week)` — a season's last stored weeks are the playoffs, where almost
+nobody has six continuous weeks and the page would render empty on a full
+database.
+
+**The nflverse weekly and seasonal feeds 404 for 2025 onward** (`nfl_data_py`
+0.3.3 is the newest published version; the maintained successor is
+`nflreadpy`). So target share is derived from our own game logs, and
+`nflverse_xp` cannot work this season — it calls `import_weekly_data` for the
+current year and only appears to pass because it short-circuits at week 1.
+Snap counts and NGS are unaffected.
+
+CLI: `pigskin stats import-advanced --years Y[,Y]`; the scheduler runs it daily.
+
 ### Web layer conventions
 
 - `api/main.py` mounts `/static`, configures Jinja2, calls `Base.metadata.create_all()` at import,

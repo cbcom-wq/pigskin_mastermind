@@ -1,0 +1,94 @@
+{#
+  One player's advanced metric trends.
+
+  Every row states how many weeks it actually covers. A metric's history
+  depends on which feed produced it and those differ — snap counts reach every
+  week, Next Gen Stats only qualifying ones — so a fixed "last N weeks" label
+  would claim more than the data supports.
+#}
+{% if not rows %}
+<div class="p-8 text-center border border-dashed border-slate-200 rounded-lg">
+  <p class="text-sm text-slate-400">
+    No advanced metrics stored for this player{% if year %} in {{ year }}{% endif %}.
+  </p>
+  <p class="text-xs text-slate-400 mt-1">
+    Run <span class="font-mono">pigskin stats import-advanced</span> to populate them.
+  </p>
+</div>
+{% else %}
+
+{% if fell_back %}
+<p class="mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+  No {{ requested_year }} metrics yet &mdash; showing <strong>{{ year }}</strong>.
+</p>
+{% endif %}
+
+<div class="overflow-x-auto border border-slate-200 rounded-lg">
+  <table class="w-full">
+    <thead>
+      <tr class="bg-slate-50 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+        <th class="px-4 py-3">Metric</th>
+        <th class="px-4 py-3">Trend</th>
+        <th class="px-4 py-3 text-right">Latest</th>
+        <th class="px-4 py-3 text-right">Season avg</th>
+        <th class="px-4 py-3 text-right">Pctile</th>
+        <th class="px-4 py-3 text-right">Weeks</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for row in rows %}
+      <tr class="hover:bg-slate-50">
+        <td class="px-4 py-3">
+          <span class="text-sm font-medium text-slate-700">{{ row.series.label }}</span>
+          {% if row.entry %}
+          <span class="block text-[11px] text-slate-400 max-w-md">{{ row.entry.description }}</span>
+          {% endif %}
+        </td>
+        <td class="px-4 py-3">
+          {% set points = row.series.sparkline() %}
+          {% if points %}
+          <svg width="90" height="20" viewBox="0 0 90 20" class="overflow-visible"
+               aria-label="{{ row.series.label }} over {{ row.series.weeks_covered }} weeks">
+            <polyline points="{{ points }}" fill="none" stroke="#2a78d6"
+                      stroke-width="1.5" stroke-linejoin="round"
+                      stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+          </svg>
+          {% else %}
+          {# One point is not a trend, and drawing it as a flat line implies
+             stability that has not been observed. #}
+          <span class="text-xs text-slate-300">not enough weeks</span>
+          {% endif %}
+        </td>
+        <td class="px-4 py-3 text-right text-sm font-semibold text-slate-800 tabular-nums">
+          {{ row.latest }}
+        </td>
+        <td class="px-4 py-3 text-right text-sm text-slate-500 tabular-nums">
+          {{ row.average }}
+        </td>
+        <td class="px-4 py-3 text-right">
+          {% if row.percentile is not none %}
+          <span class="text-xs font-semibold tabular-nums
+                       {% if row.percentile >= 75 %}text-emerald-700
+                       {% elif row.percentile <= 25 %}text-rose-600
+                       {% else %}text-slate-500{% endif %}">
+            {{ row.percentile }}
+          </span>
+          {% else %}
+          <span class="text-slate-300">&mdash;</span>
+          {% endif %}
+        </td>
+        <td class="px-4 py-3 text-right text-xs text-slate-400 tabular-nums">
+          {{ row.series.weeks_covered }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p class="mt-2 text-[11px] text-slate-400">
+  Percentile is against every player with that metric in the latest week, and is
+  direction-corrected &mdash; a high score is always good, including for metrics
+  where a lower raw number is better (cushion, time to throw).
+</p>
+{% endif %}

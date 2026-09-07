@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Hot metrics{% endblock %}
+{% block page_title %}Hot metrics{% endblock %}
+{% block content %}
+
+<div class="mb-5">
+  <h1 class="text-2xl font-bold text-slate-900">Usage vs production</h1>
+  <p class="mt-1 max-w-3xl text-sm text-slate-500">
+    Volume leads scoring. These are the players whose <strong>opportunity</strong>
+    has moved ahead of their <strong>points</strong> &mdash; or fallen behind
+    while the points held up. The first group is worth buying before the
+    scoring catches up; the second is worth selling while it still looks good.
+  </p>
+</div>
+
+{% if fell_back %}
+<p class="mb-4 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+  {{ requested_year }} has no games played yet &mdash; showing
+  <strong>{{ year }}</strong> through week {{ week }}.
+</p>
+{% endif %}
+
+<form class="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+  <label class="text-xs font-medium text-slate-600">
+    <span class="block mb-1">Season</span>
+    <input type="number" name="year" value="{{ year or requested_year }}"
+           class="w-24 rounded border border-slate-200 px-2 py-1 text-sm tabular-nums">
+  </label>
+  <label class="text-xs font-medium text-slate-600">
+    <span class="block mb-1">Through week</span>
+    <input type="number" name="week" value="{{ week }}" min="1" max="23"
+           class="w-24 rounded border border-slate-200 px-2 py-1 text-sm tabular-nums">
+  </label>
+  <label class="text-xs font-medium text-slate-600">
+    <span class="block mb-1">Position</span>
+    <select name="position" class="rounded border border-slate-200 px-2 py-1 text-sm">
+      <option value="">All</option>
+      {% for pos in ['QB', 'RB', 'WR', 'TE'] %}
+      <option value="{{ pos }}" {% if position == pos %}selected{% endif %}>{{ pos }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button class="rounded bg-field-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-field-700">
+    Apply
+  </button>
+</form>
+
+{% if not movers %}
+<div class="rounded-lg border border-dashed border-slate-200 p-12 text-center">
+  <p class="text-sm text-slate-400">No movers for this week.</p>
+  <p class="mt-1 text-xs text-slate-400">
+    A player needs several weeks of history on both sides of the comparison
+    before a change counts as a trend rather than one game.
+  </p>
+</div>
+{% else %}
+
+<div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+  <table class="w-full">
+    <thead>
+      <tr class="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+        <th class="px-4 py-3">Player</th>
+        <th class="px-4 py-3">Pos</th>
+        <th class="px-4 py-3">What moved</th>
+        <th class="px-4 py-3 text-right" title="Change in opportunity, scaled against how much this metric normally moves">Usage</th>
+        <th class="px-4 py-3 text-right" title="Change in fantasy points over the same weeks, on the same scale">Points</th>
+        <th class="px-4 py-3 text-right" title="Usage minus production. Positive means the opportunity is there and the scoring has not followed.">Gap</th>
+        <th class="px-4 py-3 text-right">Weeks</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for m in movers %}
+      <tr class="hover:bg-slate-50">
+        <td class="px-4 py-3">
+          <span class="mr-2 inline-block rounded px-1.5 py-0.5 text-[10px] font-bold
+                       {% if m.verdict == 'buy' %}bg-emerald-100 text-emerald-700
+                       {% else %}bg-rose-100 text-rose-700{% endif %}">
+            {{ m.verdict|upper }}
+          </span>
+          <a href="/players/{{ m.player_id }}"
+             class="text-sm font-medium text-field-700 hover:text-field-900 hover:underline">
+            {{ m.name }}
+          </a>
+          <span class="ml-1 text-xs text-slate-400">{{ m.nfl_team or '' }}</span>
+        </td>
+        <td class="px-4 py-3 text-xs font-medium text-slate-500">{{ m.position }}</td>
+        <td class="px-4 py-3">
+          {% for label, value in m.drivers %}
+          <span class="mr-1 inline-block rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
+            {{ label }} {{ '%+.1f'|format(value) }}
+          </span>
+          {% endfor %}
+        </td>
+        <td class="px-4 py-3 text-right text-sm font-semibold tabular-nums
+                   {% if m.usage_delta > 0 %}text-emerald-700{% else %}text-rose-600{% endif %}">
+          {{ '%+.2f'|format(m.usage_delta) }}
+        </td>
+        <td class="px-4 py-3 text-right text-sm tabular-nums text-slate-600">
+          {{ '%+.2f'|format(m.production_delta) }}
+        </td>
+        <td class="px-4 py-3 text-right text-sm font-bold tabular-nums text-slate-900">
+          {{ '%+.2f'|format(m.divergence) }}
+        </td>
+        <td class="px-4 py-3 text-right text-xs tabular-nums text-slate-400">
+          {{ m.weeks_covered }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p class="mt-3 max-w-3xl text-[11px] text-slate-400">
+  Every change is scaled against how much that metric normally moves week to
+  week, so a snap-share swing and a separation swing are comparable rather than
+  the bigger raw number always winning. A <strong>buy</strong> requires
+  opportunity to have genuinely risen, not merely for scoring to have fallen
+  &mdash; a player whose points collapsed on flat usage is not undervalued, he
+  is worse.
+</p>
+{% endif %}
+{% endblock %}
