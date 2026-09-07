@@ -1254,5 +1254,202 @@ def season_tick():
         db.close()
 
 
+@main.group()
+def dev():
+    """Local development fixtures. Not part of normal operation."""
+    pass
+
+
+#: The demo league's id. Everything the seeder creates hangs off this, which
+#: is what makes --remove precise instead of a guess.
+DEMO_LEAGUE_ID = "test-projections"
+
+
+@dev.command('seed-projection-demo')
+@click.option('--year', type=int, default=None,
+              help='Season (defaults to the current fantasy season)')
+@click.option('--week', type=int, default=1, help='Week to build a roster for')
+@click.option('--remove', is_flag=True,
+              help='Delete the demo league, team and snapshot instead')
+def dev_seed_projection_demo(year, week, remove):
+    """Create a throwaway team for evaluating the multi-source projections view.
+
+    The roster is picked for *coverage diversity* rather than quality — some
+    players with three sources, some with two, one with a single source, and
+    one with none — because the states most likely to render wrong are the
+    sparse ones, not the full row.
+
+    **It never writes ``DBPlayer.team_id``.** That column holds one team per
+    player across the whole application, so assigning a demo roster through it
+    would silently strip those players off the real teams that own them.
+    Instead this writes a ``weekly_team_stats`` / ``weekly_player_stats``
+    snapshot, which is what ``team_week_player_ids()`` prefers anyway — so the
+    demo exercises the real ESPN path and touches nothing else.
+
+    ::
+
+        pigskin dev seed-projection-demo --year 2026 --week 1
+        pigskin dev seed-projection-demo --remove
+    """
+    from pigskin_mastermind.models.database import (
+        DBLeague, DBTeam, DBWeeklyPlayerStats, DBWeeklyTeamStats,
+    )
+    from pigskin_mastermind.utils.season import current_fantasy_season
+
+    year = year or current_fantasy_season()
+    db = _get_stats_db()
+    try:
+        team = db.query(DBTeam).filter_by(team_id=DEMO_LEAGUE_ID).first()
+
+        if remove:
+            if team is None:
+                click.echo("Nothing to remove.")
+                return
+            # weekly_stats cascades to weekly_player_stats, so deleting the
+            # team takes the snapshot with it.
+            db.delete(team)
+            league = db.query(DBLeague).filter_by(
+                league_id=DEMO_LEAGUE_ID,
+            ).first()
+            if league is not None:
+                db.delete(league)
+            db.commit()
+            click.echo("Removed the projection demo league and team.")
+            return
+
+        league = db.query(DBLeague).filter_by(league_id=DEMO_LEAGUE_ID).first()
+        if league is None:
+            league = DBLeague(league_id=DEMO_LEAGUE_ID, name="Projection Demo")
+            db.add(league)
+        league.name = "Projection Demo"
+        league.year = year
+        league.kind = "espn"
+        db.flush()
+
+        if team is None:
+            team = DBTeam(team_id=DEMO_LEAGUE_ID, name="Source Test Squad",
+                          owner="Demo")
+            db.add(team)
+        team.name = "Source Test Squad"
+        team.league_id = DEMO_LEAGUE_ID
+        team.is_user_team = True
+        db.flush()
+
+        roster = _demo_roster(db, year, week)
+        if not roster:
+            click.echo(
+                f"No projections stored for {year} week {week}. Run "
+                f"'pigskin projections refresh-week --year {year} "
+                f"--week {week}' first.",
+            )
+            db.rollback()
+            return
+
+        weekly = (
+            db.query(DBWeeklyTeamStats).filter_by(team_id=team.id, week=week)
+            .first()
+        )
+        if weekly is None:
+            weekly = DBWeeklyTeamStats(team_id=team.id, week=week)
+            db.add(weekly)
+        weekly.opponent_name = "Nobody"
+        weekly.result = "U"
+        db.flush()
+
+        # Rebuild the snapshot rather than merging, so re-running after a
+        # projection refresh does not accumulate stale players.
+        db.query(DBWeeklyPlayerStats).filter_by(
+            weekly_team_stats_id=weekly.id,
+        ).delete(synchronize_session=False)
+
+        for player, _sources in roster:
+            db.add(DBWeeklyPlayerStats(
+                player_id=player.id,
+                weekly_team_stats_id=weekly.id,
+                week=week,
+                slot_position=player.position,
+                projected_points=0.0,
+            ))
+        db.commit()
+
+        click.echo(f"Projection demo team ready: {len(roster)} players.")
+        click.echo(f"  View: /teams/{team.id}?week={week}")
+        click.echo(f"  Fragment: /teams/{team.id}/projections?week={week}"
+                   f"&year={year}")
+        click.echo("  Coverage mix:")
+        for player, sources in roster:
+            label = ", ".join(sources) if sources else "no sources"
+            click.echo(f"    {player.position:<3} {player.name:<24} {label}")
+    finally:
+        db.close()
+
+
+def _demo_roster(db, year, week):
+    """Pick players spanning every coverage level, richest first.
+
+    Returns ``[(DBPlayer, [source, ...])]``. The uncovered player is included
+    deliberately: an empty row is the case a projections table is most likely
+    to render badly.
+    """
+    from collections import defaultdict
+
+    from pigskin_mastermind.models.database import DBPlayer, DBPlayerProjection
+    from pigskin_mastermind.services.projection_sources.base import (
+        SOURCE_BLEND_MULTI,
+    )
+
+    rows = (
+        db.query(DBPlayerProjection.player_id, DBPlayerProjection.source)
+        .filter(
+            DBPlayerProjection.year == year,
+            DBPlayerProjection.week == week,
+            DBPlayerProjection.source != SOURCE_BLEND_MULTI,
+        )
+        .all()
+    )
+    if not rows:
+        return []
+
+    by_player = defaultdict(set)
+    for player_id, source in rows:
+        by_player[player_id].add(source)
+
+    players = {
+        p.id: p
+        for p in db.query(DBPlayer).filter(DBPlayer.id.in_(by_player)).all()
+    }
+
+    tiers = defaultdict(list)
+    for player_id, sources in by_player.items():
+        player = players.get(player_id)
+        if player is not None:
+            tiers[len(sources)].append(player)
+    for bucket in tiers.values():
+        bucket.sort(key=lambda p: p.name)
+
+    # Richest coverage first so the top of the table is the full six-column
+    # case, then thinner rows beneath it.
+    wanted = [(3, 7), (2, 4), (1, 2)]
+    roster = []
+    for source_count, take in wanted:
+        for player in tiers.get(source_count, [])[:take]:
+            roster.append((player, sorted(by_player[player.id])))
+
+    uncovered = (
+        db.query(DBPlayer)
+        .filter(
+            DBPlayer.id.notin_(list(by_player)),
+            DBPlayer.position.in_(["QB", "RB", "WR", "TE"]),
+            DBPlayer.name.isnot(None),
+        )
+        .order_by(DBPlayer.id)
+        .first()
+    )
+    if uncovered is not None:
+        roster.append((uncovered, []))
+
+    return roster
+
+
 if __name__ == '__main__':
     main()
