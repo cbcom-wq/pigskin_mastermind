@@ -177,6 +177,19 @@ def user_team_leagues(
     return [(t, leagues.get(t.league_id)) for t in teams]
 
 
+def _finish_line(team: DBTeam, year: int) -> str:
+    """One team-season's frozen record, e.g. ``"2025 finish: 10-4, 2237.8 pts"``.
+
+    Shared by ``archive_footnote`` (a predecessor's record shown on a live
+    successor's card) and the archive league's own card (its own record,
+    same team, same format) — the format string exists in exactly one place.
+    """
+    record = f"{team.wins or 0}-{team.losses or 0}"
+    if team.ties:
+        record += f"-{team.ties}"
+    return f"{year} finish: {record}, {team.total_points or 0.0:.1f} pts"
+
+
 def archive_footnote(db: Session, league: DBLeague, team: DBTeam) -> Optional[str]:
     """This league's own archived predecessor's final record, if there is one.
 
@@ -204,10 +217,7 @@ def archive_footnote(db: Session, league: DBLeague, team: DBTeam) -> Optional[st
     if old is None:
         return None
 
-    record = f"{old.wins or 0}-{old.losses or 0}"
-    if old.ties:
-        record += f"-{old.ties}"
-    return f"{previous.year} finish: {record}, {old.total_points or 0.0:.1f} pts"
+    return _finish_line(old, previous.year)
 
 
 def _starters_in_window(
@@ -248,7 +258,25 @@ def _espn_card(
     its parent's unique key is ``(team_id, week)``, so week 1 of an archived
     2025 season occupies the same slot as week 1 of 2026 — and an unguarded
     read serves it as this season's score.
+
+    An archived league has no current week at all, so it returns before any
+    of that: no ``weekly_team_stats`` read, no lineup plan consulted, just the
+    team's own frozen record from the season that finished.
     """
+    if league.kind == "archive":
+        return LeagueCard(
+            league_id=league.league_id,
+            league_name=league.name,
+            kind=league.kind,
+            team_id=team.id,
+            team_name=team.name,
+            team_url=team_url(team, league),
+            empty_reason=f"{league.year} season complete",
+            empty_action=None,
+            footnote=_finish_line(team, league.year),
+            is_live=False,
+        )
+
     base = dict(
         league_id=league.league_id,
         league_name=league.name,

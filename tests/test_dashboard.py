@@ -468,6 +468,66 @@ class TestEspnLeagueCard:
         cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
         assert card_for(cards, mine).team_url == f"/teams/{mine.id}?back=/"
 
+    def test_unsettled_week_with_no_starter_in_window_is_not_live(self, db, league):
+        """An unsettled week alone doesn't make a card live.
+
+        Same fixture as test_reads_the_synced_week (synced week, result="U"),
+        but evaluated on a Wednesday when no starter is mid-game.
+        """
+        add_schedule(db)
+        mine = add_team(db, league, "55 burgers", espn_team_id="4")
+        add_roster(db, league, mine)
+        add_week_stats(
+            db,
+            mine,
+            points_for=61.4,
+            points_against=44.9,
+            projected_points=118.4,
+            opponent_name="The Crushers",
+            result="U",
+        )
+        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        assert card_for(cards, mine).is_live is False
+
+
+class TestArchiveLeagueCard:
+    """The archived league's own card, not the footnote it leaves behind on a
+    successor (that's TestArchiveFootnote below)."""
+
+    @pytest.fixture
+    def league(self, db):
+        return add_league(
+            db, "1977617326-2025", "Throne 2.0 (2025)", "archive", year=2025
+        )
+
+    def test_says_the_season_is_complete(self, db, league):
+        mine = add_team(db, league, "Stable of Stars", wins=10, losses=4, points=2237.8)
+        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        card = card_for(cards, mine)
+        assert card.empty_reason == "2025 season complete"
+        assert card.empty_action is None
+        assert card.footnote == "2025 finish: 10-4, 2237.8 pts"
+
+    def test_has_no_current_week(self, db, league):
+        mine = add_team(db, league, "Stable of Stars", wins=10, losses=4, points=2237.8)
+        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        card = card_for(cards, mine)
+        assert card.points is None
+        assert card.is_live is False
+
+    def test_a_stored_week_one_row_does_not_leak_onto_the_card(self, db, league):
+        mine = add_team(db, league, "Stable of Stars", wins=10, losses=4, points=2237.8)
+        add_week_stats(
+            db,
+            mine,
+            points_for=151.2,
+            points_against=98.0,
+            opponent_name="Somebody 2025",
+            result="W",
+        )
+        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        assert card_for(cards, mine).points is None
+
 
 class TestArchiveFootnote:
     def test_the_predecessors_record_lands_on_the_live_card(self, db):
