@@ -279,7 +279,9 @@ class TestSeasonLeagueCard:
         add_roster(db, league, theirs)
         add_matchup(db, league, mine, theirs)
 
-        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        cards, _plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         card = card_for(cards, mine)
         assert card.opponent_name == "Touchdown There"
         assert card.kind == "season"
@@ -293,7 +295,9 @@ class TestSeasonLeagueCard:
         add_roster(db, league, theirs)
         add_matchup(db, league, mine, theirs)
 
-        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        cards, _plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         card = card_for(cards, mine)
         # QB1 27.8 + RB1 18.7 + RB2 13.5 + WR1 15.3 + WR2 13.9 + TE1 15.6
         # + WR3 10.9 (FLEX, beating RB3 9.5) + K1 11.6 + DEF1 12.1 = 139.4
@@ -317,7 +321,7 @@ class TestSeasonLeagueCard:
             away_points=44.9,
         )
 
-        cards, _plans = dashboard.build_league_cards(
+        cards, _plans, _rosters = dashboard.build_league_cards(
             db,
             YEAR,
             WEEK,
@@ -333,21 +337,27 @@ class TestSeasonLeagueCard:
         add_schedule(db)
         mine = add_team(db, league, "The Scoobies")
         add_roster(db, league, mine)
-        _cards, plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        _cards, plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         assert plans[mine.id].projected_total > 0
 
     def test_no_matchup_this_week_is_an_empty_reason(self, db, league):
         add_schedule(db)
         mine = add_team(db, league, "The Scoobies")
         add_roster(db, league, mine)
-        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        cards, _plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         card = card_for(cards, mine)
         assert card.empty_reason == "No week 1 matchup"
         assert card.points is None
 
     def test_links_to_the_season_team_page_with_a_back_param(self, db, league):
         mine = add_team(db, league, "The Scoobies")
-        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        cards, _plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         assert card_for(cards, mine).team_url == (
             f"/season/season-x/teams/{mine.id}?back=/"
         )
@@ -355,7 +365,9 @@ class TestSeasonLeagueCard:
     def test_only_user_teams_get_cards(self, db, league):
         mine = add_team(db, league, "The Scoobies")
         add_team(db, league, "Someone Else", is_user=False)
-        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        cards, _plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         assert [c.team_id for c in cards] == [mine.id]
 
 
@@ -385,7 +397,7 @@ class TestEspnLeagueCard:
             result="U",
         )
 
-        cards, _plans = dashboard.build_league_cards(
+        cards, _plans, _rosters = dashboard.build_league_cards(
             db,
             YEAR,
             WEEK,
@@ -410,7 +422,7 @@ class TestEspnLeagueCard:
             opponent_name="The Crushers",
             result="W",
         )
-        cards, _plans = dashboard.build_league_cards(
+        cards, _plans, _rosters = dashboard.build_league_cards(
             db,
             YEAR,
             WEEK,
@@ -441,14 +453,18 @@ class TestEspnLeagueCard:
             result="W",
         )
 
-        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        cards, _plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         card = card_for(cards, old_team)
         assert card.points is None
         assert card.opponent_name != "Somebody 2025"
 
     def test_unsynced_league_says_so_and_offers_the_sync(self, db, league):
         mine = add_team(db, league, "55 burgers")
-        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        cards, _plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         card = card_for(cards, mine)
         assert card.empty_reason == "No 2026 weeks synced"
         assert card.empty_action == ("Sync from ESPN", "/settings")
@@ -462,12 +478,16 @@ class TestEspnLeagueCard:
         add_schedule(db)
         mine = add_team(db, league, "55 burgers")
         add_roster(db, league, mine)
-        _cards, plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        _cards, plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         assert plans[mine.id].projected_total > 0
 
     def test_links_to_the_generic_team_page(self, db, league):
         mine = add_team(db, league, "55 burgers")
-        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        cards, _plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         assert card_for(cards, mine).team_url == f"/teams/{mine.id}?back=/"
 
     def test_unsettled_week_with_no_starter_in_window_is_not_live(self, db, league):
@@ -488,7 +508,9 @@ class TestEspnLeagueCard:
             opponent_name="The Crushers",
             result="U",
         )
-        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        cards, _plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         assert card_for(cards, mine).is_live is False
 
 
@@ -504,7 +526,9 @@ class TestArchiveLeagueCard:
 
     def test_says_the_season_is_complete(self, db, league):
         mine = add_team(db, league, "Stable of Stars", wins=10, losses=4, points=2237.8)
-        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        cards, _plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         card = card_for(cards, mine)
         assert card.empty_reason == "2025 season complete"
         assert card.empty_action is None
@@ -512,7 +536,9 @@ class TestArchiveLeagueCard:
 
     def test_has_no_current_week(self, db, league):
         mine = add_team(db, league, "Stable of Stars", wins=10, losses=4, points=2237.8)
-        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        cards, _plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         card = card_for(cards, mine)
         assert card.points is None
         assert card.is_live is False
@@ -527,7 +553,9 @@ class TestArchiveLeagueCard:
             opponent_name="Somebody 2025",
             result="W",
         )
-        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        cards, _plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         assert card_for(cards, mine).points is None
 
 
@@ -549,13 +577,17 @@ class TestArchiveFootnote:
         live = add_league(db, "1977617326", "Pigskin Throne 2.0", "espn")
         mine = add_team(db, live, "Bozos Dubbed Over", espn_team_id="7")
 
-        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        cards, _plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         assert card_for(cards, mine).footnote == "2025 finish: 10-4, 2237.8 pts"
 
     def test_no_predecessor_means_no_footnote(self, db):
         live = add_league(db, "878627004", "Airframe Engine League", "espn")
         mine = add_team(db, live, "55 burgers", espn_team_id="4")
-        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        cards, _plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         assert card_for(cards, mine).footnote is None
 
     def test_a_tie_is_included_in_the_record(self, db):
@@ -575,7 +607,9 @@ class TestArchiveFootnote:
         )
         live = add_league(db, "1977617326", "Pigskin Throne 2.0", "espn")
         mine = add_team(db, live, "Bozos Dubbed Over", espn_team_id="7")
-        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        cards, _plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         assert card_for(cards, mine).footnote == "2025 finish: 9-4-1, 2100.0 pts"
 
     def test_an_archived_team_that_is_not_a_user_team_gets_no_card(self, db):
@@ -596,7 +630,9 @@ class TestArchiveFootnote:
         live = add_league(db, "1977617326", "Pigskin Throne 2.0", "espn")
         mine = add_team(db, live, "Bozos Dubbed Over", espn_team_id="7")
 
-        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        cards, _plans, _rosters = dashboard.build_league_cards(
+            db, YEAR, WEEK, WEDNESDAY
+        )
         assert [c.team_id for c in cards] == [mine.id]
 
 
@@ -699,11 +735,7 @@ class TestAttentionItems:
         return league, mine, {p.name.split()[-1]: p for p in players}
 
     def _build(self, db, now=WEDNESDAY):
-        cards, plans = dashboard.build_league_cards(db, YEAR, WEEK, now)
-        rosters = {
-            t.id: dashboard.roster_players(db, t, lg)
-            for t, lg in dashboard.user_team_leagues(db)
-        }
+        cards, plans, rosters = dashboard.build_league_cards(db, YEAR, WEEK, now)
         return dashboard.build_attention(
             db,
             cards,
@@ -809,11 +841,7 @@ class TestAttentionItems:
 
 class TestPlayerCells:
     def _build(self, db, now):
-        cards, plans = dashboard.build_league_cards(db, YEAR, WEEK, now)
-        rosters = {
-            t.id: dashboard.roster_players(db, t, lg)
-            for t, lg in dashboard.user_team_leagues(db)
-        }
+        cards, plans, rosters = dashboard.build_league_cards(db, YEAR, WEEK, now)
         return dashboard.build_players(
             db,
             cards,
@@ -838,15 +866,17 @@ class TestPlayerCells:
         assert len(cells) == dashboard.PLAYER_STRIP_LIMIT
         assert total == 9
 
-    def test_caps_the_strip_and_reports_the_true_total(self, db, setup):
-        """Two teams is eighteen starters; the strip still shows nine and
-        says so, which is what the "N more" link is built from."""
+    def test_reports_every_starter_uncapped(self, db, setup):
+        """Two teams is eighteen starters. ``build_players`` itself never
+        caps -- capping to the strip is ``build_view``'s job, so that the
+        hero's uncapped ``players_yet_to_play`` count can be computed from
+        the same list a display caller then slices."""
         league, _mine, _players = setup
         second = add_team(db, league, "Second Squad")
         add_roster(db, league, second)
 
         cells, total = self._build(db, WEDNESDAY)
-        assert len(cells) == dashboard.PLAYER_STRIP_LIMIT
+        assert len(cells) == 18
         assert total == 18
 
     def test_upcoming_players_sort_by_kickoff_then_projection(self, db, setup):
@@ -900,3 +930,39 @@ class TestPlayerCells:
     def test_every_cell_links_back_to_the_dashboard(self, db, setup):
         cells, _total = self._build(db, WEDNESDAY)
         assert all(c.url.endswith("?back=/") for c in cells)
+
+
+class TestWeekPlayersYetToPlay:
+    """Closes the review finding on Task 8.
+
+    ``build_view(db, now, sections=frozenset())`` is exactly how ``/`` and
+    ``/api/dashboard/pulse`` call this -- neither ever requests the
+    ``players`` section, so the hero's count must not depend on it, and it
+    must not be capped to what the (unrequested, empty) strip would show.
+    """
+
+    def test_counts_every_upcoming_starter_not_just_the_shown_nine(self, db):
+        add_schedule(db)
+        league = add_league(db, "season-x", "Bird Turds", "season")
+        mine = add_team(db, league, "The Scoobies")
+        add_roster(db, league, mine)
+        second = add_team(db, league, "Second Squad")
+        add_roster(db, league, second)
+
+        view = dashboard.build_view(db, WEDNESDAY, sections=frozenset())
+        assert view.players == []
+        assert view.week.players_yet_to_play == 18
+
+    def test_players_section_is_still_capped_to_the_strip(self, db):
+        """The cap moved from ``build_players`` to ``build_view`` -- this is
+        where "N more" coverage now belongs."""
+        add_schedule(db)
+        league = add_league(db, "season-x", "Bird Turds", "season")
+        mine = add_team(db, league, "The Scoobies")
+        add_roster(db, league, mine)
+        second = add_team(db, league, "Second Squad")
+        add_roster(db, league, second)
+
+        view = dashboard.build_view(db, WEDNESDAY, sections=frozenset({"players"}))
+        assert len(view.players) == dashboard.PLAYER_STRIP_LIMIT
+        assert view.players_total == 18

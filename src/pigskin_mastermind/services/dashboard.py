@@ -45,13 +45,6 @@ from pigskin_mastermind.utils.season import current_fantasy_season
 #: built: every band needs the scope, but only some of them need the rosters.
 ALL_SECTIONS: FrozenSet[str] = frozenset({"attention", "players", "slate", "movers"})
 
-#: The sections whose builders read ``rosters``. ``build_view`` only pays for
-#: the roster queries when one of these was actually requested -- the pulse
-#: fragment polls every 30 seconds while games are live and asks for none of
-#: them, so building rosters unconditionally would be a wasted query per user
-#: team on the hottest path in the feature.
-_NEEDS_ROSTERS: FrozenSet[str] = frozenset({"attention", "players", "slate"})
-
 
 @dataclass(frozen=True)
 class WeekContext:
@@ -400,19 +393,25 @@ def build_league_cards(
     year: int,
     week: int,
     now: datetime,
-) -> Tuple[List[LeagueCard], Dict[int, LineupPlan]]:
-    """One card per user team, plus the lineup plan each card was built from.
+) -> Tuple[List[LeagueCard], Dict[int, LineupPlan], Dict[int, List[DBPlayer]]]:
+    """One card per user team, the lineup plan, and the roster each was built
+    from.
 
-    The plans are returned rather than rebuilt by later sections: they are the
-    expensive part (a roster query, a projection map, an injury index and a
-    schedule index per team) and the attention items and player cells are both
-    derived from exactly these.
+    The plans and rosters are returned rather than rebuilt by later sections:
+    they are the expensive part (a roster query, a projection map, an injury
+    index and a schedule index per team), and ``build_view`` used to re-run
+    ``roster_players()`` a second time, once here and once again to assemble
+    its own ``rosters`` dict, on every request. Handing back what this loop
+    already computed removes that duplicate query entirely, along with the
+    gate it used to force on which sections were allowed to pay for it.
     """
     cards: List[LeagueCard] = []
     plans: Dict[int, LineupPlan] = {}
+    rosters: Dict[int, List[DBPlayer]] = {}
 
     for team, league in user_team_leagues(db):
         players = roster_players(db, team, league)
+        rosters[team.id] = players
         plan = plan_lineup(
             db,
             team,
@@ -441,7 +440,7 @@ def build_league_cards(
         else:
             cards.append(_espn_card(db, team, league, players, year, week, now, plan))
 
-    return cards, plans
+    return cards, plans, rosters
 
 
 @dataclass(frozen=True)
@@ -469,11 +468,16 @@ def build_view(
     """The whole page, or the slice of it a fragment endpoint asked for.
 
     ``week`` and ``leagues`` are always built: every section needs the scope.
-    ``rosters`` is only built when a requested section actually reads it --
-    the pulse fragment (bands 1-2) asks for neither ``attention``, ``players``
-    nor ``slate`` and polls every 30 seconds while games are live, so building
-    rosters unconditionally would be a wasted query per user team on the
-    hottest path in the feature.
+    ``build_league_cards`` hands back the rosters it already queried, so
+    there is no separate roster pass left to gate behind which sections were
+    requested.
+
+    The hero's ``players_yet_to_play`` count must be right on ``/`` and
+    ``/api/dashboard/pulse``, which request no sections at all -- so the full
+    (uncapped) player list is always built, regardless of ``sections``. It is
+    cheap: the rosters and lineup plans it reads are already in hand.
+    ``DashboardView.players`` is still only populated -- and only sliced to
+    ``PLAYER_STRIP_LIMIT`` -- when ``"players"`` was actually requested.
 
     Unrequested sections come back as empty lists rather than ``None``, so a
     template cannot accidentally distinguish "not asked for" from "nothing to
@@ -481,15 +485,7 @@ def build_view(
     others.
     """
     year, week = resolve_scope(db, now)
-    cards, plans = build_league_cards(db, year, week, now)
-    rosters = (
-        {
-            team.id: roster_players(db, team, league)
-            for team, league in user_team_leagues(db)
-        }
-        if sections & _NEEDS_ROSTERS
-        else {}
-    )
+    cards, plans, rosters = build_league_cards(db, year, week, now)
 
     attention: List[AttentionItem] = []
     if "attention" in sections:
@@ -503,18 +499,17 @@ def build_view(
             now,
         )
 
-    players: List[PlayerCell] = []
-    players_total = 0
-    if "players" in sections:
-        players, players_total = build_players(
-            db,
-            cards,
-            plans,
-            rosters,
-            year,
-            week,
-            now,
-        )
+    all_players, players_total_all = build_players(
+        db,
+        cards,
+        plans,
+        rosters,
+        year,
+        week,
+        now,
+    )
+    players = all_players[:PLAYER_STRIP_LIMIT] if "players" in sections else []
+    players_total = players_total_all if "players" in sections else 0
 
     return DashboardView(
         week=build_week_context(
@@ -522,7 +517,7 @@ def build_view(
             year,
             week,
             now,
-            yet_to_play=sum(1 for c in players if c.state == "upcoming"),
+            yet_to_play=sum(1 for c in all_players if c.state == "upcoming"),
         ),
         leagues=cards,
         attention=attention,
@@ -809,12 +804,16 @@ def build_players(
     week: int,
     now: datetime,
 ) -> Tuple[List[PlayerCell], int]:
-    """The user's starters across every team, deduplicated and ranked.
+    """The user's starters across every team, deduplicated, ranked, and
+    uncapped.
 
     League boundaries are deliberately dissolved here: one ``DBPlayer`` row is
     routinely on an ESPN roster and a season roster at once, and showing him
-    twice is noise. Returns the capped strip and the true total, so the
-    template can say how many it is not showing.
+    twice is noise. Returns every cell -- the caller decides how much of it
+    to show: ``build_view`` slices ``[:PLAYER_STRIP_LIMIT]`` for the strip
+    while counting ``state == "upcoming"`` over this full list for the hero's
+    ``players_yet_to_play``, which must not be capped to what the strip
+    displays.
     """
     injuries = InjuryIndex(db, year, week)
     schedule = ScheduleIndex(db)
@@ -888,4 +887,4 @@ def build_players(
             c.player_id,
         ),
     )
-    return cells[:PLAYER_STRIP_LIMIT], len(cells)
+    return cells, len(cells)

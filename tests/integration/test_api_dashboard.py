@@ -7,6 +7,9 @@ database that was never given any tables ("no such table: leagues") -- the
 exact failure conftest's own docstring exists to warn about.
 """
 
+import re
+from datetime import timedelta
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -18,6 +21,7 @@ from pigskin_mastermind.models.database import (
     DBRosterSpot,
     DBTeam,
 )
+from pigskin_mastermind.services.season_scheduler import league_now
 
 client = TestClient(app)
 
@@ -172,3 +176,54 @@ class TestPlayersFragment:
 
     def test_empty_roster_does_not_500(self, client):
         assert client.get("/api/dashboard/players").status_code == 200
+
+
+class TestPulseYetToPlay:
+    """Closes the review finding on Task 8: the hero's "N of your players
+    yet to play" is served by ``/api/dashboard/pulse``, which requests no
+    sections at all -- so the count must not depend on the ``players``
+    section ever being built for display.
+
+    Local ``client``/``seeded`` fixtures, scoped to this class. See
+    ``TestAttentionFragment`` above for why these are not module-level.
+    """
+
+    @pytest.fixture
+    def client(self):
+        return TestClient(app)
+
+    @pytest.fixture
+    def seeded(self, db):
+        """A season team with one rostered starter whose game has not
+        kicked off yet. The kickoff is real wall-clock future time so the
+        count is genuinely nonzero no matter when this test runs."""
+        seed(db)
+        league = db.query(DBLeague).filter_by(league_id="season-x").first()
+        team = db.query(DBTeam).filter_by(team_id="t1").first()
+        game = db.query(DBNFLGame).filter_by(home_team="CHI").first()
+        game.kickoff_at = league_now() + timedelta(days=3)
+        db.commit()
+        player = DBPlayer(
+            player_id="test_qb1",
+            name="Test Quarterback",
+            position="QB",
+            nfl_team="CHI",
+        )
+        db.add(player)
+        db.commit()
+        db.add(
+            DBRosterSpot(
+                league_id=league.id,
+                team_id=team.id,
+                player_id=player.id,
+            )
+        )
+        db.commit()
+        return db
+
+    def test_shows_a_nonzero_count(self, client, seeded):
+        response = client.get("/api/dashboard/pulse")
+        assert response.status_code == 200
+        match = re.search(r"(\d+)\s+of your players yet to play", response.text)
+        assert match is not None
+        assert int(match.group(1)) > 0
