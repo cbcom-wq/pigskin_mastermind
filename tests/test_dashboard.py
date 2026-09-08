@@ -4,7 +4,7 @@ Every rule here is one the page gets wrong silently if it breaks: a score from
 the wrong year, an empty roster, a lineup nobody flagged as unset.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
@@ -14,9 +14,11 @@ from sqlalchemy.pool import StaticPool
 from pigskin_mastermind.models.database import (
     Base,
     DBLeague,
+    DBLineupSlot,
     DBMatchup,
     DBNFLGame,
     DBPlayer,
+    DBPlayerInjury,
     DBPlayerProjection,
     DBRosterSpot,
     DBTeam,
@@ -628,3 +630,178 @@ class TestBuildView:
         view = dashboard.build_view(db, WEDNESDAY, sections=frozenset())
         assert view.week.games_total == 3
         assert len(view.leagues) == 1
+
+
+def set_lineup(db, team, assignments, year=YEAR, week=WEEK):
+    """assignments: {player: slot}"""
+    for player, slot in assignments.items():
+        db.add(
+            DBLineupSlot(
+                team_id=team.id, year=year, week=week, player_id=player.id, slot=slot
+            )
+        )
+    db.commit()
+
+
+def bench_all_but(db, team, players, starters, year=YEAR, week=WEEK):
+    """Save a lineup: *starters* is {player: slot}, everyone else benched."""
+    assignments = dict(starters)
+    for p in players:
+        assignments.setdefault(p, "BENCH")
+    set_lineup(db, team, assignments, year, week)
+
+
+def add_injury(db, player, status, year=YEAR, week=WEEK):
+    db.add(
+        DBPlayerInjury(player_id=player.id, year=year, week=week, report_status=status)
+    )
+    db.commit()
+
+
+def optimal_lineup(db, team, league, year=YEAR, week=WEEK, now=WEDNESDAY):
+    """The saved lineup plan_lineup would choose, so nothing is 'unset'."""
+    from pigskin_mastermind.services.lineup_manager import plan_lineup
+    from pigskin_mastermind.services.season_league import roster_players
+
+    plan = plan_lineup(
+        db,
+        team,
+        year,
+        week,
+        now,
+        league=league,
+        players=roster_players(db, team, league),
+    )
+    for decision in plan.decisions:
+        db.add(
+            DBLineupSlot(
+                team_id=team.id,
+                year=year,
+                week=week,
+                player_id=decision.player_id,
+                slot=decision.slot,
+            )
+        )
+    db.commit()
+
+
+def kinds(items):
+    return [i.kind for i in items]
+
+
+class TestAttentionItems:
+    @pytest.fixture
+    def setup(self, db):
+        add_schedule(db)
+        league = add_league(db, "season-x", "Bird Turds", "season")
+        mine = add_team(db, league, "The Scoobies")
+        players = add_roster(db, league, mine)
+        return league, mine, {p.name.split()[-1]: p for p in players}
+
+    def _build(self, db, now=WEDNESDAY):
+        cards, plans = dashboard.build_league_cards(db, YEAR, WEEK, now)
+        rosters = {
+            t.id: dashboard.roster_players(db, t, lg)
+            for t, lg in dashboard.user_team_leagues(db)
+        }
+        return dashboard.build_attention(
+            db,
+            cards,
+            plans,
+            rosters,
+            YEAR,
+            WEEK,
+            now,
+        )
+
+    def test_no_saved_lineup_is_the_top_item(self, db, setup):
+        items = self._build(db)
+        assert items[0].kind == "no_lineup"
+        assert items[0].severity == "critical"
+        assert items[0].team_name == "The Scoobies"
+
+    def test_an_optimal_saved_lineup_raises_nothing(self, db, setup):
+        league, mine, _p = setup
+        optimal_lineup(db, mine, league)
+        assert self._build(db) == []
+
+    def test_an_out_starter_is_critical(self, db, setup):
+        league, mine, p = setup
+        optimal_lineup(db, mine, league)
+        add_injury(db, p["QB1"], "Out")
+        items = self._build(db)
+        assert "injury_excluded" in kinds(items)
+        item = next(i for i in items if i.kind == "injury_excluded")
+        assert item.player_name == "The Scoobies QB1"
+        assert item.severity == "critical"
+
+    def test_a_questionable_starter_is_a_warning(self, db, setup):
+        league, mine, p = setup
+        optimal_lineup(db, mine, league)
+        add_injury(db, p["QB1"], "Questionable")
+        items = self._build(db)
+        assert "injury_haircut" in kinds(items)
+        assert (
+            next(i for i in items if i.kind == "injury_haircut").severity == "warning"
+        )
+
+    def test_a_bye_week_starter_is_critical(self, db, setup):
+        league, mine, p = setup
+        optimal_lineup(db, mine, league)
+        # No week-1 game for ARI, so a player on ARI is on bye.
+        p["WR1"].nfl_team = "ARI"
+        db.commit()
+        assert "on_bye" in kinds(self._build(db))
+
+    def test_bench_better_fires_only_against_the_saved_lineup(self, db, setup):
+        """A saved lineup that starts RB3 over RB1 is the user's own choice
+        gone wrong -- that is news. plan_lineup's own ideal is not."""
+        league, mine, p = setup
+        starters = {
+            p["QB1"]: "QB",
+            p["RB3"]: "RB",
+            p["RB2"]: "RB",
+            p["WR1"]: "WR",
+            p["WR2"]: "WR",
+            p["TE1"]: "TE",
+            p["WR3"]: "FLEX",
+            p["K1"]: "K",
+            p["DEF1"]: "DEF",
+        }
+        bench_all_but(db, mine, list(p.values()), starters)
+        items = self._build(db)
+        assert "bench_better" in kinds(items)
+        item = next(i for i in items if i.kind == "bench_better")
+        assert "RB1" in item.detail
+
+    def test_ordering_follows_attention_order(self, db, setup):
+        league, mine, p = setup
+        starters = {
+            p["QB1"]: "QB",
+            p["RB3"]: "RB",
+            p["RB2"]: "RB",
+            p["WR1"]: "WR",
+            p["WR2"]: "WR",
+            p["TE1"]: "TE",
+            p["WR3"]: "FLEX",
+            p["K1"]: "K",
+            p["DEF1"]: "DEF",
+        }
+        bench_all_but(db, mine, list(p.values()), starters)
+        add_injury(db, p["QB1"], "Out")
+        add_injury(db, p["WR2"], "Questionable")
+
+        seen = kinds(self._build(db))
+        positions = [dashboard.ATTENTION_ORDER.index(k) for k in seen]
+        assert positions == sorted(positions)
+
+    def test_a_lock_within_three_hours_is_informational(self, db, setup):
+        league, mine, _p = setup
+        optimal_lineup(db, mine, league)
+        items = self._build(db, now=SUNDAY_EARLY - timedelta(hours=1))
+        assert "lock_soon" in kinds(items)
+        assert next(i for i in items if i.kind == "lock_soon").severity == "info"
+
+    def test_every_item_links_back_to_the_dashboard(self, db, setup):
+        for item in self._build(db):
+            assert item.url.endswith("?back=/")

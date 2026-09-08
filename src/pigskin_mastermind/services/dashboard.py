@@ -13,7 +13,7 @@ first time one of them was edited.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, FrozenSet, List, Optional, Tuple
 
 from sqlalchemy import or_
@@ -21,14 +21,18 @@ from sqlalchemy.orm import Session
 
 from pigskin_mastermind.models.database import (
     DBLeague,
+    DBLineupSlot,
     DBMatchup,
     DBNFLGame,
     DBPlayer,
     DBTeam,
     DBWeeklyTeamStats,
 )
+from pigskin_mastermind.services.injury_status import InjuryIndex
 from pigskin_mastermind.services.lineup_locks import LockIndex
 from pigskin_mastermind.services.lineup_manager import LineupPlan, plan_lineup
+from pigskin_mastermind.services.mock_draft import BENCH_SLOT, FLEX_ELIGIBLE
+from pigskin_mastermind.services.nfl_schedule import ScheduleIndex
 from pigskin_mastermind.services.season_league import roster_players
 from pigskin_mastermind.services.season_scheduler import (
     in_game_window,
@@ -470,3 +474,251 @@ def build_view(
         week=build_week_context(db, year, week, now),
         leagues=cards,
     )
+
+
+#: Ranked worst-first. The constant is the definition; the ordering test
+#: asserts against it rather than against a hand-written expected list.
+ATTENTION_ORDER: Tuple[str, ...] = (
+    "no_lineup",
+    "injury_excluded",
+    "on_bye",
+    "injury_haircut",
+    "bench_better",
+    "lock_soon",
+)
+
+_SEVERITY = {
+    "no_lineup": "critical",
+    "injury_excluded": "critical",
+    "on_bye": "critical",
+    "injury_haircut": "warning",
+    "bench_better": "warning",
+    "lock_soon": "info",
+}
+
+#: How close a lock has to be before it is worth saying so.
+LOCK_SOON_HOURS = 3
+
+
+@dataclass(frozen=True)
+class AttentionItem:
+    rank: int
+    kind: str
+    severity: str
+    team_name: str
+    detail: str
+    url: str
+    player_id: Optional[int] = None
+    player_name: Optional[str] = None
+    position: Optional[str] = None
+    deadline: Optional[datetime] = None
+
+
+def saved_starters(
+    db: Session,
+    team: DBTeam,
+    year: int,
+    week: int,
+) -> Dict[int, str]:
+    """The non-bench slots this team has actually saved for *week*."""
+    return {
+        row.player_id: row.slot
+        for row in db.query(DBLineupSlot).filter_by(
+            team_id=team.id,
+            year=year,
+            week=week,
+        )
+        if row.slot != BENCH_SLOT
+    }
+
+
+def effective_starters(
+    db: Session,
+    team: DBTeam,
+    plan: LineupPlan,
+    year: int,
+    week: int,
+) -> Dict[int, str]:
+    """Who is starting, saved lineup first, planner's recommendation second.
+
+    The fallback matters: a team with no saved lineup is exactly the team the
+    ``no_lineup`` item is about, and without it that team would contribute no
+    players to the strip and nothing to ``players_yet_to_play`` — the worst
+    team on the page would look like the quietest.
+    """
+    saved = saved_starters(db, team, year, week)
+    if saved:
+        return saved
+    return {d.player_id: d.slot for d in plan.starters()}
+
+
+def build_attention(
+    db: Session,
+    cards: List[LeagueCard],
+    plans: Dict[int, LineupPlan],
+    rosters: Dict[int, List[DBPlayer]],
+    year: int,
+    week: int,
+    now: datetime,
+) -> List[AttentionItem]:
+    """Everything wrong with the user's teams this week, worst first.
+
+    Derived entirely from the ``LineupPlan`` each card was already built from,
+    so it adds no roster queries — only the three shared indexes, each loaded
+    once for the whole page rather than once per team.
+    """
+    injuries = InjuryIndex(db, year, week)
+    schedule = ScheduleIndex(db)
+    locks = LockIndex(db)
+    items: List[AttentionItem] = []
+
+    for card in cards:
+        plan = plans.get(card.team_id)
+        players = {p.id: p for p in rosters.get(card.team_id, [])}
+        if plan is None or not players:
+            continue
+
+        # One indexed lookup, and it keeps this function's signature free of a
+        # second parallel dict of teams.
+        team = db.query(DBTeam).filter_by(id=card.team_id).first()
+        if team is None:
+            continue
+        saved = saved_starters(db, team, year, week)
+
+        if not saved:
+            items.append(
+                AttentionItem(
+                    rank=ATTENTION_ORDER.index("no_lineup"),
+                    kind="no_lineup",
+                    severity=_SEVERITY["no_lineup"],
+                    team_name=card.team_name,
+                    detail=f"Nothing set for week {week}",
+                    url=card.team_url,
+                )
+            )
+
+        starting = effective_starters(db, team, plan, year, week)
+        projections = {d.player_id: d.projected_points for d in plan.decisions}
+
+        for player_id, slot in sorted(
+            starting.items(),
+            key=lambda kv: (-projections.get(kv[0], 0.0), kv[0]),
+        ):
+            player = players.get(player_id)
+            if player is None:
+                continue
+
+            verdict = injuries.verdict(player_id)
+            on_bye = schedule.is_bye(player.nfl_team, year, week)
+            kickoff = locks.kickoff(player.nfl_team, year, week)
+
+            if on_bye:
+                kind = "on_bye"
+                detail = f"{player.nfl_team} is on bye in week {week}"
+            elif verdict.excluded:
+                kind = "injury_excluded"
+                detail = f"{verdict.reason} — still in your {slot}"
+            elif verdict.multiplier != 1.0:
+                kind = "injury_haircut"
+                detail = f"{verdict.reason} — in your {slot}"
+            else:
+                continue
+
+            items.append(
+                AttentionItem(
+                    rank=ATTENTION_ORDER.index(kind),
+                    kind=kind,
+                    severity=_SEVERITY[kind],
+                    team_name=card.team_name,
+                    detail=detail,
+                    url=card.team_url,
+                    player_id=player_id,
+                    player_name=player.name,
+                    position=player.position,
+                    deadline=kickoff,
+                )
+            )
+
+        items.extend(_bench_better(card, plan, players, saved, projections))
+
+        if saved:
+            soonest = [
+                locks.kickoff(players[pid].nfl_team, year, week)
+                for pid in starting
+                if pid in players
+            ]
+            soonest = [k for k in soonest if k is not None and k > now]
+            if soonest and min(soonest) - now <= timedelta(hours=LOCK_SOON_HOURS):
+                items.append(
+                    AttentionItem(
+                        rank=ATTENTION_ORDER.index("lock_soon"),
+                        kind="lock_soon",
+                        severity=_SEVERITY["lock_soon"],
+                        team_name=card.team_name,
+                        detail="First lineup lock is close",
+                        url=card.team_url,
+                        deadline=min(soonest),
+                    )
+                )
+
+    items.sort(key=lambda i: (i.rank, i.team_name, i.player_name or ""))
+    return items
+
+
+def _bench_better(
+    card: LeagueCard,
+    plan: LineupPlan,
+    players: Dict[int, DBPlayer],
+    saved: Dict[int, str],
+    projections: Dict[int, float],
+) -> List[AttentionItem]:
+    """A benched player out-projecting a saved starter at the same slot.
+
+    Compared against the *saved* lineup, never against ``plan_lineup``'s ideal.
+    Against the ideal this fires for every team that has not clicked auto-set,
+    which is not news — it is just the optimizer restating itself.
+    """
+    if not saved:
+        return []
+
+    bench = [
+        pid for pid in players if pid not in saved and projections.get(pid, 0.0) > 0
+    ]
+    out: List[AttentionItem] = []
+
+    for starter_id, slot in saved.items():
+        starter = players.get(starter_id)
+        if starter is None:
+            continue
+        eligible = [
+            pid
+            for pid in bench
+            if (
+                players[pid].position == slot
+                or (slot == "FLEX" and players[pid].position in FLEX_ELIGIBLE)
+            )
+        ]
+        if not eligible:
+            continue
+        best = max(eligible, key=lambda pid: (projections.get(pid, 0.0), -pid))
+        gain = projections.get(best, 0.0) - projections.get(starter_id, 0.0)
+        if gain <= 0:
+            continue
+        out.append(
+            AttentionItem(
+                rank=ATTENTION_ORDER.index("bench_better"),
+                kind="bench_better",
+                severity=_SEVERITY["bench_better"],
+                team_name=card.team_name,
+                detail=(
+                    f"{players[best].name} {projections[best]:.1f} on your bench "
+                    f"beats {starter.name} {projections.get(starter_id, 0.0):.1f} "
+                    f"in {slot}"
+                ),
+                url=card.team_url,
+                player_id=best,
+                player_name=players[best].name,
+                position=players[best].position,
+            )
+        )
+    return out
