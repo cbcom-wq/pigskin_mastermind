@@ -44,3 +44,15 @@ async def dashboard_pulse(request: Request, db: Session = Depends(get_db)):
         "dashboard/_pulse.html",
         {"request": request, "view": view},
     )
+
+
+@router.get("/api/dashboard/attention")
+async def dashboard_attention(request: Request, db: Session = Depends(get_db)):
+    """Band 3 left. Loaded separately so it cannot delay the scores."""
+    from pigskin_mastermind.api.main import templates
+
+    view = build_view(db, league_now(), sections=frozenset({"attention"}))
+    return templates.TemplateResponse(
+        "dashboard/_attention.html",
+        {"request": request, "view": view},
+    )

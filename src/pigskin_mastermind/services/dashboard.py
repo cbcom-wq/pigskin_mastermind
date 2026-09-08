@@ -469,10 +469,28 @@ def build_view(
     others.
     """
     year, week = resolve_scope(db, now)
-    cards, _plans = build_league_cards(db, year, week, now)
+    cards, plans = build_league_cards(db, year, week, now)
+    rosters = {
+        team.id: roster_players(db, team, league)
+        for team, league in user_team_leagues(db)
+    }
+
+    attention: List[AttentionItem] = []
+    if "attention" in sections:
+        attention = build_attention(
+            db,
+            cards,
+            plans,
+            rosters,
+            year,
+            week,
+            now,
+        )
+
     return DashboardView(
         week=build_week_context(db, year, week, now),
         leagues=cards,
+        attention=attention,
     )
 
 
