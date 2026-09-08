@@ -966,3 +966,69 @@ class TestWeekPlayersYetToPlay:
         view = dashboard.build_view(db, WEDNESDAY, sections=frozenset({"players"}))
         assert len(view.players) == dashboard.PLAYER_STRIP_LIMIT
         assert view.players_total == 18
+
+
+class TestSlate:
+    @pytest.fixture
+    def setup(self, db):
+        add_schedule(db)
+        league = add_league(db, "season-x", "Bird Turds", "season")
+        mine = add_team(db, league, "The Scoobies")
+        add_roster(db, league, mine)
+        return league, mine
+
+    def _build(self, db, now):
+        rosters = {
+            t.id: dashboard.roster_players(db, t, lg)
+            for t, lg in dashboard.user_team_leagues(db)
+        }
+        return dashboard.build_slate(db, rosters, YEAR, WEEK, now)
+
+    def test_orders_by_kickoff(self, db, setup):
+        slate = self._build(db, WEDNESDAY)
+        assert [g.kickoff_at for g in slate] == sorted(g.kickoff_at for g in slate)
+
+    def test_badges_the_users_players(self, db, setup):
+        """Counts the whole roster, not just starters — you care that four of
+        your players are in one game whichever of them you started."""
+        slate = self._build(db, WEDNESDAY)
+        chi_det = next(g for g in slate if g.home_team == "CHI")
+        # CHI: QB1, TE1.  DET: RB1, DEF1.
+        assert chi_det.your_player_count == 4
+        assert "The Scoobies QB1" in chi_det.your_player_names
+
+    def test_a_game_with_none_of_your_players_still_renders(self, db, setup):
+        db.add(
+            DBNFLGame(
+                year=YEAR,
+                week=WEEK,
+                home_team="NYJ",
+                away_team="BUF",
+                kickoff_at=SUNDAY_EARLY,
+            )
+        )
+        db.commit()
+        slate = self._build(db, WEDNESDAY)
+        nyj = next(g for g in slate if g.home_team == "NYJ")
+        assert nyj.your_player_count == 0
+
+    def test_state_is_derived_from_the_schedule_not_the_score(self, db, setup):
+        """A 0-0 game that has kicked off is in progress, not upcoming."""
+        slate = self._build(db, MID_EARLY_GAME)
+        early = next(g for g in slate if g.home_team == "CHI")
+        late = next(g for g in slate if g.home_team == "KC")
+        assert early.state == "in_progress"
+        assert late.state == "upcoming"
+
+    def test_a_scored_game_is_final(self, db, setup):
+        game = db.query(DBNFLGame).filter_by(home_team="CHI").first()
+        game.home_score, game.away_score = 20, 17
+        db.commit()
+        slate = self._build(db, MID_EARLY_GAME)
+        assert next(g for g in slate if g.home_team == "CHI").state == "final"
+
+    def test_carries_the_market_lines(self, db, setup):
+        slate = self._build(db, WEDNESDAY)
+        chi = next(g for g in slate if g.home_team == "CHI")
+        assert chi.total_line == pytest.approx(48.5)
+        assert chi.spread_line == pytest.approx(1.5)

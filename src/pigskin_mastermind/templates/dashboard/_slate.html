@@ -1,0 +1,43 @@
+{# Band 5. Wide content scrolls inside its own container so the page body
+   never scrolls horizontally. #}
+<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+  <div class="flex items-center justify-between mb-3">
+    <h3 class="text-base font-bold text-slate-800">This week's NFL slate</h3>
+    <a href="/games?back=/" class="text-xs text-pigskin-600 font-semibold">All scores &rarr;</a>
+  </div>
+
+  {% if not view.slate %}
+  <p class="text-sm text-slate-400 py-6 text-center">No {{ view.week.year }} schedule imported.</p>
+  {% else %}
+  <div class="overflow-x-auto">
+    <div class="flex gap-2 min-w-max">
+      {% for game in view.slate %}
+      <div class="w-40 flex-none rounded-lg border p-2.5
+        {% if game.state == 'in_progress' %}border-field-300 bg-field-50
+        {% elif game.your_player_count == 0 %}border-slate-200 opacity-50
+        {% else %}border-slate-200{% endif %}">
+        <p class="text-xs font-bold text-slate-800">{{ game.away_team }} @ {{ game.home_team }}</p>
+        <p class="text-[10px] text-slate-500 mt-0.5">
+          {% if game.state == 'final' %}
+            Final {{ game.away_score }}&ndash;{{ game.home_score }}
+          {% elif game.state == 'in_progress' %}
+            In progress
+          {% elif game.kickoff_at %}
+            {{ game.kickoff_at | kickoff }}
+          {% else %}
+            Time TBD
+          {% endif %}
+          {% if game.total_line %}&middot; o{{ "%.1f"|format(game.total_line) }}{% endif %}
+        </p>
+        {% if game.your_player_count %}
+        <span class="inline-block mt-1.5 text-[9px] font-extrabold bg-field-100 text-field-800 rounded px-1.5 py-0.5"
+              title="{{ game.your_player_names|join(', ') }}">
+          {{ game.your_player_count }} yours
+        </span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>

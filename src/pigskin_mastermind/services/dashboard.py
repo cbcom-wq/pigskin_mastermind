@@ -511,6 +511,10 @@ def build_view(
     players = all_players[:PLAYER_STRIP_LIMIT] if "players" in sections else []
     players_total = players_total_all if "players" in sections else 0
 
+    slate: List[SlateGame] = []
+    if "slate" in sections:
+        slate = build_slate(db, rosters, year, week, now)
+
     return DashboardView(
         week=build_week_context(
             db,
@@ -523,6 +527,7 @@ def build_view(
         attention=attention,
         players=players,
         players_total=players_total,
+        slate=slate,
     )
 
 
@@ -888,3 +893,86 @@ def build_players(
         ),
     )
     return cells, len(cells)
+
+
+@dataclass(frozen=True)
+class SlateGame:
+    home_team: str
+    away_team: str
+    state: str
+    game_id: Optional[str] = None
+    kickoff_at: Optional[datetime] = None
+    home_score: Optional[int] = None
+    away_score: Optional[int] = None
+    spread_line: Optional[float] = None
+    total_line: Optional[float] = None
+    your_player_count: int = 0
+    your_player_names: List[str] = field(default_factory=list)
+
+
+def build_slate(
+    db: Session,
+    rosters: Dict[int, List[DBPlayer]],
+    year: int,
+    week: int,
+    now: datetime,
+) -> List[SlateGame]:
+    """The week's NFL games, with the user's players badged onto each.
+
+    ``state`` comes from the schedule and the clock, never from the score. A
+    real game can sit at 0-0 well into the first quarter, and calling that
+    "upcoming" would contradict the live badge in the hero. ``in_game_window``
+    is the single definition of "a game is on" -- shared with the background
+    scheduler and the hero -- so it is used here too rather than re-inlined,
+    or this band could disagree with the hero's LIVE badge about the very
+    same game.
+
+    Games with none of the user's players still appear, dimmed. Hiding them
+    would stop this being the slate.
+    """
+    owned: Dict[int, DBPlayer] = {}
+    for players in rosters.values():
+        for player in players:
+            owned.setdefault(player.id, player)
+
+    by_team: Dict[str, List[str]] = {}
+    for player in owned.values():
+        canonical = normalize_team(player.nfl_team)
+        if canonical:
+            by_team.setdefault(canonical, []).append(player.name)
+
+    games = (
+        db.query(DBNFLGame).filter(DBNFLGame.year == year, DBNFLGame.week == week).all()
+    )
+
+    slate: List[SlateGame] = []
+    for game in games:
+        if game.home_score is not None and game.away_score is not None:
+            state = "final"
+        elif game.kickoff_at is not None and in_game_window(now, [game.kickoff_at]):
+            state = "in_progress"
+        else:
+            state = "upcoming"
+
+        names = sorted(
+            by_team.get(normalize_team(game.home_team) or "", [])
+            + by_team.get(normalize_team(game.away_team) or "", [])
+        )
+        slate.append(
+            SlateGame(
+                game_id=game.game_id,
+                home_team=game.home_team,
+                away_team=game.away_team,
+                kickoff_at=game.kickoff_at,
+                home_score=game.home_score,
+                away_score=game.away_score,
+                spread_line=game.spread_line,
+                total_line=game.total_line,
+                state=state,
+                your_player_count=len(names),
+                your_player_names=names,
+            )
+        )
+
+    slate.sort(key=lambda g: (g.kickoff_at or datetime.max, g.home_team))
+    return slate
