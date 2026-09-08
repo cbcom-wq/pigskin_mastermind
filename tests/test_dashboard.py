@@ -20,6 +20,7 @@ from pigskin_mastermind.models.database import (
     DBPlayerProjection,
     DBRosterSpot,
     DBTeam,
+    DBWeeklyTeamStats,
 )
 from pigskin_mastermind.services import dashboard
 
@@ -352,5 +353,186 @@ class TestSeasonLeagueCard:
     def test_only_user_teams_get_cards(self, db, league):
         mine = add_team(db, league, "The Scoobies")
         add_team(db, league, "Someone Else", is_user=False)
+        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        assert [c.team_id for c in cards] == [mine.id]
+
+
+def add_week_stats(db, team, week=WEEK, **kwargs):
+    row = DBWeeklyTeamStats(team_id=team.id, week=week, **kwargs)
+    db.add(row)
+    db.commit()
+    return row
+
+
+class TestEspnLeagueCard:
+    @pytest.fixture
+    def league(self, db):
+        return add_league(db, "878627004", "Airframe Engine League", "espn")
+
+    def test_reads_the_synced_week(self, db, league):
+        add_schedule(db)
+        mine = add_team(db, league, "55 burgers", espn_team_id="4")
+        add_roster(db, league, mine)
+        add_week_stats(
+            db,
+            mine,
+            points_for=61.4,
+            points_against=44.9,
+            projected_points=118.4,
+            opponent_name="The Crushers",
+            result="U",
+        )
+
+        cards, _plans = dashboard.build_league_cards(
+            db,
+            YEAR,
+            WEEK,
+            MID_EARLY_GAME,
+        )
+        card = card_for(cards, mine)
+        assert card.opponent_name == "The Crushers"
+        assert card.points == pytest.approx(61.4)
+        assert card.opponent_points == pytest.approx(44.9)
+        assert card.is_live is True
+        assert card.empty_reason is None
+
+    def test_a_settled_week_is_not_live(self, db, league):
+        add_schedule(db)
+        mine = add_team(db, league, "55 burgers")
+        add_roster(db, league, mine)
+        add_week_stats(
+            db,
+            mine,
+            points_for=61.4,
+            points_against=44.9,
+            opponent_name="The Crushers",
+            result="W",
+        )
+        cards, _plans = dashboard.build_league_cards(
+            db,
+            YEAR,
+            WEEK,
+            MID_EARLY_GAME,
+        )
+        assert card_for(cards, mine).is_live is False
+
+    def test_an_archived_leagues_week_one_is_not_served_as_this_season(self, db):
+        """The regression this branch exists for.
+
+        weekly_team_stats has no year column and its unique key is
+        (team_id, week), so 2025 week 1 and 2026 week 1 are the same slot. A
+        read that does not go through the league's year serves the wrong
+        season's score for the right team.
+        """
+        archived = add_league(
+            db, "1977617326-2025", "Throne 2.0 (2025)", "archive", year=2025
+        )
+        old_team = add_team(
+            db, archived, "Stable of Stars", wins=10, losses=4, points=2237.8
+        )
+        add_week_stats(
+            db,
+            old_team,
+            points_for=151.2,
+            points_against=98.0,
+            opponent_name="Somebody 2025",
+            result="W",
+        )
+
+        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        card = card_for(cards, old_team)
+        assert card.points is None
+        assert card.opponent_name != "Somebody 2025"
+
+    def test_unsynced_league_says_so_and_offers_the_sync(self, db, league):
+        mine = add_team(db, league, "55 burgers")
+        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        card = card_for(cards, mine)
+        assert card.empty_reason == "No 2026 weeks synced"
+        assert card.empty_action == ("Sync from ESPN", "/settings")
+
+    def test_reads_the_roster_from_the_team_id_column(self, db, league):
+        """An ESPN roster lives on DBPlayer.team_id, never DBRosterSpot.
+
+        plan_lineup's own query reads DBRosterSpot, so without the injected
+        roster this team projects 0.0 with a full roster.
+        """
+        add_schedule(db)
+        mine = add_team(db, league, "55 burgers")
+        add_roster(db, league, mine)
+        _cards, plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        assert plans[mine.id].projected_total > 0
+
+    def test_links_to_the_generic_team_page(self, db, league):
+        mine = add_team(db, league, "55 burgers")
+        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        assert card_for(cards, mine).team_url == f"/teams/{mine.id}?back=/"
+
+
+class TestArchiveFootnote:
+    def test_the_predecessors_record_lands_on_the_live_card(self, db):
+        archived = add_league(
+            db, "1977617326-2025", "Throne 2.0 (2025)", "archive", year=2025
+        )
+        add_team(
+            db,
+            archived,
+            "Bozos Dubbed Over",
+            is_user=False,
+            espn_team_id="7",
+            wins=10,
+            losses=4,
+            points=2237.8,
+        )
+        live = add_league(db, "1977617326", "Pigskin Throne 2.0", "espn")
+        mine = add_team(db, live, "Bozos Dubbed Over", espn_team_id="7")
+
+        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        assert card_for(cards, mine).footnote == "2025 finish: 10-4, 2237.8 pts"
+
+    def test_no_predecessor_means_no_footnote(self, db):
+        live = add_league(db, "878627004", "Airframe Engine League", "espn")
+        mine = add_team(db, live, "55 burgers", espn_team_id="4")
+        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        assert card_for(cards, mine).footnote is None
+
+    def test_a_tie_is_included_in_the_record(self, db):
+        archived = add_league(
+            db, "1977617326-2025", "Throne (2025)", "archive", year=2025
+        )
+        add_team(
+            db,
+            archived,
+            "Bozos Dubbed Over",
+            is_user=False,
+            espn_team_id="7",
+            wins=9,
+            losses=4,
+            ties=1,
+            points=2100.0,
+        )
+        live = add_league(db, "1977617326", "Pigskin Throne 2.0", "espn")
+        mine = add_team(db, live, "Bozos Dubbed Over", espn_team_id="7")
+        cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
+        assert card_for(cards, mine).footnote == "2025 finish: 9-4-1, 2100.0 pts"
+
+    def test_an_archived_team_that_is_not_a_user_team_gets_no_card(self, db):
+        """Its history is already the footnote on the successor's card."""
+        archived = add_league(
+            db, "1977617326-2025", "Throne (2025)", "archive", year=2025
+        )
+        add_team(
+            db,
+            archived,
+            "Bozos Dubbed Over",
+            is_user=False,
+            espn_team_id="7",
+            wins=10,
+            losses=4,
+            points=2237.8,
+        )
+        live = add_league(db, "1977617326", "Pigskin Throne 2.0", "espn")
+        mine = add_team(db, live, "Bozos Dubbed Over", espn_team_id="7")
+
         cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
         assert [c.team_id for c in cards] == [mine.id]

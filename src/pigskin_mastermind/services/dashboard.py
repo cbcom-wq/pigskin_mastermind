@@ -23,8 +23,11 @@ from pigskin_mastermind.models.database import (
     DBLeague,
     DBMatchup,
     DBNFLGame,
+    DBPlayer,
     DBTeam,
+    DBWeeklyTeamStats,
 )
+from pigskin_mastermind.services.lineup_locks import LockIndex
 from pigskin_mastermind.services.lineup_manager import LineupPlan, plan_lineup
 from pigskin_mastermind.services.season_league import roster_players
 from pigskin_mastermind.services.season_scheduler import (
@@ -174,15 +177,117 @@ def user_team_leagues(
     return [(t, leagues.get(t.league_id)) for t in teams]
 
 
-def _espn_card(db, team, league, year, week, plan):
-    return LeagueCard(
+def archive_footnote(db: Session, league: DBLeague, team: DBTeam) -> Optional[str]:
+    """This league's own archived predecessor's final record, if there is one.
+
+    The archive convention renames the finished row to ``<league_id>-<year>``,
+    so the predecessor is one lookup away. The record belongs on the *live*
+    card because that is the league still being played — a second card for the
+    same league in a past state would be noise, not history.
+    """
+    previous = (
+        db.query(DBLeague)
+        .filter_by(league_id=f"{league.league_id}-{league.year - 1}")
+        .first()
+    )
+    if previous is None:
+        return None
+
+    query = db.query(DBTeam).filter(DBTeam.league_id == previous.league_id)
+    old = (
+        query.filter(DBTeam.espn_team_id == team.espn_team_id).first()
+        if team.espn_team_id
+        else None
+    )
+    if old is None:
+        old = query.filter(DBTeam.name == team.name).first()
+    if old is None:
+        return None
+
+    record = f"{old.wins or 0}-{old.losses or 0}"
+    if old.ties:
+        record += f"-{old.ties}"
+    return f"{previous.year} finish: {record}, {old.total_points or 0.0:.1f} pts"
+
+
+def _starters_in_window(
+    db: Session,
+    plan: LineupPlan,
+    players: List[DBPlayer],
+    year: int,
+    week: int,
+    now: datetime,
+) -> bool:
+    """True when at least one of this team's starters is mid-game.
+
+    The NFL team comes from the ``players`` list the card already loaded, not
+    from ``LineupDecision`` — that dataclass carries no ``nfl_team``, and
+    widening it would touch the AI manager, the season agent and three
+    templates to serve one card.
+    """
+    teams = {p.id: p.nfl_team for p in players}
+    locks = LockIndex(db)
+    times = [locks.kickoff(teams.get(d.player_id), year, week) for d in plan.starters()]
+    return in_game_window(now, [t for t in times if t is not None])
+
+
+def _espn_card(
+    db: Session,
+    team: DBTeam,
+    league: DBLeague,
+    players: List[DBPlayer],
+    year: int,
+    week: int,
+    now: datetime,
+    plan: LineupPlan,
+) -> LeagueCard:
+    """An ESPN or archived league's week, read from the ESPN weekly snapshot.
+
+    The join through ``teams -> leagues`` and the filter on ``DBLeague.year``
+    are the point of this function. ``weekly_team_stats`` carries no year and
+    its parent's unique key is ``(team_id, week)``, so week 1 of an archived
+    2025 season occupies the same slot as week 1 of 2026 — and an unguarded
+    read serves it as this season's score.
+    """
+    base = dict(
         league_id=league.league_id,
         league_name=league.name,
         kind=league.kind,
         team_id=team.id,
         team_name=team.name,
         team_url=team_url(team, league),
-        empty_reason=f"No {year} weeks synced",
+        footnote=archive_footnote(db, league, team),
+    )
+
+    row = (
+        db.query(DBWeeklyTeamStats)
+        .join(DBTeam, DBTeam.id == DBWeeklyTeamStats.team_id)
+        .join(DBLeague, DBLeague.league_id == DBTeam.league_id)
+        .filter(
+            DBWeeklyTeamStats.team_id == team.id,
+            DBWeeklyTeamStats.week == week,
+            DBLeague.year == year,
+        )
+        .first()
+    )
+    if row is None:
+        return LeagueCard(
+            **base,
+            projected=round(plan.projected_total, 1) or None,
+            empty_reason=f"No {year} weeks synced",
+            empty_action=("Sync from ESPN", "/settings"),
+        )
+
+    # ESPN reports "U" for a week that has not been settled yet. A W/L/T is
+    # final, however recently it was synced.
+    unsettled = (row.result or "U").upper() == "U"
+    return LeagueCard(
+        **base,
+        opponent_name=row.opponent_name,
+        points=row.points_for,
+        opponent_points=row.points_against,
+        projected=row.projected_points or round(plan.projected_total, 1),
+        is_live=unsettled and _starters_in_window(db, plan, players, year, week, now),
     )
 
 
@@ -294,6 +399,6 @@ def build_league_cards(
         elif league.kind == "season":
             cards.append(_season_card(db, team, league, week, now, plan))
         else:
-            cards.append(_espn_card(db, team, league, year, week, plan))
+            cards.append(_espn_card(db, team, league, players, year, week, now, plan))
 
     return cards, plans
