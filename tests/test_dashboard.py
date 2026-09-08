@@ -596,3 +596,35 @@ class TestArchiveFootnote:
 
         cards, _plans = dashboard.build_league_cards(db, YEAR, WEEK, WEDNESDAY)
         assert [c.team_id for c in cards] == [mine.id]
+
+
+class TestBuildView:
+    def test_assembles_week_and_leagues(self, db):
+        add_schedule(db)
+        league = add_league(db, "season-x", "Bird Turds", "season")
+        mine = add_team(db, league, "The Scoobies")
+        theirs = add_team(db, league, "Touchdown There", is_user=False)
+        add_roster(db, league, mine)
+        add_roster(db, league, theirs)
+        add_matchup(db, league, mine, theirs)
+
+        view = dashboard.build_view(db, WEDNESDAY)
+        assert view.week.year == YEAR
+        assert view.week.week == WEEK
+        assert [c.team_name for c in view.leagues] == ["The Scoobies"]
+
+    def test_unrequested_sections_are_empty_lists_not_none(self, db):
+        add_schedule(db)
+        view = dashboard.build_view(db, WEDNESDAY, sections=frozenset())
+        assert view.attention == []
+        assert view.players == []
+        assert view.slate == []
+        assert view.movers == []
+
+    def test_week_and_leagues_are_built_even_with_no_sections(self, db):
+        add_schedule(db)
+        league = add_league(db, "season-x", "Bird Turds", "season")
+        add_team(db, league, "The Scoobies")
+        view = dashboard.build_view(db, WEDNESDAY, sections=frozenset())
+        assert view.week.games_total == 3
+        assert len(view.leagues) == 1

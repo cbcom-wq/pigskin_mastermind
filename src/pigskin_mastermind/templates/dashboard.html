@@ -3,173 +3,27 @@
 {% block page_title %}Dashboard{% endblock %}
 
 {% block content %}
-<!-- Hero Banner -->
-<div class="field-pattern rounded-2xl p-6 md:p-8 mb-6 shadow-lg relative overflow-hidden">
-    <div class="absolute top-0 right-0 w-40 h-40 opacity-10">
-        <svg viewBox="0 0 100 100" class="w-full h-full">
-            <ellipse cx="50" cy="50" rx="42" ry="28" fill="none" stroke="white" stroke-width="2"/>
-            <line x1="50" y1="22" x2="50" y2="78" stroke="white" stroke-width="1.5"/>
-            <line x1="30" y1="27" x2="70" y2="27" stroke="white" stroke-width="1"/>
-            <line x1="30" y1="73" x2="70" y2="73" stroke="white" stroke-width="1"/>
-        </svg>
-    </div>
-    <div class="relative z-10">
-        <h2 class="text-2xl md:text-3xl font-bold text-white mb-1">Welcome back, Coach!</h2>
-        <p class="text-field-200 text-sm md:text-base">Here's your fantasy empire at a glance.</p>
-    </div>
+{# The dashboard is reachable from the sidebar, so per the project's nav
+   convention it gets neither a back link nor breadcrumbs: there is no honest
+   single answer to "where did you come from", and the sidebar is the way out.
+   Every link OUT of here carries ?back=/ instead. #}
+
+{% include "dashboard/_pulse.html" %}
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-5">
+  <div class="lg:col-span-2" hx-get="/api/dashboard/attention" hx-trigger="load" hx-swap="innerHTML">
+    <div class="bg-white rounded-xl border border-slate-200 p-6 text-sm text-slate-400">Loading&hellip;</div>
+  </div>
+  <div hx-get="/api/dashboard/movers" hx-trigger="load" hx-swap="innerHTML">
+    <div class="bg-white rounded-xl border border-slate-200 p-6 text-sm text-slate-400">Loading&hellip;</div>
+  </div>
 </div>
 
-<!-- Stat Cards -->
-<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-    <a href="/teams" class="block bg-white rounded-xl shadow-sm border border-slate-200 p-5 card-hover">
-        <div class="flex items-center justify-between">
-            <div>
-                <p class="text-xs font-semibold text-slate-500 uppercase tracking-wide">Teams</p>
-                <p class="text-3xl font-bold text-slate-800 mt-1">{{ team_count }}</p>
-            </div>
-            <div class="w-11 h-11 rounded-xl bg-field-100 flex items-center justify-center">
-                <svg class="w-6 h-6 text-field-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
-                </svg>
-            </div>
-        </div>
-    </a>
-
-    <a href="/players" class="block bg-white rounded-xl shadow-sm border border-slate-200 p-5 card-hover">
-        <div class="flex items-center justify-between">
-            <div>
-                <p class="text-xs font-semibold text-slate-500 uppercase tracking-wide">Players</p>
-                <p class="text-3xl font-bold text-slate-800 mt-1">{{ player_count }}</p>
-            </div>
-            <div class="w-11 h-11 rounded-xl bg-blue-100 flex items-center justify-center">
-                <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
-                </svg>
-            </div>
-        </div>
-    </a>
-
-    <a href="/teams" class="block bg-white rounded-xl shadow-sm border border-slate-200 p-5 card-hover">
-        <div class="flex items-center justify-between">
-            <div>
-                <p class="text-xs font-semibold text-slate-500 uppercase tracking-wide">Total Points</p>
-                <p class="text-3xl font-bold text-slate-800 mt-1">{{ "%.1f"|format(total_points) }}</p>
-            </div>
-            <div class="w-11 h-11 rounded-xl bg-pigskin-100 flex items-center justify-center">
-                <svg class="w-6 h-6 text-pigskin-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
-                </svg>
-            </div>
-        </div>
-    </a>
-
-    <a href="/players" class="block bg-white rounded-xl shadow-sm border border-slate-200 p-5 card-hover">
-        <div class="flex items-center justify-between">
-            <div>
-                <p class="text-xs font-semibold text-slate-500 uppercase tracking-wide">Positions</p>
-                <p class="text-3xl font-bold text-slate-800 mt-1">{{ position_counts|length }}</p>
-            </div>
-            <div class="w-11 h-11 rounded-xl bg-purple-100 flex items-center justify-center">
-                <svg class="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"/>
-                </svg>
-            </div>
-        </div>
-    </a>
+<div class="mb-5" hx-get="/api/dashboard/players" hx-trigger="load" hx-swap="innerHTML">
+  <div class="bg-white rounded-xl border border-slate-200 p-6 text-sm text-slate-400">Loading&hellip;</div>
 </div>
 
-<!-- Two Column Layout -->
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-    <!-- Quick Actions -->
-    <div class="lg:col-span-2">
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-            <h3 class="text-lg font-bold text-slate-800 mb-4">Quick Actions</h3>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <a href="/teams" class="group flex items-center gap-3 p-4 rounded-xl border-2 border-slate-200 hover:border-field-400 hover:bg-field-50 transition-all">
-                    <div class="w-10 h-10 rounded-lg bg-field-100 group-hover:bg-field-200 flex items-center justify-center transition-colors">
-                        <svg class="w-5 h-5 text-field-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
-                        </svg>
-                    </div>
-                    <div>
-                        <p class="text-sm font-semibold text-slate-700">Manage Teams</p>
-                        <p class="text-xs text-slate-500">Create or import a team</p>
-                    </div>
-                </a>
-
-                <a href="/trades" class="group flex items-center gap-3 p-4 rounded-xl border-2 border-slate-200 hover:border-pigskin-400 hover:bg-pigskin-50 transition-all">
-                    <div class="w-10 h-10 rounded-lg bg-pigskin-100 group-hover:bg-pigskin-200 flex items-center justify-center transition-colors">
-                        <svg class="w-5 h-5 text-pigskin-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/>
-                        </svg>
-                    </div>
-                    <div>
-                        <p class="text-sm font-semibold text-slate-700">Analyze Trade</p>
-                        <p class="text-xs text-slate-500">Evaluate trade fairness</p>
-                    </div>
-                </a>
-
-                <a href="/settings" class="group flex items-center gap-3 p-4 rounded-xl border-2 border-slate-200 hover:border-purple-400 hover:bg-purple-50 transition-all">
-                    <div class="w-10 h-10 rounded-lg bg-purple-100 group-hover:bg-purple-200 flex items-center justify-center transition-colors">
-                        <svg class="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
-                        </svg>
-                    </div>
-                    <div>
-                        <p class="text-sm font-semibold text-slate-700">ESPN Import</p>
-                        <p class="text-xs text-slate-500">Sync from ESPN Fantasy</p>
-                    </div>
-                </a>
-            </div>
-        </div>
-    </div>
-
-    <!-- Roster Breakdown -->
-    <div>
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-            <h3 class="text-lg font-bold text-slate-800 mb-4">Roster Breakdown</h3>
-            {% if position_counts %}
-            <div class="space-y-3">
-                {% for pos, count in position_counts.items() %}
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center gap-2">
-                        <span class="inline-flex items-center justify-center w-9 h-6 rounded text-xs font-bold badge-{{ pos|lower }}">{{ pos }}</span>
-                        <span class="text-sm text-slate-600">{{ pos }}</span>
-                    </div>
-                    <span class="text-sm font-semibold text-slate-700">{{ count }}</span>
-                </div>
-                {% endfor %}
-            </div>
-            {% else %}
-            <p class="text-sm text-slate-400 text-center py-4">No players yet</p>
-            {% endif %}
-        </div>
-    </div>
+<div hx-get="/api/dashboard/slate" hx-trigger="load" hx-swap="innerHTML">
+  <div class="bg-white rounded-xl border border-slate-200 p-6 text-sm text-slate-400">Loading&hellip;</div>
 </div>
-
-{% if recent_teams %}
-<!-- Recent Teams -->
-<div class="mt-6">
-    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-        <div class="flex items-center justify-between mb-4">
-            <h3 class="text-lg font-bold text-slate-800">Your Teams</h3>
-            <a href="/teams" class="text-sm text-pigskin-600 hover:text-pigskin-700 font-medium">View all →</a>
-        </div>
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {% for team in recent_teams %}
-            {% set season_url = '/season/' ~ team.league_id ~ '/teams/' ~ team.id if team.league_id in season_leagues else None %}
-            <a href="{{ season_url or '/teams/' ~ team.id }}" class="flex items-center gap-3 p-3 rounded-lg border border-slate-200 hover:border-pigskin-300 transition-colors card-hover">
-                <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-field-700 to-field-900 flex items-center justify-center text-white font-bold text-sm">
-                    {{ team.name[:2]|upper }}
-                </div>
-                <div class="flex-1 min-w-0">
-                    <p class="text-sm font-semibold text-slate-700 truncate">{{ team.name }}</p>
-                    <p class="text-xs text-slate-500">{{ team.wins }}-{{ team.losses }}-{{ team.ties }} &middot; {{ "%.0f"|format(team.total_points) }} pts</p>
-                </div>
-            </a>
-            {% endfor %}
-        </div>
-    </div>
-</div>
-{% endif %}
 {% endblock %}

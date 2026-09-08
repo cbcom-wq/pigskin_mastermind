@@ -12,7 +12,7 @@ first time one of them was edited.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, FrozenSet, List, Optional, Tuple
 
@@ -430,3 +430,43 @@ def build_league_cards(
             cards.append(_espn_card(db, team, league, players, year, week, now, plan))
 
     return cards, plans
+
+
+@dataclass(frozen=True)
+class DashboardView:
+    """Everything the front page renders, from one pass over the database."""
+
+    week: WeekContext
+    leagues: List[LeagueCard] = field(default_factory=list)
+    # Forward references to dataclasses Phases 2-3 add. `from __future__ import
+    # annotations` (top of file) defers evaluation so the class body executes
+    # fine without them existing yet; flake8 still checks names inside a
+    # quoted annotation, so each needs its own noqa until its Phase lands.
+    attention: List["AttentionItem"] = field(default_factory=list)  # noqa: F821
+    players: List["PlayerCell"] = field(default_factory=list)  # noqa: F821
+    players_total: int = 0
+    slate: List["SlateGame"] = field(default_factory=list)  # noqa: F821
+    movers: List[object] = field(default_factory=list)
+
+
+def build_view(
+    db: Session,
+    now: datetime,
+    sections: FrozenSet[str] = ALL_SECTIONS,
+) -> DashboardView:
+    """The whole page, or the slice of it a fragment endpoint asked for.
+
+    ``week`` and ``leagues`` are always built. Every section needs the scope
+    and the rosters, so gating them would only mean building them twice.
+
+    Unrequested sections come back as empty lists rather than ``None``, so a
+    template cannot accidentally distinguish "not asked for" from "nothing to
+    show" -- each fragment renders exactly one section and never inspects the
+    others.
+    """
+    year, week = resolve_scope(db, now)
+    cards, _plans = build_league_cards(db, year, week, now)
+    return DashboardView(
+        week=build_week_context(db, year, week, now),
+        leagues=cards,
+    )
