@@ -35,14 +35,22 @@ from pigskin_mastermind.services.mock_draft import BENCH_SLOT, FLEX_ELIGIBLE
 from pigskin_mastermind.services.nfl_schedule import ScheduleIndex
 from pigskin_mastermind.services.season_league import roster_players
 from pigskin_mastermind.services.season_scheduler import (
+    GAME_WINDOW_HOURS,
     in_game_window,
 )
+from pigskin_mastermind.utils.nfl_teams import normalize_team
 from pigskin_mastermind.utils.season import current_fantasy_season
 
 #: The four bands that load independently. ``week`` and ``leagues`` are always
-#: built: every band needs the scope and the rosters, so gating them would only
-#: mean building them twice.
+#: built: every band needs the scope, but only some of them need the rosters.
 ALL_SECTIONS: FrozenSet[str] = frozenset({"attention", "players", "slate", "movers"})
+
+#: The sections whose builders read ``rosters``. ``build_view`` only pays for
+#: the roster queries when one of these was actually requested -- the pulse
+#: fragment polls every 30 seconds while games are live and asks for none of
+#: them, so building rosters unconditionally would be a wasted query per user
+#: team on the hottest path in the feature.
+_NEEDS_ROSTERS: FrozenSet[str] = frozenset({"attention", "players", "slate"})
 
 
 @dataclass(frozen=True)
@@ -460,8 +468,12 @@ def build_view(
 ) -> DashboardView:
     """The whole page, or the slice of it a fragment endpoint asked for.
 
-    ``week`` and ``leagues`` are always built. Every section needs the scope
-    and the rosters, so gating them would only mean building them twice.
+    ``week`` and ``leagues`` are always built: every section needs the scope.
+    ``rosters`` is only built when a requested section actually reads it --
+    the pulse fragment (bands 1-2) asks for neither ``attention``, ``players``
+    nor ``slate`` and polls every 30 seconds while games are live, so building
+    rosters unconditionally would be a wasted query per user team on the
+    hottest path in the feature.
 
     Unrequested sections come back as empty lists rather than ``None``, so a
     template cannot accidentally distinguish "not asked for" from "nothing to
@@ -470,10 +482,14 @@ def build_view(
     """
     year, week = resolve_scope(db, now)
     cards, plans = build_league_cards(db, year, week, now)
-    rosters = {
-        team.id: roster_players(db, team, league)
-        for team, league in user_team_leagues(db)
-    }
+    rosters = (
+        {
+            team.id: roster_players(db, team, league)
+            for team, league in user_team_leagues(db)
+        }
+        if sections & _NEEDS_ROSTERS
+        else {}
+    )
 
     attention: List[AttentionItem] = []
     if "attention" in sections:
@@ -487,10 +503,31 @@ def build_view(
             now,
         )
 
+    players: List[PlayerCell] = []
+    players_total = 0
+    if "players" in sections:
+        players, players_total = build_players(
+            db,
+            cards,
+            plans,
+            rosters,
+            year,
+            week,
+            now,
+        )
+
     return DashboardView(
-        week=build_week_context(db, year, week, now),
+        week=build_week_context(
+            db,
+            year,
+            week,
+            now,
+            yet_to_play=sum(1 for c in players if c.state == "upcoming"),
+        ),
         leagues=cards,
         attention=attention,
+        players=players,
+        players_total=players_total,
     )
 
 
@@ -740,3 +777,115 @@ def _bench_better(
             )
         )
     return out
+
+
+#: The strip is one row. Nine is a full starting lineup, so it reads as a
+#: lineup rather than an arbitrary truncation.
+PLAYER_STRIP_LIMIT = 9
+
+_STATE_RANK = {"playing": 0, "concern": 1, "upcoming": 2, "final": 3}
+
+
+@dataclass(frozen=True)
+class PlayerCell:
+    player_id: int
+    name: str
+    url: str
+    state: str
+    position: Optional[str] = None
+    nfl_team: Optional[str] = None
+    live_points: Optional[float] = None
+    projected: Optional[float] = None
+    kickoff_at: Optional[datetime] = None
+    note: Optional[str] = None
+
+
+def build_players(
+    db: Session,
+    cards: List[LeagueCard],
+    plans: Dict[int, LineupPlan],
+    rosters: Dict[int, List[DBPlayer]],
+    year: int,
+    week: int,
+    now: datetime,
+) -> Tuple[List[PlayerCell], int]:
+    """The user's starters across every team, deduplicated and ranked.
+
+    League boundaries are deliberately dissolved here: one ``DBPlayer`` row is
+    routinely on an ESPN roster and a season roster at once, and showing him
+    twice is noise. Returns the capped strip and the true total, so the
+    template can say how many it is not showing.
+    """
+    injuries = InjuryIndex(db, year, week)
+    schedule = ScheduleIndex(db)
+    locks = LockIndex(db)
+    window = timedelta(hours=GAME_WINDOW_HOURS)
+
+    finals = {
+        (g.home_team, g.away_team)
+        for g in db.query(DBNFLGame).filter(
+            DBNFLGame.year == year,
+            DBNFLGame.week == week,
+            DBNFLGame.home_score.isnot(None),
+        )
+    }
+    played_teams = {t for pair in finals for t in pair}
+
+    seen: Dict[int, PlayerCell] = {}
+    for card in cards:
+        plan = plans.get(card.team_id)
+        players = {p.id: p for p in rosters.get(card.team_id, [])}
+        if plan is None or not players:
+            continue
+        team = db.query(DBTeam).filter_by(id=card.team_id).first()
+        if team is None:
+            continue
+
+        projections = {d.player_id: d.projected_points for d in plan.decisions}
+        for player_id in effective_starters(db, team, plan, year, week):
+            if player_id in seen:
+                continue
+            player = players.get(player_id)
+            if player is None:
+                continue
+
+            verdict = injuries.verdict(player_id)
+            on_bye = schedule.is_bye(player.nfl_team, year, week)
+            kickoff = locks.kickoff(player.nfl_team, year, week)
+            normalized = normalize_team(player.nfl_team)
+
+            if on_bye:
+                state, note = "concern", "on bye"
+            elif verdict.status:
+                state, note = "concern", verdict.status.title()
+            elif normalized in played_teams:
+                state, note = "final", "final"
+            elif kickoff is not None and kickoff <= now < kickoff + window:
+                state, note = "playing", "in progress"
+            elif kickoff is not None and kickoff > now:
+                state, note = "upcoming", None
+            else:
+                state, note = "upcoming", "no kickoff time"
+
+            seen[player_id] = PlayerCell(
+                player_id=player_id,
+                name=player.name,
+                url=f"/players/{player_id}?back=/",
+                state=state,
+                position=player.position,
+                nfl_team=player.nfl_team,
+                projected=round(projections.get(player_id, 0.0), 1),
+                kickoff_at=kickoff,
+                note=note,
+            )
+
+    cells = sorted(
+        seen.values(),
+        key=lambda c: (
+            _STATE_RANK[c.state],
+            c.kickoff_at or datetime.max,
+            -(c.projected or 0.0),
+            c.player_id,
+        ),
+    )
+    return cells[:PLAYER_STRIP_LIMIT], len(cells)

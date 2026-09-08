@@ -125,3 +125,50 @@ class TestAttentionFragment:
     def test_no_control_says_back(self, client, seeded):
         """The dashboard is a sidebar page; only nav.back_link may say Back."""
         assert "Back" not in client.get("/api/dashboard/attention").text
+
+
+class TestPlayersFragment:
+    """Local ``client``/``seeded`` fixtures, scoped to this class.
+
+    See ``TestAttentionFragment`` above for why these are not module-level.
+    """
+
+    @pytest.fixture
+    def client(self):
+        return TestClient(app)
+
+    @pytest.fixture
+    def seeded(self, db):
+        """A season team with one rostered player and no saved lineup.
+
+        ``build_players`` skips a team whose roster is empty, so the strip
+        needs at least one rostered player to render anything.
+        """
+        seed(db)
+        league = db.query(DBLeague).filter_by(league_id="season-x").first()
+        team = db.query(DBTeam).filter_by(team_id="t1").first()
+        player = DBPlayer(
+            player_id="test_qb1",
+            name="Test Quarterback",
+            position="QB",
+            nfl_team="CHI",
+        )
+        db.add(player)
+        db.commit()
+        db.add(
+            DBRosterSpot(
+                league_id=league.id,
+                team_id=team.id,
+                player_id=player.id,
+            )
+        )
+        db.commit()
+        return db
+
+    def test_renders(self, client, seeded):
+        response = client.get("/api/dashboard/players")
+        assert response.status_code == 200
+        assert "Your players" in response.text
+
+    def test_empty_roster_does_not_500(self, client):
+        assert client.get("/api/dashboard/players").status_code == 200

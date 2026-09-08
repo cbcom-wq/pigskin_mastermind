@@ -805,3 +805,98 @@ class TestAttentionItems:
     def test_every_item_links_back_to_the_dashboard(self, db, setup):
         for item in self._build(db):
             assert item.url.endswith("?back=/")
+
+
+class TestPlayerCells:
+    def _build(self, db, now):
+        cards, plans = dashboard.build_league_cards(db, YEAR, WEEK, now)
+        rosters = {
+            t.id: dashboard.roster_players(db, t, lg)
+            for t, lg in dashboard.user_team_leagues(db)
+        }
+        return dashboard.build_players(
+            db,
+            cards,
+            plans,
+            rosters,
+            YEAR,
+            WEEK,
+            now,
+        )
+
+    @pytest.fixture
+    def setup(self, db):
+        add_schedule(db)
+        league = add_league(db, "season-x", "Bird Turds", "season")
+        mine = add_team(db, league, "The Scoobies")
+        players = add_roster(db, league, mine)
+        return league, mine, {p.name.split()[-1]: p for p in players}
+
+    def test_one_team_fills_the_strip_exactly(self, db, setup):
+        """A legal starting lineup is nine slots, which is the strip."""
+        cells, total = self._build(db, WEDNESDAY)
+        assert len(cells) == dashboard.PLAYER_STRIP_LIMIT
+        assert total == 9
+
+    def test_caps_the_strip_and_reports_the_true_total(self, db, setup):
+        """Two teams is eighteen starters; the strip still shows nine and
+        says so, which is what the "N more" link is built from."""
+        league, _mine, _players = setup
+        second = add_team(db, league, "Second Squad")
+        add_roster(db, league, second)
+
+        cells, total = self._build(db, WEDNESDAY)
+        assert len(cells) == dashboard.PLAYER_STRIP_LIMIT
+        assert total == 18
+
+    def test_upcoming_players_sort_by_kickoff_then_projection(self, db, setup):
+        cells, _total = self._build(db, WEDNESDAY)
+        assert {c.state for c in cells} == {"upcoming"}
+        early = [c for c in cells if c.kickoff_at == SUNDAY_EARLY]
+        assert early[0].projected >= early[-1].projected
+
+    def test_a_player_mid_game_sorts_first_and_reads_as_playing(self, db, setup):
+        cells, _total = self._build(db, MID_EARLY_GAME)
+        assert cells[0].state == "playing"
+
+    def test_a_finished_game_reads_as_final(self, db, setup):
+        game = db.query(DBNFLGame).filter_by(home_team="CHI").first()
+        game.home_score, game.away_score = 20, 17
+        db.commit()
+        cells, _total = self._build(db, MID_EARLY_GAME)
+        assert "final" in {c.state for c in cells}
+
+    def test_an_injured_starter_is_a_concern(self, db, setup):
+        _league, _mine, p = setup
+        add_injury(db, p["QB1"], "Questionable")
+        cells, _total = self._build(db, WEDNESDAY)
+        cell = next(c for c in cells if c.player_id == p["QB1"].id)
+        assert cell.state == "concern"
+        assert "questionable" in cell.note.lower()
+
+    def test_a_player_on_two_teams_appears_once(self, db):
+        add_schedule(db)
+        espn = add_league(db, "espn-x", "Airframe", "espn")
+        season = add_league(db, "season-x", "Bird Turds", "season")
+        espn_team = add_team(db, espn, "55 burgers")
+        season_team = add_team(db, season, "The Scoobies")
+        shared = add_roster(db, espn, espn_team)
+        # Put the same DBPlayer rows on the season roster too.
+        for p in shared:
+            db.add(
+                DBRosterSpot(
+                    league_id=season.id,
+                    team_id=season_team.id,
+                    player_id=p.id,
+                    acquired_via="draft",
+                )
+            )
+        db.commit()
+
+        cells, _total = self._build(db, WEDNESDAY)
+        ids = [c.player_id for c in cells]
+        assert len(ids) == len(set(ids))
+
+    def test_every_cell_links_back_to_the_dashboard(self, db, setup):
+        cells, _total = self._build(db, WEDNESDAY)
+        assert all(c.url.endswith("?back=/") for c in cells)
