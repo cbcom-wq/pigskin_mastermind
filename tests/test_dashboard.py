@@ -20,7 +20,6 @@ from pigskin_mastermind.models.database import (
     DBPlayerProjection,
     DBRosterSpot,
     DBTeam,
-    DBWeeklyTeamStats,
 )
 from pigskin_mastermind.services import dashboard
 
