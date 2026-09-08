@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from pigskin_mastermind.api.main import app
 from pigskin_mastermind.models.database import (
     DBLeague,
+    DBMatchup,
     DBNFLGame,
     DBPlayer,
     DBRosterSpot,
@@ -270,3 +271,151 @@ class TestMoversFragment:
         response = client.get("/api/dashboard/movers")
         assert response.status_code == 200
         assert "Hot movers" in response.text
+
+
+class TestLivePolling:
+    """Local ``client``/``live_week`` fixtures, scoped to this class. See
+    ``TestAttentionFragment`` above for why these are not module-level.
+
+    The fixture builds its kickoff from ``league_now()``, not
+    ``datetime.now()``: routes resolve "now" through ``league_now()`` (naive
+    US-Eastern), and on a machine outside Eastern the two clocks differ by
+    hours, which would make a "two hours ago" kickoff land outside the game
+    window depending where this suite runs.
+    """
+
+    @pytest.fixture
+    def client(self):
+        return TestClient(app)
+
+    @pytest.fixture
+    def live_week(self, db):
+        """A kickoff two hours ago, so the week is inside a game window."""
+        now = league_now()
+        lg = DBLeague(
+            league_id="season-x",
+            name="Bird Turds",
+            year=now.year,
+            kind="season",
+            current_week=1,
+        )
+        db.add(lg)
+        db.commit()
+        mine = DBTeam(
+            team_id="t1",
+            name="The Scoobies",
+            owner="Brandon",
+            league_id="season-x",
+            is_user_team=True,
+        )
+        theirs = DBTeam(
+            team_id="t2",
+            name="Touchdown There",
+            owner="AI",
+            league_id="season-x",
+            is_user_team=False,
+        )
+        db.add_all([mine, theirs])
+        db.commit()
+        db.add(
+            DBNFLGame(
+                year=now.year,
+                week=1,
+                home_team="CHI",
+                away_team="DET",
+                kickoff_at=now - timedelta(hours=2),
+            )
+        )
+        db.add(
+            DBMatchup(
+                league_id=lg.id,
+                year=now.year,
+                week=1,
+                bracket_slot=0,
+                home_team_id=mine.id,
+                away_team_id=theirs.id,
+                status="in_progress",
+                home_points=61.4,
+                away_points=44.9,
+            )
+        )
+        db.commit()
+        return db
+
+    def test_polls_while_a_game_is_in_its_window(self, client, live_week):
+        assert 'hx-trigger="every 30s"' in client.get("/api/dashboard/pulse").text
+
+    def test_the_live_badge_appears(self, client, live_week):
+        assert "LIVE" in client.get("/api/dashboard/pulse").text
+
+
+class TestPageAndFragmentAgree:
+    """Local ``client``/``live_week`` fixtures, scoped to this class. See
+    ``TestAttentionFragment`` above for why these are not module-level.
+    """
+
+    @pytest.fixture
+    def client(self):
+        return TestClient(app)
+
+    @pytest.fixture
+    def live_week(self, db):
+        """A kickoff two hours ago, so the week is inside a game window."""
+        now = league_now()
+        lg = DBLeague(
+            league_id="season-x",
+            name="Bird Turds",
+            year=now.year,
+            kind="season",
+            current_week=1,
+        )
+        db.add(lg)
+        db.commit()
+        mine = DBTeam(
+            team_id="t1",
+            name="The Scoobies",
+            owner="Brandon",
+            league_id="season-x",
+            is_user_team=True,
+        )
+        theirs = DBTeam(
+            team_id="t2",
+            name="Touchdown There",
+            owner="AI",
+            league_id="season-x",
+            is_user_team=False,
+        )
+        db.add_all([mine, theirs])
+        db.commit()
+        db.add(
+            DBNFLGame(
+                year=now.year,
+                week=1,
+                home_team="CHI",
+                away_team="DET",
+                kickoff_at=now - timedelta(hours=2),
+            )
+        )
+        db.add(
+            DBMatchup(
+                league_id=lg.id,
+                year=now.year,
+                week=1,
+                bracket_slot=0,
+                home_team_id=mine.id,
+                away_team_id=theirs.id,
+                status="in_progress",
+                home_points=61.4,
+                away_points=44.9,
+            )
+        )
+        db.commit()
+        return db
+
+    def test_same_score_in_both(self, client, live_week):
+        page = client.get("/").text
+        fragment = client.get("/api/dashboard/pulse").text
+        assert "61.4" in page
+        assert "61.4" in fragment
+        assert "44.9" in page
+        assert "44.9" in fragment
