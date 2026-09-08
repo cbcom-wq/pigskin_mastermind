@@ -17,6 +17,7 @@ import statistics
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.models.database import DBPlayer, DBPlayerAdvancedMetric
@@ -29,6 +30,57 @@ BASELINE = 3
 #: A z-delta below this is noise, not a move. Applied after scaling so it means
 #: the same thing for every metric.
 MIN_SIGNAL = 0.35
+
+
+# ---------------------------------------------------------------------------
+# Season/week resolution -- shared by /metrics/hot and the dashboard's movers
+# band, so the two cannot disagree about which week has usable coverage.
+# ---------------------------------------------------------------------------
+
+
+def latest_season_with_metrics(db: Session, preferred: int) -> Optional[int]:
+    """The newest season that actually has metrics, preferring *preferred*.
+
+    Week 1 of a new season has no games, so the current year holds nothing to
+    trend. Silently rendering an empty page would read as broken; falling back
+    to the last season with data — and saying so — is the honest behaviour.
+    """
+    years = [
+        row[0]
+        for row in db.query(DBPlayerAdvancedMetric.year).distinct().all()
+    ]
+    if not years:
+        return None
+    if preferred in years:
+        return preferred
+    return max(years)
+
+
+def last_full_week(db: Session, year: int) -> int:
+    """The newest week with league-wide coverage.
+
+    Not simply ``max(week)``. A season's last stored weeks are the playoffs,
+    where a handful of teams remain — so a scan anchored there finds almost
+    nobody with six continuous weeks of history and the page renders empty on
+    a full database. Self-calibrating on the season's own peak coverage rather
+    than a hardcoded week 18, since the postseason format is not this module's
+    business.
+    """
+    counts = (
+        db.query(
+            DBPlayerAdvancedMetric.week,
+            func.count(func.distinct(DBPlayerAdvancedMetric.player_id)),
+        )
+        .filter(DBPlayerAdvancedMetric.year == year)
+        .group_by(DBPlayerAdvancedMetric.week)
+        .all()
+    )
+    if not counts:
+        return 1
+
+    peak = max(count for _week, count in counts)
+    full = [week for week, count in counts if count >= peak * 0.5]
+    return max(full) if full else max(week for week, _count in counts)
 
 
 @dataclass

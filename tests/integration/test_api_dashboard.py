@@ -250,3 +250,23 @@ class TestSlateFragment:
 
     def test_no_schedule_does_not_500(self, client):
         assert client.get("/api/dashboard/slate").status_code == 200
+
+
+class TestMoversFragment:
+    """Local ``client``/``seeded`` fixtures, scoped to this class. See
+    ``TestAttentionFragment`` above for why these are not module-level.
+    """
+
+    @pytest.fixture
+    def client(self):
+        return TestClient(app)
+
+    @pytest.fixture
+    def seeded(self, db):
+        seed(db)
+        return db
+
+    def test_renders_with_no_metrics(self, client, seeded):
+        response = client.get("/api/dashboard/movers")
+        assert response.status_code == 200
+        assert "Hot movers" in response.text

@@ -31,6 +31,12 @@ from pigskin_mastermind.models.database import (
 from pigskin_mastermind.services.injury_status import InjuryIndex
 from pigskin_mastermind.services.lineup_locks import LockIndex
 from pigskin_mastermind.services.lineup_manager import LineupPlan, plan_lineup
+from pigskin_mastermind.services.metric_trends import (
+    Mover,
+    hot_movers,
+    last_full_week,
+    latest_season_with_metrics,
+)
 from pigskin_mastermind.services.mock_draft import BENCH_SLOT, FLEX_ELIGIBLE
 from pigskin_mastermind.services.nfl_schedule import ScheduleIndex
 from pigskin_mastermind.services.season_league import roster_players
@@ -457,7 +463,7 @@ class DashboardView:
     players: List["PlayerCell"] = field(default_factory=list)  # noqa: F821
     players_total: int = 0
     slate: List["SlateGame"] = field(default_factory=list)  # noqa: F821
-    movers: List[object] = field(default_factory=list)
+    movers: List[Mover] = field(default_factory=list)
 
 
 def build_view(
@@ -515,6 +521,10 @@ def build_view(
     if "slate" in sections:
         slate = build_slate(db, rosters, year, week, now)
 
+    movers: List[Mover] = []
+    if "movers" in sections:
+        movers = build_movers(db, now)
+
     return DashboardView(
         week=build_week_context(
             db,
@@ -528,6 +538,7 @@ def build_view(
         players=players,
         players_total=players_total,
         slate=slate,
+        movers=movers,
     )
 
 
@@ -976,3 +987,20 @@ def build_slate(
 
     slate.sort(key=lambda g: (g.kickoff_at or datetime.max, g.home_team))
     return slate
+
+
+#: A strip beside the attention panel, not a page. /metrics/hot is the page.
+MOVER_LIMIT = 6
+
+
+def build_movers(db: Session, now: datetime, limit: int = MOVER_LIMIT) -> List[Mover]:
+    """The strongest buy signals, from whichever season actually has metrics.
+
+    Week 1 of a new season has no trend to compute, so this deliberately reads
+    the last season with coverage rather than rendering an empty band and
+    looking broken.
+    """
+    year = latest_season_with_metrics(db, current_fantasy_season(now.date()))
+    if year is None:
+        return []
+    return hot_movers(db, year, last_full_week(db, year), limit=limit)

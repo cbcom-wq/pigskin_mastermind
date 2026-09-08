@@ -432,3 +432,62 @@ def test_rookie_status_does_not_change_the_ranking(db):
         (m.player_id, m.divergence) for m in hot_movers(db, YEAR, 8, limit=80)
     ]
     assert before == after
+
+
+# ---------------------------------------------------------------------------
+# Shared season/week resolution -- moved here from api/routes/metrics.py so
+# the dashboard and /metrics/hot cannot disagree about which week has usable
+# coverage.
+# ---------------------------------------------------------------------------
+
+
+class TestSharedWeekHelpers:
+    def test_latest_season_prefers_the_requested_year(self, db):
+        from pigskin_mastermind.services.metric_trends import (
+            latest_season_with_metrics,
+        )
+
+        subject = make_player(db, "Helper Subject 1")
+        add_metric(db, subject, 1, "snap_pct", 50.0, year=2025)
+        db.commit()
+
+        assert latest_season_with_metrics(db, 2025) == 2025
+
+    def test_latest_season_falls_back_to_the_newest_stored(self, db):
+        from pigskin_mastermind.services.metric_trends import (
+            latest_season_with_metrics,
+        )
+
+        subject = make_player(db, "Helper Subject 2")
+        add_metric(db, subject, 1, "snap_pct", 50.0, year=2025)
+        db.commit()
+
+        assert latest_season_with_metrics(db, 2030) == 2025
+
+    def test_latest_season_is_none_with_no_metrics_at_all(self, db):
+        from pigskin_mastermind.models.database import DBPlayerAdvancedMetric
+        from pigskin_mastermind.services.metric_trends import (
+            latest_season_with_metrics,
+        )
+
+        db.query(DBPlayerAdvancedMetric).delete()
+        db.commit()
+
+        assert latest_season_with_metrics(db, 2025) is None
+
+    def test_last_full_week_is_not_simply_the_max_week(self, db):
+        """A season's last stored weeks are the playoffs -- a handful of
+        teams remain, so anchoring on ``max(week)`` finds almost nobody with
+        continuous coverage and the page would render empty.
+        """
+        from pigskin_mastermind.services.metric_trends import last_full_week
+
+        players = [make_player(db, f"Helper Subject {i}") for i in range(4)]
+        for week in (1, 2, 3):
+            for player in players:
+                add_metric(db, player, week, "snap_pct", 50.0)
+        # Week 4: playoff-style thin coverage -- one player only.
+        add_metric(db, players[0], 4, "snap_pct", 55.0)
+        db.commit()
+
+        assert last_full_week(db, YEAR) == 3

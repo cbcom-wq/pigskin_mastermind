@@ -1032,3 +1032,8 @@ class TestSlate:
         chi = next(g for g in slate if g.home_team == "CHI")
         assert chi.total_line == pytest.approx(48.5)
         assert chi.spread_line == pytest.approx(1.5)
+
+
+class TestMovers:
+    def test_no_metrics_means_an_empty_band_not_an_error(self, db):
+        assert dashboard.build_movers(db, WEDNESDAY) == []

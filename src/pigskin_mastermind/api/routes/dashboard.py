@@ -80,3 +80,15 @@ async def dashboard_slate(request: Request, db: Session = Depends(get_db)):
         "dashboard/_slate.html",
         {"request": request, "view": view},
     )
+
+
+@router.get("/api/dashboard/movers")
+async def dashboard_movers(request: Request, db: Session = Depends(get_db)):
+    """Band 3 right: usage running ahead of production."""
+    from pigskin_mastermind.api.main import templates
+
+    view = build_view(db, league_now(), sections=frozenset({"movers"}))
+    return templates.TemplateResponse(
+        "dashboard/_movers.html",
+        {"request": request, "view": view},
+    )

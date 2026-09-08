@@ -5,64 +5,22 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.api.database import get_db
-from pigskin_mastermind.models.database import DBPlayer, DBPlayerAdvancedMetric
+from pigskin_mastermind.models.database import DBPlayer
 from pigskin_mastermind.services.advanced_metrics import METRICS, format_value
 from pigskin_mastermind.services.metric_trends import (
-    hot_movers, percentile, player_series,
+    hot_movers,
+    last_full_week,
+    latest_season_with_metrics,
+    percentile,
+    player_series,
 )
 from pigskin_mastermind.services.season_scheduler import league_now
 from pigskin_mastermind.utils.season import current_fantasy_season
 
 router = APIRouter(tags=["metrics"])
-
-
-def _latest_season_with_metrics(db: Session, preferred: int) -> Optional[int]:
-    """The newest season that actually has metrics, preferring *preferred*.
-
-    Week 1 of a new season has no games, so the current year holds nothing to
-    trend. Silently rendering an empty page would read as broken; falling back
-    to the last season with data — and saying so — is the honest behaviour.
-    """
-    years = [
-        row[0]
-        for row in db.query(DBPlayerAdvancedMetric.year).distinct().all()
-    ]
-    if not years:
-        return None
-    if preferred in years:
-        return preferred
-    return max(years)
-
-
-def _last_week(db: Session, year: int) -> int:
-    """The newest week with league-wide coverage.
-
-    Not simply ``max(week)``. A season's last stored weeks are the playoffs,
-    where a handful of teams remain — so a scan anchored there finds almost
-    nobody with six continuous weeks of history and the page renders empty on
-    a full database. Self-calibrating on the season's own peak coverage rather
-    than a hardcoded week 18, since the postseason format is not this module's
-    business.
-    """
-    counts = (
-        db.query(
-            DBPlayerAdvancedMetric.week,
-            func.count(func.distinct(DBPlayerAdvancedMetric.player_id)),
-        )
-        .filter(DBPlayerAdvancedMetric.year == year)
-        .group_by(DBPlayerAdvancedMetric.week)
-        .all()
-    )
-    if not counts:
-        return 1
-
-    peak = max(count for _week, count in counts)
-    full = [week for week, count in counts if count >= peak * 0.5]
-    return max(full) if full else max(week for week, _count in counts)
 
 
 @router.get("/metrics/hot")
@@ -78,13 +36,13 @@ async def hot_metrics_page(
     from pigskin_mastermind.api.main import templates
 
     requested = year or current_fantasy_season(league_now().date())
-    resolved = _latest_season_with_metrics(db, requested)
+    resolved = latest_season_with_metrics(db, requested)
 
     movers = []
     rising = []
     target_week = week
     if resolved is not None:
-        target_week = week or _last_week(db, resolved)
+        target_week = week or last_full_week(db, resolved)
         # Scan wider than the table shows, so the rookie strip can surface a
         # first-year player who is real but outside the top rows.
         scanned = hot_movers(db, resolved, target_week, position=position, limit=80)
@@ -123,7 +81,7 @@ async def player_advanced_fragment(
         raise HTTPException(status_code=404, detail="Player not found")
 
     requested = year or current_fantasy_season(league_now().date())
-    resolved = _latest_season_with_metrics(db, requested)
+    resolved = latest_season_with_metrics(db, requested)
 
     rows = []
     if resolved is not None:
