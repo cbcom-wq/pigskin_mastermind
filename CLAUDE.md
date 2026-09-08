@@ -683,6 +683,24 @@ CLI: `pigskin stats import-advanced --years Y[,Y]`; the scheduler runs it daily.
 - The dashboard and team list filter on `DBTeam.is_user_team == True`. A team created without that
   flag will not appear in the UI.
 
+### The dashboard is one builder, two renderings
+
+`services/dashboard.py::build_view` is the only place a dashboard fact is
+derived. `GET /` and the four `/api/dashboard/*` fragments all call it — the
+page and the live pulse fragment showing different scores for one matchup is
+the specific failure that arrangement prevents.
+
+Polling is **self-terminating**: `_pulse.html` renders its own
+`hx-trigger="every 30s"` only while `week.games_live`, so it starts at the
+first kickoff and stops when the last game leaves its window, because the
+replacement fragment omits the attribute. `games_live` comes from
+`season_scheduler.in_game_window()` — the same predicate the scheduler polls
+ESPN on, so the page cannot keep refreshing after the scheduler has stopped
+fetching anything new.
+
+The dashboard is **read-only**. Every row links to the page that can act; no
+endpoint here writes.
+
 ### "Back" means back, and nothing else
 
 Four conventions used to compete here — a breadcrumb, a hardcoded `Back to <somewhere>`, a `?back=`
