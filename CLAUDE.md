@@ -686,7 +686,7 @@ CLI: `pigskin stats import-advanced --years Y[,Y]`; the scheduler runs it daily.
 ### The dashboard is one builder, two renderings
 
 `services/dashboard.py::build_view` is the only place a dashboard fact is
-derived. `GET /` and the four `/api/dashboard/*` fragments all call it — the
+derived. `GET /` and the five `/api/dashboard/*` fragments all call it — the
 page and the live pulse fragment showing different scores for one matchup is
 the specific failure that arrangement prevents.
 
