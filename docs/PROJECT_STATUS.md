@@ -58,7 +58,7 @@ Optional: set `ODDS_API_KEY` for live sportsbook data, or call the odds `/seed` 
 
 | Area | State |
 |---|---|
-| Team / player / league CRUD, dashboard | Working. Dashboard is five bands (pulse hero, matchup cards, attention, movers, players, slate) built once by `services/dashboard.py::build_view` and rendered by both `GET /` and its `/api/dashboard/*` HTMX fragments, with self-terminating live polling while a game is in its window |
+| Team / player / league CRUD, dashboard | Working. Dashboard is five bands — pulse hero, matchup cards, attention alongside movers, players, slate — built once by `services/dashboard.py::build_view` and rendered by both `GET /` and its `/api/dashboard/*` HTMX fragments, with self-terminating live polling while a game is in its window |
 | Lineup optimizer, trade analyzer | Working |
 | ESPN sync — rosters, weekly stats, multi-season, free agents | Working; the largest and most-changed module |
 | `nfl_data_py` import — pbp, weekly, seasonal, snaps, defense ranks | Working |

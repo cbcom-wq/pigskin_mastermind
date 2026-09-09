@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, FrozenSet, List, Optional, Tuple
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -40,16 +40,92 @@ from pigskin_mastermind.services.metric_trends import (
 from pigskin_mastermind.services.mock_draft import BENCH_SLOT, FLEX_ELIGIBLE
 from pigskin_mastermind.services.nfl_schedule import ScheduleIndex
 from pigskin_mastermind.services.season_league import roster_players
-from pigskin_mastermind.services.season_scheduler import (
-    GAME_WINDOW_HOURS,
-    in_game_window,
-)
+from pigskin_mastermind.services.season_scheduler import in_game_window
 from pigskin_mastermind.utils.nfl_teams import normalize_team
 from pigskin_mastermind.utils.season import current_fantasy_season
 
 #: The four bands that load independently. ``week`` and ``leagues`` are always
 #: built: every band needs the scope, but only some of them need the rosters.
 ALL_SECTIONS: FrozenSet[str] = frozenset({"attention", "players", "slate", "movers"})
+
+#: League kinds that are a finished season, not a week being played. An
+#: archive league gets a card (its frozen record is the point of it) but must
+#: not reach any band that describes *this* week: its roster lives in
+#: ``DBRosterSpot`` exactly like a season league's, so a user-flagged archived
+#: team really does return players -- and would report "Nothing set for week 1"
+#: for a season it is not playing, add its old starters to
+#: ``players_yet_to_play``, and badge them onto this week's NFL slate.
+FROZEN_KINDS: FrozenSet[str] = frozenset({"archive"})
+
+
+@dataclass(frozen=True)
+class Indexes:
+    """The three shared indexes, built once for the whole page.
+
+    Each is a cache keyed by ``(year, week)`` or year, so constructing one per
+    builder threw the cache away six times per request -- and
+    ``InjuryIndex``'s legacy fallback is a full scan of ``players``, which
+    fires exactly when the week has no ``DBPlayerInjury`` rows, i.e. week 1.
+    Six of those per pulse poll, every 30 seconds all Sunday.
+
+    Threaded as a **required** parameter everywhere rather than defaulted to
+    ``None`` with a lazy rebuild: an optional index that silently reconstructs
+    itself is precisely how this regresses without any test noticing.
+    """
+
+    injuries: InjuryIndex
+    schedule: ScheduleIndex
+    locks: LockIndex
+
+
+def build_indexes(db: Session, year: int, week: int) -> Indexes:
+    """Construct the shared indexes. Call this once per request."""
+    return Indexes(
+        injuries=InjuryIndex(db, year, week),
+        schedule=ScheduleIndex(db),
+        locks=LockIndex(db),
+    )
+
+
+def live_cards(cards: List["LeagueCard"]) -> List["LeagueCard"]:
+    """The cards describing a week that is actually being played."""
+    return [c for c in cards if c.kind not in FROZEN_KINDS]
+
+
+def game_is_final(game: DBNFLGame) -> bool:
+    """One definition of a finished game, shared by the strip and the slate.
+
+    Both scores, not just the home one: two different thresholds in one module
+    let the players strip call a game done while the slate still called it
+    upcoming, about the same game.
+    """
+    return game.home_score is not None and game.away_score is not None
+
+
+def game_teams(game: DBNFLGame) -> List[str]:
+    """The game's two teams, normalized, dropping anything unrecognized.
+
+    Normalizing *both* sides is the other half of that agreement: comparing a
+    raw ``DBNFLGame.home_team`` against a normalized ``DBPlayer.nfl_team``
+    misses every franchise the two feeds spell differently (``WSH``/``WAS``).
+    """
+    return [
+        team
+        for team in (normalize_team(game.home_team), normalize_team(game.away_team))
+        if team
+    ]
+
+
+def final_teams(db: Session, year: int, week: int) -> Set[str]:
+    """Teams whose week-*week* game has a final score, normalized."""
+    played: Set[str] = set()
+    for game in db.query(DBNFLGame).filter(
+        DBNFLGame.year == year,
+        DBNFLGame.week == week,
+    ):
+        if game_is_final(game):
+            played.update(game_teams(game))
+    return played
 
 
 @dataclass(frozen=True)
@@ -208,6 +284,12 @@ def archive_footnote(db: Session, league: DBLeague, team: DBTeam) -> Optional[st
     so the predecessor is one lookup away. The record belongs on the *live*
     card because that is the league still being played — a second card for the
     same league in a past state would be noise, not history.
+
+    The name fallback is accepted **only when it is unambiguous**. Team names
+    are not stable across seasons and are not unique within one: if the user
+    joined this year under a name a different manager used last season, an
+    exactly-one match is the only version of this lookup that cannot silently
+    present a stranger's record as theirs.
     """
     previous = (
         db.query(DBLeague)
@@ -224,22 +306,22 @@ def archive_footnote(db: Session, league: DBLeague, team: DBTeam) -> Optional[st
         else None
     )
     if old is None:
-        old = query.filter(DBTeam.name == team.name).first()
+        named = query.filter(DBTeam.name == team.name).all()
+        old = named[0] if len(named) == 1 else None
     if old is None:
         return None
 
     return _finish_line(old, previous.year)
 
 
-def _starters_in_window(
-    db: Session,
+def _starter_kickoffs(
     plan: LineupPlan,
     players: List[DBPlayer],
     year: int,
     week: int,
-    now: datetime,
-) -> bool:
-    """True when at least one of this team's starters is mid-game.
+    indexes: Indexes,
+) -> List[datetime]:
+    """Kickoff time for each of this team's starters, byes dropped.
 
     The NFL team comes from the ``players`` list the card already loaded, not
     from ``LineupDecision`` — that dataclass carries no ``nfl_team``, and
@@ -247,9 +329,56 @@ def _starters_in_window(
     templates to serve one card.
     """
     teams = {p.id: p.nfl_team for p in players}
-    locks = LockIndex(db)
-    times = [locks.kickoff(teams.get(d.player_id), year, week) for d in plan.starters()]
-    return in_game_window(now, [t for t in times if t is not None])
+    times = [
+        indexes.locks.kickoff(teams.get(d.player_id), year, week)
+        for d in plan.starters()
+    ]
+    return [t for t in times if t is not None]
+
+
+def _starters_in_window(
+    plan: LineupPlan,
+    players: List[DBPlayer],
+    year: int,
+    week: int,
+    now: datetime,
+    indexes: Indexes,
+) -> bool:
+    """True when at least one of this team's starters is mid-game."""
+    return in_game_window(now, _starter_kickoffs(plan, players, year, week, indexes))
+
+
+def _yet_to_play(
+    db: Session,
+    team: DBTeam,
+    plan: LineupPlan,
+    players: List[DBPlayer],
+    year: int,
+    week: int,
+    now: datetime,
+    indexes: Indexes,
+) -> int:
+    """How many of this team's starters have not kicked off yet.
+
+    Rendered on every live card, so it has to be the team's real count: a
+    hardcoded 0 sitting beside a hero that reports a real number is two bands
+    contradicting each other about one fact.
+
+    Counted over ``effective_starters`` rather than re-deriving who starts, so
+    the card, the attention panel and the players strip all agree on the same
+    definition of "starter" — the saved lineup when there is one, the planner's
+    recommendation when there is not.
+    """
+    by_id = {p.id: p for p in players}
+    count = 0
+    for player_id in effective_starters(db, team, plan, year, week):
+        player = by_id.get(player_id)
+        if player is None:
+            continue
+        kickoff = indexes.locks.kickoff(player.nfl_team, year, week)
+        if kickoff is not None and kickoff > now:
+            count += 1
+    return count
 
 
 def _espn_card(
@@ -261,6 +390,8 @@ def _espn_card(
     week: int,
     now: datetime,
     plan: LineupPlan,
+    indexes: Indexes,
+    yet_to_play: int,
 ) -> LeagueCard:
     """An ESPN or archived league's week, read from the ESPN weekly snapshot.
 
@@ -296,6 +427,7 @@ def _espn_card(
         team_name=team.name,
         team_url=team_url(team, league),
         footnote=archive_footnote(db, league, team),
+        yet_to_play=yet_to_play,
     )
 
     row = (
@@ -326,7 +458,8 @@ def _espn_card(
         points=row.points_for,
         opponent_points=row.points_against,
         projected=row.projected_points or round(plan.projected_total, 1),
-        is_live=unsettled and _starters_in_window(db, plan, players, year, week, now),
+        is_live=unsettled
+        and _starters_in_window(plan, players, year, week, now, indexes),
     )
 
 
@@ -334,9 +467,13 @@ def _season_card(
     db: Session,
     team: DBTeam,
     league: DBLeague,
+    players: List[DBPlayer],
+    year: int,
     week: int,
     now: datetime,
     plan: LineupPlan,
+    indexes: Indexes,
+    yet_to_play: int,
 ) -> LeagueCard:
     base = dict(
         league_id=league.league_id,
@@ -346,6 +483,7 @@ def _season_card(
         team_name=team.name,
         team_url=team_url(team, league),
         projected=round(plan.projected_total, 1),
+        yet_to_play=yet_to_play,
     )
 
     matchup = (
@@ -383,7 +521,15 @@ def _season_card(
         )
         opponent_projected = round(opponent_plan.projected_total, 1)
 
-    live = matchup.status != "scheduled"
+    # Both halves of the spec's `is_live`. The status alone is not enough:
+    # `live_scoring._recompute_matchups` is what moves a matchup off
+    # `scheduled`, and it has not necessarily run -- it never runs with
+    # PIGSKIN_DISABLE_SCHEDULER=1, nor before the first poll of a window, nor
+    # after a polling failure. Without the second disjunct the card renders
+    # projections in the same page render where the hero says LIVE.
+    live = matchup.status != "scheduled" or _starters_in_window(
+        plan, players, year, week, now, indexes
+    )
     return LeagueCard(
         **base,
         opponent_name=opponent.name if opponent is not None else "TBD",
@@ -399,6 +545,7 @@ def build_league_cards(
     year: int,
     week: int,
     now: datetime,
+    indexes: Indexes,
 ) -> Tuple[List[LeagueCard], Dict[int, LineupPlan], Dict[int, List[DBPlayer]]]:
     """One card per user team, the lineup plan, and the roster each was built
     from.
@@ -441,10 +588,46 @@ def build_league_cards(
                     empty_reason="League row missing",
                 )
             )
-        elif league.kind == "season":
-            cards.append(_season_card(db, team, league, week, now, plan))
+            continue
+
+        # Not computed for an archive league: it has no current week, so
+        # "yet to play" is not a fact about it.
+        pending = (
+            0
+            if league.kind in FROZEN_KINDS
+            else _yet_to_play(db, team, plan, players, year, week, now, indexes)
+        )
+
+        if league.kind == "season":
+            cards.append(
+                _season_card(
+                    db,
+                    team,
+                    league,
+                    players,
+                    year,
+                    week,
+                    now,
+                    plan,
+                    indexes,
+                    pending,
+                )
+            )
         else:
-            cards.append(_espn_card(db, team, league, players, year, week, now, plan))
+            cards.append(
+                _espn_card(
+                    db,
+                    team,
+                    league,
+                    players,
+                    year,
+                    week,
+                    now,
+                    plan,
+                    indexes,
+                    pending,
+                )
+            )
 
     return cards, plans, rosters
 
@@ -455,14 +638,10 @@ class DashboardView:
 
     week: WeekContext
     leagues: List[LeagueCard] = field(default_factory=list)
-    # Forward references to dataclasses Phases 2-3 add. `from __future__ import
-    # annotations` (top of file) defers evaluation so the class body executes
-    # fine without them existing yet; flake8 still checks names inside a
-    # quoted annotation, so each needs its own noqa until its Phase lands.
-    attention: List["AttentionItem"] = field(default_factory=list)  # noqa: F821
-    players: List["PlayerCell"] = field(default_factory=list)  # noqa: F821
+    attention: List["AttentionItem"] = field(default_factory=list)
+    players: List["PlayerCell"] = field(default_factory=list)
     players_total: int = 0
-    slate: List["SlateGame"] = field(default_factory=list)  # noqa: F821
+    slate: List["SlateGame"] = field(default_factory=list)
     movers: List[Mover] = field(default_factory=list)
 
 
@@ -489,9 +668,15 @@ def build_view(
     template cannot accidentally distinguish "not asked for" from "nothing to
     show" -- each fragment renders exactly one section and never inspects the
     others.
+
+    The three shared indexes are constructed **here, once**, and threaded into
+    every builder. Each is a cache; one per builder per request meant six
+    ``InjuryIndex`` instances and, on a week with no injury report, six full
+    scans of ``players`` -- every 30 seconds for the length of a Sunday.
     """
     year, week = resolve_scope(db, now)
-    cards, plans, rosters = build_league_cards(db, year, week, now)
+    indexes = build_indexes(db, year, week)
+    cards, plans, rosters = build_league_cards(db, year, week, now, indexes)
 
     attention: List[AttentionItem] = []
     if "attention" in sections:
@@ -503,6 +688,7 @@ def build_view(
             year,
             week,
             now,
+            indexes,
         )
 
     all_players, players_total_all = build_players(
@@ -513,13 +699,14 @@ def build_view(
         year,
         week,
         now,
+        indexes,
     )
     players = all_players[:PLAYER_STRIP_LIMIT] if "players" in sections else []
     players_total = players_total_all if "players" in sections else 0
 
     slate: List[SlateGame] = []
     if "slate" in sections:
-        slate = build_slate(db, rosters, year, week, now)
+        slate = build_slate(db, cards, rosters, year, week, now)
 
     movers: List[Mover] = []
     if "movers" in sections:
@@ -578,6 +765,10 @@ class AttentionItem:
     player_name: Optional[str] = None
     position: Optional[str] = None
     deadline: Optional[datetime] = None
+    #: What the named player is projected for, and the within-kind tie-break.
+    #: Ordering on the team name and then the player name instead files a
+    #: 27-point QB below a 4-point kicker, purely on spelling.
+    projected_points: float = 0.0
 
 
 def saved_starters(
@@ -626,19 +817,21 @@ def build_attention(
     year: int,
     week: int,
     now: datetime,
+    indexes: Indexes,
 ) -> List[AttentionItem]:
     """Everything wrong with the user's teams this week, worst first.
 
     Derived entirely from the ``LineupPlan`` each card was already built from,
-    so it adds no roster queries — only the three shared indexes, each loaded
-    once for the whole page rather than once per team.
+    so it adds no roster queries — and the three shared indexes are handed in,
+    built once for the whole page rather than once per band.
+
+    Archive leagues are skipped: an archived team's roster reads out of
+    ``DBRosterSpot`` just like a season team's, so it would otherwise report
+    "Nothing set for week 1" about a season that finished last year.
     """
-    injuries = InjuryIndex(db, year, week)
-    schedule = ScheduleIndex(db)
-    locks = LockIndex(db)
     items: List[AttentionItem] = []
 
-    for card in cards:
+    for card in live_cards(cards):
         plan = plans.get(card.team_id)
         players = {p.id: p for p in rosters.get(card.team_id, [])}
         if plan is None or not players:
@@ -674,9 +867,9 @@ def build_attention(
             if player is None:
                 continue
 
-            verdict = injuries.verdict(player_id)
-            on_bye = schedule.is_bye(player.nfl_team, year, week)
-            kickoff = locks.kickoff(player.nfl_team, year, week)
+            verdict = indexes.injuries.verdict(player_id)
+            on_bye = indexes.schedule.is_bye(player.nfl_team, year, week)
+            kickoff = indexes.locks.kickoff(player.nfl_team, year, week)
 
             if on_bye:
                 kind = "on_bye"
@@ -702,6 +895,7 @@ def build_attention(
                     player_name=player.name,
                     position=player.position,
                     deadline=kickoff,
+                    projected_points=projections.get(player_id, 0.0),
                 )
             )
 
@@ -709,7 +903,7 @@ def build_attention(
 
         if saved:
             soonest = [
-                locks.kickoff(players[pid].nfl_team, year, week)
+                indexes.locks.kickoff(players[pid].nfl_team, year, week)
                 for pid in starting
                 if pid in players
             ]
@@ -727,7 +921,11 @@ def build_attention(
                     )
                 )
 
-    items.sort(key=lambda i: (i.rank, i.team_name, i.player_name or ""))
+    # The spec's key: kind first, then the same stable `(-projected, id)`
+    # `plan_lineup` sorts on, so the ordering is reproducible and the biggest
+    # problem inside a kind is the one at the top. `sorted` is stable, so
+    # items that tie on all three keep the card order they were built in.
+    items.sort(key=lambda i: (i.rank, -i.projected_points, i.player_id or 0))
     return items
 
 
@@ -785,6 +983,7 @@ def _bench_better(
                 player_id=best,
                 player_name=players[best].name,
                 position=players[best].position,
+                projected_points=projections.get(best, 0.0),
             )
         )
     return out
@@ -805,10 +1004,16 @@ class PlayerCell:
     state: str
     position: Optional[str] = None
     nfl_team: Optional[str] = None
-    live_points: Optional[float] = None
     projected: Optional[float] = None
     kickoff_at: Optional[datetime] = None
     note: Optional[str] = None
+    # No `live_points`. Per-player live scoring exists as
+    # `DBLineupSlot.actual_points` for a season league and only as
+    # `DBWeeklyPlayerStats.points` for an ESPN team; wiring one and not the
+    # other produces a strip where some cells show live points and the rest
+    # silently show projections, which is worse than showing projections
+    # everywhere. The `playing`/`final` sort key is `-projected` for that
+    # reason. See the spec's "Deliberately out of scope".
 
 
 def build_players(
@@ -819,6 +1024,7 @@ def build_players(
     year: int,
     week: int,
     now: datetime,
+    indexes: Indexes,
 ) -> Tuple[List[PlayerCell], int]:
     """The user's starters across every team, deduplicated, ranked, and
     uncapped.
@@ -830,24 +1036,14 @@ def build_players(
     while counting ``state == "upcoming"`` over this full list for the hero's
     ``players_yet_to_play``, which must not be capped to what the strip
     displays.
-    """
-    injuries = InjuryIndex(db, year, week)
-    schedule = ScheduleIndex(db)
-    locks = LockIndex(db)
-    window = timedelta(hours=GAME_WINDOW_HOURS)
 
-    finals = {
-        (g.home_team, g.away_team)
-        for g in db.query(DBNFLGame).filter(
-            DBNFLGame.year == year,
-            DBNFLGame.week == week,
-            DBNFLGame.home_score.isnot(None),
-        )
-    }
-    played_teams = {t for pair in finals for t in pair}
+    Archive leagues are skipped: their starters belong to a finished season
+    and would otherwise be counted as this week's players yet to play.
+    """
+    played_teams = final_teams(db, year, week)
 
     seen: Dict[int, PlayerCell] = {}
-    for card in cards:
+    for card in live_cards(cards):
         plan = plans.get(card.team_id)
         players = {p.id: p for p in rosters.get(card.team_id, [])}
         if plan is None or not players:
@@ -864,9 +1060,9 @@ def build_players(
             if player is None:
                 continue
 
-            verdict = injuries.verdict(player_id)
-            on_bye = schedule.is_bye(player.nfl_team, year, week)
-            kickoff = locks.kickoff(player.nfl_team, year, week)
+            verdict = indexes.injuries.verdict(player_id)
+            on_bye = indexes.schedule.is_bye(player.nfl_team, year, week)
+            kickoff = indexes.locks.kickoff(player.nfl_team, year, week)
             normalized = normalize_team(player.nfl_team)
 
             if on_bye:
@@ -874,10 +1070,19 @@ def build_players(
             elif verdict.status:
                 state, note = "concern", verdict.status.title()
             elif normalized in played_teams:
+                # An imported score is final regardless of the clock.
                 state, note = "final", "final"
-            elif kickoff is not None and kickoff <= now < kickoff + window:
+            elif kickoff is not None and in_game_window(now, [kickoff]):
                 state, note = "playing", "in progress"
-            elif kickoff is not None and kickoff > now:
+            elif kickoff is not None and now >= kickoff:
+                # Window closed and no score was ever imported. Nothing in the
+                # app calls `import_schedules` automatically, so this is the
+                # normal Sunday-evening state, not an edge case -- and without
+                # this branch these players fell through to "upcoming" with
+                # the note "no kickoff time", which is a second untruth: there
+                # is a kickoff time, it has passed.
+                state, note = "final", "final"
+            elif kickoff is not None:
                 state, note = "upcoming", None
             else:
                 state, note = "upcoming", "no kickoff time"
@@ -923,6 +1128,7 @@ class SlateGame:
 
 def build_slate(
     db: Session,
+    cards: List[LeagueCard],
     rosters: Dict[int, List[DBPlayer]],
     year: int,
     week: int,
@@ -940,10 +1146,14 @@ def build_slate(
 
     Games with none of the user's players still appear, dimmed. Hiding them
     would stop this being the slate.
+
+    Rosters are reached through *cards* rather than the ``rosters`` dict
+    directly, so an archive league's players are not badged onto this week's
+    games -- they belong to a season that finished.
     """
     owned: Dict[int, DBPlayer] = {}
-    for players in rosters.values():
-        for player in players:
+    for card in live_cards(cards):
+        for player in rosters.get(card.team_id, []):
             owned.setdefault(player.id, player)
 
     by_team: Dict[str, List[str]] = {}
@@ -958,7 +1168,7 @@ def build_slate(
 
     slate: List[SlateGame] = []
     for game in games:
-        if game.home_score is not None and game.away_score is not None:
+        if game_is_final(game):
             state = "final"
         elif game.kickoff_at is not None and in_game_window(now, [game.kickoff_at]):
             state = "in_progress"
@@ -966,8 +1176,7 @@ def build_slate(
             state = "upcoming"
 
         names = sorted(
-            by_team.get(normalize_team(game.home_team) or "", [])
-            + by_team.get(normalize_team(game.away_team) or "", [])
+            name for team in game_teams(game) for name in by_team.get(team, [])
         )
         slate.append(
             SlateGame(

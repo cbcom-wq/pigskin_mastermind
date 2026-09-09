@@ -253,6 +253,92 @@ class TestSlateFragment:
         assert client.get("/api/dashboard/slate").status_code == 200
 
 
+class TestEmptyActionIsARealLink:
+    """``empty_action`` is a ``(label, url)`` pair and the url was thrown away.
+
+    The card wrapped everything in ``<a href="{{ card.team_url }}">`` and then
+    rendered the label inside it, so "Sync from ESPN" navigated to the team
+    page. You cannot nest an ``<a>`` in an ``<a>``, so the fix is structural.
+
+    Local ``client``/``seeded`` fixtures, scoped to this class. See
+    ``TestAttentionFragment`` above for why these are not module-level.
+    """
+
+    @pytest.fixture
+    def client(self):
+        return TestClient(app)
+
+    @pytest.fixture
+    def seeded(self, db):
+        """An ESPN league with a user team and no synced week."""
+        db.add(
+            DBLeague(
+                league_id="878627004",
+                name="Airframe Engine League",
+                year=2026,
+                kind="espn",
+                current_week=1,
+            )
+        )
+        db.add(
+            DBTeam(
+                team_id="t-espn",
+                name="55 burgers",
+                owner="Brandon",
+                league_id="878627004",
+                is_user_team=True,
+            )
+        )
+        db.commit()
+        return db
+
+    def test_the_sync_action_points_at_settings(self, client, seeded):
+        body = client.get("/api/dashboard/pulse").text
+        assert "No 2026 weeks synced" in body
+        assert "Sync from ESPN" in body
+        assert 'href="/settings"' in body
+
+
+class TestSlateSpread:
+    """``spread_line`` was populated and never rendered.
+
+    It is positive when the HOME team is favoured -- inverting that marks up
+    every underdog and marks down every favourite.
+
+    Local ``client``/``seeded`` fixtures, scoped to this class. See
+    ``TestAttentionFragment`` above for why these are not module-level.
+    """
+
+    @pytest.fixture
+    def client(self):
+        return TestClient(app)
+
+    @pytest.fixture
+    def seeded(self, db):
+        seed(db)
+        game = db.query(DBNFLGame).filter_by(home_team="CHI").first()
+        game.spread_line = 3.5
+        game.total_line = 48.5
+        db.add(
+            DBNFLGame(
+                year=2026,
+                week=1,
+                home_team="MIN",
+                away_team="GB",
+                spread_line=-2.5,
+            )
+        )
+        db.commit()
+        return db
+
+    def test_shows_the_favourite_and_the_number(self, client, seeded):
+        body = client.get("/api/dashboard/slate").text
+        # spread_line > 0: the home team is favoured.
+        assert "CHI -3.5" in body
+        # spread_line < 0: the away team is.
+        assert "GB -2.5" in body
+
+
 class TestMoversFragment:
     """Local ``client``/``seeded`` fixtures, scoped to this class. See
     ``TestAttentionFragment`` above for why these are not module-level.

@@ -121,6 +121,7 @@ class AttentionItem:
     detail: str
     url: str                           # carries ?back=/
     deadline: Optional[datetime]
+    projected_points: float            # the within-kind tie-break
 
 @dataclass(frozen=True)
 class PlayerCell:
@@ -129,7 +130,6 @@ class PlayerCell:
     position: Optional[str]
     nfl_team: Optional[str]
     state: str                         # playing | concern | upcoming | final
-    live_points: Optional[float]
     projected: Optional[float]
     kickoff_at: Optional[datetime]
     note: Optional[str]                # "Questionable", "on bye", "Q3"
@@ -312,10 +312,19 @@ State and ordering:
 
 | state | meaning | sort key |
 |---|---|---|
-| `playing` | kickoff passed, inside the game window | 0, `-live_points` |
+| `playing` | kickoff passed, inside the game window | 0, `-projected` |
 | `concern` | injury verdict is not clean, or on bye | 1, `-projected` |
 | `upcoming` | kickoff in the future | 2, `kickoff_at`, `-projected` |
-| `final` | game finished | 3, `-live_points` |
+| `final` | game finished — a score was imported, **or** the window has closed | 3, `-projected` |
+
+A game whose window has closed with no imported score is `final`, not
+`upcoming`. `DBNFLGame.home_score` is written only by
+`nfl_data_service.import_schedules`, which nothing in the app calls
+automatically, so "no score" is the normal Sunday-evening state rather than an
+edge case — and the clock is enough to know the game is over.
+`game_is_final()` and `game_teams()` in `services/dashboard.py` are the single
+definition of "this game is done" and "these are its teams, normalized", shared
+by this band and the slate so the two cannot disagree about one game.
 
 Truncated to nine, with `players_total` rendering as `N more →` linking to
 `/players?back=/`.
@@ -461,3 +470,10 @@ Three commits, each independently useful:
   weight across all four.
 - **Hiding the demo league.** Would require a notion of "real league" the schema
   does not have.
+- **Live per-player points in the strip.** `PlayerCell` has no `live_points`
+  field and the `playing`/`final` sort key is `-projected`. Live per-player
+  scoring exists as `DBLineupSlot.actual_points` for a season league but only
+  as `DBWeeklyPlayerStats.points` for an ESPN team, and wiring one path and not
+  the other produces a strip where some players show live points while the rest
+  silently show projections — worse than showing projections consistently,
+  because nothing on the cell says which number it is.

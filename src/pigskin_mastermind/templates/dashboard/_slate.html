@@ -27,8 +27,23 @@
           {% else %}
             Time TBD
           {% endif %}
-          {% if game.total_line %}&middot; o{{ "%.1f"|format(game.total_line) }}{% endif %}
         </p>
+        {# spread_line is positive when the HOME team is favoured. Reading that
+           sign backwards marks up every underdog and marks down every
+           favourite -- a wrong number in the right shape. #}
+        {% if game.spread_line or game.total_line %}
+        <p class="text-[10px] text-slate-400 mt-0.5">
+          {% if game.spread_line %}
+            {% if game.spread_line > 0 %}
+              {{ game.home_team }} -{{ "%.1f"|format(game.spread_line) }}
+            {% else %}
+              {{ game.away_team }} -{{ "%.1f"|format(-game.spread_line) }}
+            {% endif %}
+          {% endif %}
+          {% if game.spread_line and game.total_line %}&middot;{% endif %}
+          {% if game.total_line %}o{{ "%.1f"|format(game.total_line) }}{% endif %}
+        </p>
+        {% endif %}
         {% if game.your_player_count %}
         <span class="inline-block mt-1.5 text-[9px] font-extrabold bg-field-100 text-field-800 rounded px-1.5 py-0.5"
               title="{{ game.your_player_names|join(', ') }}">

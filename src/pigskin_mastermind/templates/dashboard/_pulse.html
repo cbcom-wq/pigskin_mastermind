@@ -41,19 +41,29 @@
   </div>
 
   <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-5">
+    {# The card is a <div>, not one big <a>. `empty_action` carries its own url
+       ("Sync from ESPN" -> /settings) and an <a> cannot nest inside an <a>, so
+       wrapping the whole card in the team link discarded that url and left the
+       label as a fake link that navigated to the team page instead. The team
+       link now covers the name/score region only, and the action is its
+       sibling. #}
     {% for card in view.leagues %}
-    <a href="{{ card.team_url }}"
-       class="block bg-white rounded-xl shadow-sm border p-4 card-hover
-              {% if card.is_live %}border-field-300 ring-2 ring-field-100{% else %}border-slate-200{% endif %}">
+    <div class="bg-white rounded-xl shadow-sm border p-4 card-hover
+                {% if card.is_live %}border-field-300 ring-2 ring-field-100{% else %}border-slate-200{% endif %}">
       <p class="text-[10px] font-extrabold uppercase tracking-widest text-slate-400 truncate">
         {{ card.league_name }} &middot; {{ card.kind }}
       </p>
 
       {% if card.empty_reason %}
-        <p class="text-sm font-bold text-slate-700 truncate mt-1">{{ card.team_name }}</p>
-        <p class="text-xs text-slate-500 mt-3">{{ card.empty_reason }}</p>
+        <a href="{{ card.team_url }}" class="block">
+          <p class="text-sm font-bold text-slate-700 truncate mt-1">{{ card.team_name }}</p>
+          <p class="text-xs text-slate-500 mt-3">{{ card.empty_reason }}</p>
+        </a>
         {% if card.empty_action %}
-        <p class="text-xs text-pigskin-600 font-semibold mt-1">{{ card.empty_action[0] }} &rarr;</p>
+        <a href="{{ card.empty_action[1] }}"
+           class="inline-block text-xs text-pigskin-600 font-semibold mt-1 hover:underline">
+          {{ card.empty_action[0] }} &rarr;
+        </a>
         {% endif %}
       {% else %}
         {# Bound once, above every use: `A if C else B or D` parses as
@@ -62,27 +72,29 @@
         {% set mine = (card.points if card.is_live else card.projected) or 0.0 %}
         {% set theirs = (card.opponent_points if card.is_live else card.opponent_projected) or 0.0 %}
         {% set total = (mine + theirs) or 1.0 %}
-        <div class="flex items-baseline justify-between gap-2 mt-1">
-          <span class="text-sm font-bold text-slate-800 truncate">{{ card.team_name }}</span>
-          <span class="text-xl font-extrabold text-field-700">{{ "%.1f"|format(mine) }}</span>
-        </div>
-        <div class="h-1.5 rounded bg-slate-200 my-2 overflow-hidden flex">
-          <span class="block bg-field-600" style="width: {{ (100 * mine / total)|round(1) }}%"></span>
-          <span class="block bg-slate-300" style="width: {{ (100 * theirs / total)|round(1) }}%"></span>
-        </div>
-        <div class="flex items-baseline justify-between gap-2">
-          <span class="text-sm font-semibold text-slate-500 truncate">{{ card.opponent_name }}</span>
-          <span class="text-base font-bold text-slate-400">{{ "%.1f"|format(theirs) }}</span>
-        </div>
-        <p class="text-[11px] text-slate-500 mt-2">
-          {% if card.is_live %}{{ card.yet_to_play }} yet to play{% else %}Projected{% endif %}
-        </p>
+        <a href="{{ card.team_url }}" class="block">
+          <div class="flex items-baseline justify-between gap-2 mt-1">
+            <span class="text-sm font-bold text-slate-800 truncate">{{ card.team_name }}</span>
+            <span class="text-xl font-extrabold text-field-700">{{ "%.1f"|format(mine) }}</span>
+          </div>
+          <div class="h-1.5 rounded bg-slate-200 my-2 overflow-hidden flex">
+            <span class="block bg-field-600" style="width: {{ (100 * mine / total)|round(1) }}%"></span>
+            <span class="block bg-slate-300" style="width: {{ (100 * theirs / total)|round(1) }}%"></span>
+          </div>
+          <div class="flex items-baseline justify-between gap-2">
+            <span class="text-sm font-semibold text-slate-500 truncate">{{ card.opponent_name }}</span>
+            <span class="text-base font-bold text-slate-400">{{ "%.1f"|format(theirs) }}</span>
+          </div>
+          <p class="text-[11px] text-slate-500 mt-2">
+            {% if card.is_live %}{{ card.yet_to_play }} yet to play{% else %}Projected{% endif %}
+          </p>
+        </a>
       {% endif %}
 
       {% if card.footnote %}
       <p class="text-[11px] text-slate-400 mt-2">{{ card.footnote }}</p>
       {% endif %}
-    </a>
+    </div>
     {% endfor %}
   </div>
 </div>
