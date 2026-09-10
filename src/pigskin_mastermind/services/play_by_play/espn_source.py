@@ -124,9 +124,12 @@ class ESPNPlayByPlaySource:
 
     def __init__(self, client: Optional[Any] = None) -> None:
         if client is None:
-            from pigskin_mastermind.services.espn_boxscore import BoxScoreClient
+            # The shared cache, not a bare BoxScoreClient.  Every player in a
+            # team simulation asks for the same week list, and players who
+            # were in the same game ask for the same summary.
+            from pigskin_mastermind.services.play_by_play.cache import shared_client
 
-            client = BoxScoreClient()
+            client = shared_client()
         self.client = client
 
     def _find_event(self, year: int, week: int, team: str) -> Optional[str]:
