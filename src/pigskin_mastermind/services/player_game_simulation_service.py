@@ -512,7 +512,9 @@ class PlayerGameSimulationService:
             "rec_tds": 0,
             "first_downs": 0,
             "total_tds": 0,
-            "total_epa": 0.0,
+            # None until a play actually supplies EPA.  A running total of
+            # nothing is not zero -- 0.0 reads as a measured neutral game.
+            "total_epa": None,
         }
 
     def _apply_running_stats(
@@ -525,8 +527,12 @@ class PlayerGameSimulationService:
         stats["total_plays"] += 1
 
         yards = int(round(self._to_float(play.get("yards_gained"), default=0.0)))
-        epa = self._to_float(play.get("epa"), default=0.0)
-        stats["total_epa"] = round(stats["total_epa"] + epa, 2)
+        raw_epa = play.get("epa")
+        if raw_epa is not None:
+            running_epa = stats["total_epa"] or 0.0
+            stats["total_epa"] = round(
+                running_epa + self._to_float(raw_epa, default=0.0), 2
+            )
 
         is_complete = bool(self._to_int(play.get("complete_pass")))
         is_touchdown = bool(self._to_int(play.get("touchdown")))

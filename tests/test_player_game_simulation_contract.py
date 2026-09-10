@@ -330,3 +330,59 @@ class TestGameSummaryScores:
 
         assert payload["game_summary"]["home_score"] == final_home
         assert payload["game_summary"]["away_score"] == final_away
+
+
+class TestCumulativeEPA:
+    def test_cumulative_epa_is_absent_when_no_play_had_any(self, payload):
+        """A running total of nothing is not zero.
+
+        The accumulator summed epa through _to_float(default=0.0), so a source
+        with no EPA rendered "CUMULATIVE EPA 0.00" -- a confident neutral score
+        for a quantity nobody measured.
+        """
+        for event in payload["events"]:
+            assert event["stats_snapshot"]["total_epa"] is None
+
+    def test_cumulative_epa_still_accumulates_when_a_source_supplies_it(self, db):
+        """The nflverse path publishes EPA and must keep totalling it."""
+
+        class _StubNFL:
+            def get_play_by_play(self, player_db_id, year, week):
+                return {
+                    "plays": [
+                        {
+                            "play_id": 1,
+                            "player_role": "rush",
+                            "yards_gained": 5,
+                            "yardline_100": 50,
+                            "epa": 0.4,
+                        },
+                        {
+                            "play_id": 2,
+                            "player_role": "rush",
+                            "yards_gained": 3,
+                            "yardline_100": 45,
+                            "epa": 1.2,
+                        },
+                    ],
+                    "game_summary": {},
+                    "player_stats": {},
+                }
+
+        player = DBPlayer(
+            player_id="espn_77",
+            espn_id="77",
+            name="Runner",
+            position="RB",
+            nfl_team="KC",
+        )
+        db.add(player)
+        db.commit()
+
+        payload = PlayerGameSimulationService(
+            db, nfl_data_service=_StubNFL()
+        ).build_simulation(player.id, 2025, 2)
+
+        assert payload["events"][-1]["stats_snapshot"]["total_epa"] == pytest.approx(
+            1.6
+        )

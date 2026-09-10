@@ -205,7 +205,7 @@
                     <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">Rush Yds</p><p id="stat-rush-yards" class="font-bold text-slate-800">0</p></div>
                     <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">Rec Yds</p><p id="stat-rec-yards" class="font-bold text-slate-800">0</p></div>
                     <div class="rounded-lg bg-slate-50 p-2.5"><p class="text-[10px] text-slate-400 uppercase">1st Downs</p><p id="stat-first-downs" class="font-bold text-slate-800">0</p></div>
-                    <div class="rounded-lg bg-slate-50 p-2.5 col-span-2"><p class="text-[10px] text-slate-400 uppercase">Cumulative EPA</p><p id="stat-total-epa" class="font-bold text-slate-800">0.00</p></div>
+                    <div class="rounded-lg bg-slate-50 p-2.5 col-span-2"><p class="text-[10px] text-slate-400 uppercase">Cumulative EPA</p><p id="stat-total-epa" class="font-bold text-slate-800">—</p></div>
                 </div>
             </div>
 
@@ -266,7 +266,10 @@ function onPlayerFrame(e, index, instant) {
         + badgeParts.join('')
         + '</div>'
         + '<p class="text-sm text-slate-700">' + ((e.description || 'No description').replace(/</g, '&lt;').replace(/>/g, '&gt;')) + '</p>'
-        + '<p class="mt-2 text-xs text-slate-500">EPA: <span class="' + (e.epa >= 0 ? 'text-field-700' : 'text-red-500') + ' font-semibold">' + (e.epa >= 0 ? '+' : '') + e.epa.toFixed(2) + '</span></p>';
+        // Null when the source publishes no EPA.  Calling toFixed on it
+        // throws, and loadSimulation's catch then blanks the whole
+        // simulation -- a missing stat must not cost you the animation.
+        + '<p class="mt-2 text-xs text-slate-500">EPA: <span class="' + (e.epa == null ? 'text-slate-400' : (e.epa >= 0 ? 'text-field-700' : 'text-red-500')) + ' font-semibold">' + (e.epa == null ? '—' : (e.epa >= 0 ? '+' : '') + e.epa.toFixed(2)) + '</span></p>';
 
     updateStats(e.stats_snapshot || {});
     SimField.updateActiveRow(index);
@@ -281,7 +284,7 @@ function resetStats() {
     ['stat-total-plays','stat-total-tds','stat-pass-yards','stat-rush-yards','stat-rec-yards','stat-first-downs'].forEach(function(id) {
         _q(id).textContent = '0';
     });
-    _q('stat-total-epa').textContent = '0.00';
+    _q('stat-total-epa').textContent = '—';
 }
 
 function updateStats(snapshot) {
@@ -291,7 +294,10 @@ function updateStats(snapshot) {
     _q('stat-rush-yards').textContent = _def(snapshot.rush_yards, 0);
     _q('stat-rec-yards').textContent = _def(snapshot.rec_yards, 0);
     _q('stat-first-downs').textContent = _def(snapshot.first_downs, 0);
-    _q('stat-total-epa').textContent = _def(snapshot.total_epa, 0).toFixed(2);
+    // A source that publishes no EPA leaves this null.  Showing 0.00 would
+    // report a measured neutral game for a quantity nobody measured.
+    _q('stat-total-epa').textContent =
+        snapshot.total_epa == null ? '—' : snapshot.total_epa.toFixed(2);
 }
 
 /* ── Timeline ─────────────────────────────────────────────────────── */

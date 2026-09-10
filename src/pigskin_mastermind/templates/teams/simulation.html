@@ -273,7 +273,9 @@ function onTeamFrame(e, index, instant) {
         + badgeParts.join('')
         + '</div>'
         + '<p class="text-sm text-slate-700">' + ((e.description || 'No description').replace(/</g, '&lt;').replace(/>/g, '&gt;')) + '</p>'
-        + '<p class="mt-2 text-xs text-slate-500">EPA: <span class="' + ((e.epa || 0) >= 0 ? 'text-field-700' : 'text-red-500') + ' font-semibold">' + ((e.epa || 0) >= 0 ? '+' : '') + (e.epa || 0).toFixed(2) + '</span>'
+        // A source that publishes no EPA leaves it null.  `e.epa || 0` would
+        // render a confident +0.00 for a quantity nobody measured.
+        + '<p class="mt-2 text-xs text-slate-500">EPA: <span class="' + (e.epa == null ? 'text-slate-400' : (e.epa >= 0 ? 'text-field-700' : 'text-red-500')) + ' font-semibold">' + (e.epa == null ? '—' : (e.epa >= 0 ? '+' : '') + e.epa.toFixed(2)) + '</span>'
         + ' · Team FPTS: <span class="font-semibold text-field-700">' + _def(e.team_fantasy_points, 0).toFixed(1) + '</span></p>';
 
     updateStats(e);
