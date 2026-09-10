@@ -33,6 +33,11 @@ class Play:
     down: Optional[int] = None
     distance: Optional[int] = None
 
+    # The team with the ball, as a canonical abbreviation.  A whole-game view
+    # needs this: unlike a one-player view, there is no single subject whose
+    # club can stand in for possession.
+    possession_team: Optional[str] = None
+
     home_score: Optional[int] = None
     away_score: Optional[int] = None
 

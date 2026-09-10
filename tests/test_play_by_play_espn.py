@@ -319,3 +319,84 @@ class TestESPNPlayByPlaySource:
         client = _FakeClient(events=[_event("2", "CIN", "JAX")], summaries={})
 
         assert ESPNPlayByPlaySource(client=client).plays(2025, 2, "JAX") == []
+
+
+class TestPossessionTeam:
+    """Who had the ball, needed for a full-game view's posteam/defteam.
+
+    ESPN puts a numeric team id on the play (``start.team.id``); the
+    abbreviation lives in the payload's own team blocks.  A play is useless to
+    a whole-game animation without it -- there is no single "the player" to
+    infer possession from, the way a one-player view can.
+    """
+
+    def test_plays_carry_the_team_with_the_ball(self, jags):
+        plays = plays_from_summary(jags)
+
+        withteam = [p for p in plays if p.possession_team]
+        assert len(withteam) / len(plays) > 0.9
+        assert {p.possession_team for p in withteam} == {"JAX", "CIN"}
+
+    def test_possession_matches_the_text(self, jags):
+        """A play describing a Jaguars passer belongs to Jacksonville."""
+        lawrence = [
+            p for p in plays_from_summary(jags) if "T.Lawrence pass" in p.description
+        ]
+
+        assert lawrence
+        assert all(p.possession_team == "JAX" for p in lawrence)
+
+    def test_home_and_away_are_available_for_the_game(self, jags):
+        from pigskin_mastermind.services.play_by_play.espn_source import (
+            teams_from_summary,
+        )
+
+        assert teams_from_summary(jags) == {"home": "CIN", "away": "JAX"}
+
+
+class TestSpecialTeamsAndDeadBall:
+    """A whole-game view shows more than scrimmage plays.
+
+    The player animation only ever cared about pass and rush, because those
+    are the plays a skill player appears in.  A full-game timeline also has
+    kickoffs, punts, kicks and dead-ball administration, and lumping them into
+    "other" makes the timeline unreadable.
+    """
+
+    @pytest.mark.parametrize(
+        "type_text,expected",
+        [
+            ("Kickoff", "kickoff"),
+            ("Punt", "punt"),
+            ("Field Goal Good", "field_goal"),
+            ("Field Goal Missed", "field_goal"),
+            ("Timeout", "no_play"),
+            ("Official Timeout", "no_play"),
+            ("End Period", "no_play"),
+            ("End of Game", "no_play"),
+            ("Two-minute warning", "no_play"),
+            ("Penalty", "no_play"),
+        ],
+    )
+    def test_type_maps_to_a_role(self, type_text, expected):
+        from pigskin_mastermind.services.play_by_play.espn_source import _classify
+
+        assert _classify(type_text, "")["role"] == expected
+
+    def test_scrimmage_roles_are_unchanged(self):
+        """The player view depends on these; special teams must not disturb it."""
+        from pigskin_mastermind.services.play_by_play.espn_source import _classify
+
+        assert _classify("Pass Reception", "")["role"] == "pass"
+        assert _classify("Passing Touchdown", "")["role"] == "pass"
+        assert _classify("Sack", "")["role"] == "pass"
+        assert _classify("Rush", "")["role"] == "rush"
+        assert _classify("Rushing Touchdown", "")["role"] == "rush"
+
+    def test_a_kickoff_is_not_attributed_as_a_rusher(self, jags):
+        """Kick returns name a player, but he is not a ball carrier on a
+        scrimmage play and must not land in a rushing line."""
+        kickoffs = [p for p in plays_from_summary(jags) if p.role == "kickoff"]
+
+        assert kickoffs
+        assert all(p.actor_ids == [] for p in kickoffs)

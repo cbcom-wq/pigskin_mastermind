@@ -20,6 +20,44 @@ from pigskin_mastermind.services.play_by_play.attribution import (
 from pigskin_mastermind.services.play_by_play.base import Play
 
 
+def _team_abbreviations(summary: Dict[str, Any]) -> Dict[str, str]:
+    """ESPN team id -> canonical abbreviation, from the payload's own blocks.
+
+    Plays name the team with the ball by numeric id only, so this is the
+    lookup that turns ``{"id": "30"}`` into ``JAX``.
+    """
+    from pigskin_mastermind.utils.nfl_teams import normalize_team
+
+    out: Dict[str, str] = {}
+
+    def add(team: Any) -> None:
+        team = team or {}
+        team_id, abbreviation = team.get("id"), team.get("abbreviation")
+        if team_id and abbreviation:
+            out[str(team_id)] = normalize_team(abbreviation) or abbreviation
+
+    for entry in (summary.get("boxscore") or {}).get("players") or []:
+        add(entry.get("team"))
+    for competition in (summary.get("header") or {}).get("competitions") or []:
+        for competitor in competition.get("competitors") or []:
+            add(competitor.get("team"))
+    return out
+
+
+def teams_from_summary(summary: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    """``{"home": ABBR, "away": ABBR}`` for the game in *summary*."""
+    from pigskin_mastermind.utils.nfl_teams import normalize_team
+
+    sides: Dict[str, Optional[str]] = {"home": None, "away": None}
+    for competition in (summary.get("header") or {}).get("competitions") or []:
+        for competitor in competition.get("competitors") or []:
+            side = competitor.get("homeAway")
+            abbreviation = (competitor.get("team") or {}).get("abbreviation")
+            if side in sides and abbreviation:
+                sides[side] = normalize_team(abbreviation) or abbreviation
+    return sides
+
+
 def _plays_in(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
     drives = (summary.get("drives") or {}).get("previous") or []
     return [p for d in drives for p in (d.get("plays") or [])]
@@ -30,6 +68,18 @@ def _int(value: Any) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+# Type texts that describe clock or officiating rather than a snap.
+_DEAD_BALL = (
+    "timeout",
+    "end period",
+    "end of half",
+    "end of game",
+    "end of regulation",
+    "two-minute warning",
+    "penalty",
+)
 
 
 def _classify(type_text: str, description: str) -> Dict[str, Any]:
@@ -50,10 +100,25 @@ def _classify(type_text: str, description: str) -> Dict[str, Any]:
     passing_td = "passing touchdown" in t
     rushing_td = "rushing touchdown" in t
 
+    # Scrimmage plays are settled first: "Passing Touchdown" must not fall
+    # through to the kick branch on the word "touchdown", and the player view
+    # depends on pass/rush being decided here.
     if sack or interception or passing_td or "pass" in t:
         role = "pass"
     elif rushing_td or "rush" in t:
         role = "rush"
+    elif "kickoff" in t:
+        role = "kickoff"
+    elif "punt" in t:
+        role = "punt"
+    elif "field goal" in t:
+        role = "field_goal"
+    elif "extra point" in t:
+        role = "extra_point"
+    elif any(k in t for k in _DEAD_BALL):
+        # Administration, not a play.  A whole-game timeline still lists these
+        # so the clock makes sense; nothing happened on the field.
+        role = "no_play"
     else:
         role = "other"
 
@@ -65,7 +130,11 @@ def _classify(type_text: str, description: str) -> Dict[str, Any]:
     }
 
 
-def _derive(raw: Dict[str, Any], index: RosterIndex) -> Play:
+def _derive(
+    raw: Dict[str, Any],
+    index: RosterIndex,
+    teams: Optional[Dict[str, str]] = None,
+) -> Play:
     start = raw.get("start") or {}
     description = raw.get("text") or ""
     type_text = (raw.get("type") or {}).get("text") or ""
@@ -86,6 +155,7 @@ def _derive(raw: Dict[str, Any], index: RosterIndex) -> Play:
         clock=(raw.get("clock") or {}).get("displayValue"),
         down=_int(start.get("down")),
         distance=_int(start.get("distance")),
+        possession_team=(teams or {}).get(str((start.get("team") or {}).get("id"))),
         home_score=_int(raw.get("homeScore")),
         away_score=_int(raw.get("awayScore")),
         touchdown=scoring and "touchdown" in description.lower(),
@@ -100,7 +170,8 @@ def _derive(raw: Dict[str, Any], index: RosterIndex) -> Play:
 def plays_from_summary(summary: Dict[str, Any]) -> List[Play]:
     """Normalized plays from one ESPN summary payload."""
     index = RosterIndex.from_summary(summary)
-    return [_derive(raw, index) for raw in _plays_in(summary)]
+    teams = _team_abbreviations(summary)
+    return [_derive(raw, index, teams) for raw in _plays_in(summary)]
 
 
 def _teams_in(event: Dict[str, Any]) -> List[str]:

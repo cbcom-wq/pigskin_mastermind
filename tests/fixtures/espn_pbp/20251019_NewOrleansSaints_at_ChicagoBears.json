@@ -1,6 +1,28 @@
 {
  "event_id": "401772861",
  "name": "New Orleans Saints at Chicago Bears",
+ "header": {
+  "competitions": [
+   {
+    "competitors": [
+     {
+      "homeAway": "home",
+      "team": {
+       "id": "3",
+       "abbreviation": "CHI"
+      }
+     },
+     {
+      "homeAway": "away",
+      "team": {
+       "id": "18",
+       "abbreviation": "NO"
+      }
+     }
+    ]
+   }
+  ]
+ },
  "drives": {
   "previous": [
    {
@@ -9022,6 +9044,10 @@
  "boxscore": {
   "players": [
    {
+    "team": {
+     "id": "18",
+     "abbreviation": "NO"
+    },
     "statistics": [
      {
       "name": "passing",
@@ -10877,6 +10903,10 @@
     ]
    },
    {
+    "team": {
+     "id": "3",
+     "abbreviation": "CHI"
+    },
     "statistics": [
      {
       "name": "passing",

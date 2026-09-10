@@ -1,6 +1,28 @@
 {
  "event_id": "401772725",
  "name": "Jacksonville Jaguars at Cincinnati Bengals",
+ "header": {
+  "competitions": [
+   {
+    "competitors": [
+     {
+      "homeAway": "home",
+      "team": {
+       "id": "4",
+       "abbreviation": "CIN"
+      }
+     },
+     {
+      "homeAway": "away",
+      "team": {
+       "id": "30",
+       "abbreviation": "JAX"
+      }
+     }
+    ]
+   }
+  ]
+ },
  "drives": {
   "previous": [
    {
@@ -9368,6 +9390,10 @@
  "boxscore": {
   "players": [
    {
+    "team": {
+     "id": "30",
+     "abbreviation": "JAX"
+    },
     "statistics": [
      {
       "name": "passing",
@@ -11222,6 +11248,10 @@
     ]
    },
    {
+    "team": {
+     "id": "4",
+     "abbreviation": "CIN"
+    },
     "statistics": [
      {
       "name": "passing",
