@@ -18,12 +18,23 @@ keep the exact shape the parser reads, with three reductions:
 
 Nothing a play is parsed *from* was removed.
 
-**Every `boxscore` statistic category is kept, including the defensive ones.**
-An earlier capture trimmed to `passing`/`rushing`/`receiving` and silently
+## What must be kept, and why
+
+Trimming has twice removed something load-bearing. Both of these are required:
+
+**Every `boxscore` statistic category, including the defensive ones.** An
+earlier capture trimmed to `passing`/`rushing`/`receiving` and silently
 destroyed the ambiguity this fixture exists to reproduce: `Chris Williams` is a
 defender, so dropping defensive categories left `c.williams` resolving cleanly
 to one athlete. A regression fixture that no longer reproduces the regression
 is worse than no fixture.
+
+**Team identity — `boxscore.players[].team` and the `header` competitors.**
+Plays name the team with the ball by numeric id only (`start.team.id`), so
+without an id → abbreviation mapping there is no `posteam`/`defteam` and the
+full-game animation cannot say who has the ball. The `header` block also
+supplies home/away. Both are trimmed to `{id, abbreviation}`, which is all
+either is read for.
 
 ## Why these two games
 
