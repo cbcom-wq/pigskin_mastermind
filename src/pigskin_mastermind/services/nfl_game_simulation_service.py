@@ -275,7 +275,7 @@ class NFLGameSimulationService:
             {"depth": target_depth, "lateral": target_lat, "type": "target"},
         ]
         if is_complete and abs(yac) > 0.5:
-            yac_lat = target_lat + _deterministic_jitter(play_id + 7, 5.0)
+            yac_lat = target_lat + _deterministic_jitter(f"{play_id}:7", 5.0)
             segs.append({"depth": self._clamp(target_depth + yac, 0, 100), "lateral": yac_lat, "type": "catch_end"})
         return segs
 
@@ -294,7 +294,7 @@ class NFLGameSimulationService:
             {"depth": target_depth, "lateral": target_lat, "type": "target"},
         ]
         if is_complete and abs(yac) > 0.5:
-            yac_lat = target_lat + _deterministic_jitter(play_id + 13, 6.0)
+            yac_lat = target_lat + _deterministic_jitter(f"{play_id}:13", 6.0)
             segs.append({"depth": self._clamp(target_depth + yac, 0, 100), "lateral": yac_lat, "type": "catch_end"})
         return segs
 
@@ -312,7 +312,7 @@ class NFLGameSimulationService:
             {"depth": start_x, "lateral": los_lat, "type": "los"},
             {"depth": handoff_depth, "lateral": los_lat, "type": "run_start"},
             {"depth": hit_depth, "lateral": target_lat, "type": "run_gap"},
-            {"depth": end_x, "lateral": target_lat + _deterministic_jitter(play_id + 3, 4.0), "type": "run_end"},
+            {"depth": end_x, "lateral": target_lat + _deterministic_jitter(f"{play_id}:3", 4.0), "type": "run_end"},
         ]
 
     @staticmethod

@@ -140,6 +140,21 @@ class ESPNPlayByPlaySource:
                 return str(event.get("event_id") or "")
         return None
 
+    def game_context(self, year: int, week: int, team: str) -> Dict[str, Any]:
+        """Identity of *team*'s game that week, for the payload's summary."""
+        from pigskin_mastermind.utils.nfl_teams import normalize_team
+
+        target = normalize_team(team) or team
+        for event in self.client.week_events(year, week) or []:
+            names = [normalize_team(t) or t for t in _teams_in(event)]
+            if target in names:
+                return {
+                    "game_id": str(event.get("event_id") or ""),
+                    "home_team": event.get("home_team"),
+                    "away_team": event.get("away_team"),
+                }
+        return {}
+
     def plays(self, year: int, week: int, team: str) -> List[Play]:
         """Plays from *team*'s game that week.
 
