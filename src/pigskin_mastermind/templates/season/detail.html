@@ -1,12 +1,12 @@
 {% extends "base.html" %}
+{% import "components/_nav.html" as nav %}
 {% block title %}{{ league.name }} · Pigskin Mastermind{% endblock %}
 {% block page_title %}{{ league.name }}{% endblock %}
 {% block content %}
-  <nav class="mb-3 flex items-center gap-2 text-sm text-slate-500">
-    <a href="/leagues" class="hover:text-slate-700 hover:underline">Leagues</a>
-    <span>&rsaquo;</span>
-    <span class="font-medium text-slate-700">{{ league.name }}</span>
-  </nav>
+  {{ nav.breadcrumbs([
+      {"label": "Leagues", "url": "/leagues"},
+      {"label": league.name},
+  ]) }}
 
 <div class="mb-6 flex items-baseline justify-between">
   <div>

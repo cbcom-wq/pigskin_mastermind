@@ -1,0 +1,35 @@
+{# Band 3 left. Read-only: every row is a link to the page that can fix it.
+   No control here may say "Back" -- see tests/test_nav_conventions.py. #}
+<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+  <div class="flex items-center justify-between mb-3">
+    <h3 class="text-base font-bold text-slate-800">Attention needed</h3>
+    {% if view.attention %}
+    <span class="text-xs font-bold text-red-600">{{ view.attention|length }} open</span>
+    {% endif %}
+  </div>
+
+  {% if not view.attention %}
+  <p class="text-sm text-slate-400 py-6 text-center">Nothing needs your attention.</p>
+  {% else %}
+  <div class="divide-y divide-slate-100">
+    {% for item in view.attention %}
+    <a href="{{ item.url }}" class="flex items-center gap-3 py-2.5 hover:bg-slate-50 -mx-2 px-2 rounded">
+      <span class="w-1.5 h-1.5 rounded-full flex-none
+        {% if item.severity == 'critical' %}bg-red-600
+        {% elif item.severity == 'warning' %}bg-pigskin-500
+        {% else %}bg-slate-400{% endif %}"></span>
+      {% if item.position %}
+      <span class="text-[9px] font-extrabold px-1.5 py-0.5 rounded badge-{{ item.position|lower }}">{{ item.position }}</span>
+      {% endif %}
+      <span class="text-sm font-semibold text-slate-700 truncate">
+        {{ item.player_name or item.team_name }}
+      </span>
+      <span class="text-xs text-slate-500 truncate flex-1">{{ item.detail }}</span>
+      {% if item.deadline %}
+      <span class="text-xs text-slate-400 flex-none">{{ item.deadline | kickoff }}</span>
+      {% endif %}
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>

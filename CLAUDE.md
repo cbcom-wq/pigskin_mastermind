@@ -349,7 +349,7 @@ path is untouched: `espn_sync` still uses `DBPlayer.team_id`.
 `DBLeague.kind`. Reading `DBPlayer.team_id` (or the `DBTeam.players`
 relationship) directly renders a freshly drafted season team as having zero
 players — that was the bug on `/leagues/{id}`, `/teams`, `/teams/{id}`,
-`/lineups`, `/trades/team-players`, and the dashboard totals. It branches on
+`/trades/team-players`, and the dashboard totals. It branches on
 `kind` rather than falling back when one query comes up empty, so a season team
 that really did drop everyone is not silently re-read through the ESPN column.
 **Player-facing pages need `fantasy_teams_for(db, player_ids)` instead**, which
@@ -682,6 +682,61 @@ CLI: `pigskin stats import-advanced --years Y[,Y]`; the scheduler runs it daily.
   responses.
 - The dashboard and team list filter on `DBTeam.is_user_team == True`. A team created without that
   flag will not appear in the UI.
+
+### The dashboard is one builder, two renderings
+
+`services/dashboard.py::build_view` is the only place a dashboard fact is
+derived. `GET /` and the five `/api/dashboard/*` fragments all call it — the
+page and the live pulse fragment showing different scores for one matchup is
+the specific failure that arrangement prevents.
+
+Polling is **self-terminating**: `_pulse.html` renders its own
+`hx-trigger="every 30s"` only while `week.games_live`, so it starts at the
+first kickoff and stops when the last game leaves its window, because the
+replacement fragment omits the attribute. `games_live` comes from
+`season_scheduler.in_game_window()` — the same predicate the scheduler polls
+ESPN on, so the page cannot keep refreshing after the scheduler has stopped
+fetching anything new.
+
+The dashboard is **read-only**. Every row links to the page that can act; no
+endpoint here writes.
+
+### "Back" means back, and nothing else
+
+Four conventions used to compete here — a breadcrumb, a hardcoded `Back to <somewhere>`, a `?back=`
+param honoured by three routes, and pages with no nav at all — so the same word meant "return to
+where you were" on one page and "go to this unrelated view" on the next. Clicking a player on
+`/metrics/hot` landed on a profile offering **"Back to Players"**, a list the user had never seen.
+
+Both controls now come from `templates/components/_nav.html`:
+
+- `nav.back_link(back)` — returns to the page you came from. **It is the only thing allowed to say
+  "Back."** Leaf pages you drill into get this.
+- `nav.breadcrumbs([...])` — structural position, not history. Hub and index pages get this, because
+  you arrive at them from anywhere. It never says "Back".
+
+A forward navigation is a plain link named for its destination ("View the draft board"). Two tests
+in `tests/test_nav_conventions.py` scan the template source and fail if a control says "Back"
+without the macro, or if a page hand-rolls a breadcrumb trail.
+
+**The target is resolved server-side by `utils/back_nav.py::resolve_back(back, default_url,
+default_label)`, never by the template.** It does two things a template cannot:
+
+- **Refuses anything that can leave the origin.** The old `{{ back_url or '/players' }}` rendered
+  `?back=https://evil.example` straight into an `href`. `//host` and `/\host` are rejected too —
+  both start with a slash and both are protocol-relative to a browser.
+- **Derives the label from the path** via an ordered pattern list. A member route must be listed
+  before its collection or `/teams/7` renders as "Back to Teams". There is deliberately no
+  `&back_label=` param: it would be attacker-controlled text sitting beside a back arrow, and twice
+  the plumbing at every link site.
+
+**Every link into a detail page passes `?back=`**, and a page that links onward passes its own URL,
+not a hardcoded parent — that is what `self_url` in the players and teams route contexts is for.
+Without it, Back from a team simulation skips the week you were reading. The chain nests
+(`/players/42?back=/metrics/hot` as a back target is itself a valid target), so depth costs nothing.
+
+A page reachable from `components/_sidebar.html` needs neither control: you can arrive from
+anywhere, so there is no honest single answer, and the sidebar is already the way out.
 
 ## Domain rules
 

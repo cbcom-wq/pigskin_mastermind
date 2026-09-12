@@ -271,7 +271,9 @@ class TeamGameSimulationService:
             "total_rec_yards": 0,
             "total_tds": 0,
             "total_first_downs": 0,
-            "total_epa": 0.0,
+            # None until some player's source actually supplies EPA -- a team
+            # total of nothing is not zero, same rule as the per-player line.
+            "total_epa": None,
             "total_fantasy_points": 0.0,
         }
 
@@ -282,10 +284,15 @@ class TeamGameSimulationService:
             totals["total_rec_yards"] += snap.get("rec_yards", 0)
             totals["total_tds"] += snap.get("total_tds", 0)
             totals["total_first_downs"] += snap.get("first_downs", 0)
-            totals["total_epa"] += snap.get("total_epa", 0.0)
+            # dict.get's default fires only on a *missing* key, never on a
+            # present None -- so this has to test the value itself.
+            snap_epa = snap.get("total_epa")
+            if snap_epa is not None:
+                totals["total_epa"] = (totals["total_epa"] or 0.0) + snap_epa
             totals["total_fantasy_points"] += self._estimate_fantasy_points(snap, scoring)
 
-        totals["total_epa"] = round(totals["total_epa"], 2)
+        if totals["total_epa"] is not None:
+            totals["total_epa"] = round(totals["total_epa"], 2)
         totals["total_fantasy_points"] = round(totals["total_fantasy_points"], 1)
 
         return totals

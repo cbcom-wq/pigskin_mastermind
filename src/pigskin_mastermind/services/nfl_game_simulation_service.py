@@ -36,9 +36,70 @@ class NFLGameSimulationService:
         self,
         db: Session,
         nfl_data_service: Optional[NFLDataService] = None,
+        plays_source: Optional[Any] = None,
     ):
         self.db = db
-        self.nfl_data_service = nfl_data_service or NFLDataService(db)
+        self._nfl_data_service = nfl_data_service
+        self.plays_source = plays_source
+
+    @property
+    def nfl_data_service(self) -> NFLDataService:
+        """Built on demand -- it imports pandas, which the ESPN path never needs."""
+        if self._nfl_data_service is None:
+            self._nfl_data_service = NFLDataService(self.db)
+        return self._nfl_data_service
+
+    def _resolve_pbp(self, game_id: str, year: int, week: int) -> Dict[str, Any]:
+        """Whichever source the caller injected; ESPN when none was."""
+        if self.plays_source is not None:
+            return self._espn_pbp(game_id, year, week, self.plays_source)
+        if self._nfl_data_service is not None:
+            return self._nfl_data_service.get_game_play_by_play(
+                game_id=game_id, year=year, week=week
+            )
+        return self._espn_pbp(game_id, year, week, None)
+
+    def _espn_pbp(
+        self, game_id: str, year: int, week: int, source: Optional[Any]
+    ) -> Dict[str, Any]:
+        """A whole game from the play-by-play registry.
+
+        The game is identified by our own schedule row rather than by parsing
+        ``game_id``: ``DBNFLGame`` already knows which two teams played, and
+        either of them locates the ESPN event.
+        """
+        from pigskin_mastermind.models.database import DBNFLGame
+        from pigskin_mastermind.services.play_by_play.legacy import to_legacy_game_play
+        from pigskin_mastermind.services.play_by_play.registry import plays_for_game
+
+        empty = {"plays": [], "game_summary": {}}
+        game = self.db.query(DBNFLGame).filter_by(game_id=game_id).first()
+        if not game or not (game.home_team or game.away_team):
+            return empty
+
+        team = game.home_team or game.away_team
+        if source is not None:
+            raw = source.plays(year, week, team)
+        else:
+            raw = plays_for_game(year, week, team)
+
+        plays = [to_legacy_game_play(p, game.home_team, game.away_team) for p in raw]
+        return {
+            "plays": plays,
+            "game_summary": {
+                "game_id": game_id,
+                "home_team": game.home_team,
+                "away_team": game.away_team,
+                "home_score": max(
+                    (p.home_score for p in raw if p.home_score is not None),
+                    default=None,
+                ),
+                "away_score": max(
+                    (p.away_score for p in raw if p.away_score is not None),
+                    default=None,
+                ),
+            },
+        }
 
     def build_game_simulation(
         self,
@@ -47,11 +108,7 @@ class NFLGameSimulationService:
         week: int,
     ) -> Dict[str, Any]:
         """Return a simulation payload for a full NFL game."""
-        pbp = self.nfl_data_service.get_game_play_by_play(
-            game_id=game_id,
-            year=year,
-            week=week,
-        )
+        pbp = self._resolve_pbp(game_id, year, week)
         plays = pbp.get("plays", [])
         game_summary = pbp.get("game_summary", {})
 
@@ -79,16 +136,20 @@ class NFLGameSimulationService:
             turnover = bool(self._to_int(play.get("interception")))
             is_complete = bool(self._to_int(play.get("complete_pass")))
             is_sack = bool(self._to_int(play.get("sack")))
-            epa = round(self._to_float(play.get("epa"), default=0.0), 2)
+            # A source that publishes no EPA leaves it absent.  0.0 is a real
+            # EPA value, so rounding a missing one into it states something
+            # false in the shape of the truth.
+            raw_epa = play.get("epa")
+            epa = None if raw_epa is None else round(self._to_float(raw_epa, 0.0), 2)
 
             route_path = self._build_route_path(play, role, start_x, end_x)
 
             # Resolve player identities
-            passer_id = play.get("passer_player_id")
+            passer_id = play.get("_passer_espn_id") or play.get("passer_player_id")
             passer_name = play.get("passer_player_name")
-            rusher_id = play.get("rusher_player_id")
+            rusher_id = play.get("_rusher_espn_id") or play.get("rusher_player_id")
             rusher_name = play.get("rusher_player_name")
-            receiver_id = play.get("receiver_player_id")
+            receiver_id = play.get("_receiver_espn_id") or play.get("receiver_player_id")
             receiver_name = play.get("receiver_player_name")
 
             # Get headshot URLs for involved players
@@ -119,13 +180,15 @@ class NFLGameSimulationService:
                     "home_score": self._nullable_int(play.get("total_home_score")),
                     "away_score": self._nullable_int(play.get("total_away_score")),
                     "passer_name": passer_name,
-                    "passer_gsis_id": passer_id,
+                    # Kept for payload compatibility.  The front end reads
+                    # neither, and an ESPN athlete id is not a GSIS id.
+                    "passer_gsis_id": play.get("passer_player_id"),
                     "passer_headshot_url": passer_headshot,
                     "rusher_name": rusher_name,
-                    "rusher_gsis_id": rusher_id,
+                    "rusher_gsis_id": play.get("rusher_player_id"),
                     "rusher_headshot_url": rusher_headshot,
                     "receiver_name": receiver_name,
-                    "receiver_gsis_id": receiver_id,
+                    "receiver_gsis_id": play.get("receiver_player_id"),
                     "receiver_headshot_url": receiver_headshot,
                     "badges": {
                         "touchdown": touchdown,
@@ -147,70 +210,50 @@ class NFLGameSimulationService:
         }
 
     def _resolve_headshots(self, plays: List[Dict[str, Any]]) -> Dict[str, str]:
-        """Build a mapping of GSIS player IDs to headshot URLs.
+        """Map the play actors' ids to headshot URLs.
 
-        Player IDs in play-by-play data are GSIS ids (e.g. ``00-0033106``),
-        but the local database stores players with ``espn_<id>`` keys.  We
-        use the ``nfl_data_py`` id-mapping table to bridge GSIS → ESPN, then
-        look the headshot up via the ``espn_<id>`` player_id.
+        ESPN names athletes by its own id, which is exactly what
+        ``DBPlayer.espn_id`` stores -- so this is one indexed query.  The old
+        path went through ``nfl_data_py.import_ids()`` to bridge GSIS -> ESPN,
+        which meant a whole-game animation pulled in pandas purely to draw
+        profile pictures.
+
+        Both id shapes are looked up, so a caller still on the nflverse source
+        keeps working.
         """
-        gsis_ids = set()
+        ids = set()
         for play in plays:
-            for key in ("passer_player_id", "rusher_player_id", "receiver_player_id"):
-                pid = play.get(key)
-                if pid:
-                    gsis_ids.add(pid)
+            for key in (
+                "_passer_espn_id", "_rusher_espn_id", "_receiver_espn_id",
+                "passer_player_id", "rusher_player_id", "receiver_player_id",
+            ):
+                value = play.get(key)
+                if value:
+                    ids.add(str(value))
 
-        if not gsis_ids:
+        if not ids:
             return {}
 
-        # ── Build GSIS → espn_<id> mapping via nfl_data_py ──────────────
-        gsis_to_player_id: Dict[str, str] = {}
-        try:
-            import nfl_data_py as nfl
-            id_map = nfl.import_ids()
-            for gsis_id in gsis_ids:
-                match = id_map[id_map["gsis_id"] == gsis_id]
-                if not match.empty:
-                    espn_id = match.iloc[0].get("espn_id")
-                    if espn_id is not None:
-                        try:
-                            gsis_to_player_id[gsis_id] = f"espn_{int(espn_id)}"
-                        except (ValueError, TypeError):
-                            pass
-                # Also try the nfl_ prefix as a fallback
-                if gsis_id not in gsis_to_player_id:
-                    gsis_to_player_id[gsis_id] = f"nfl_{gsis_id}"
-        except Exception:
-            # If the id-map import fails, fall back to nfl_ prefix only
-            for gsis_id in gsis_ids:
-                gsis_to_player_id[gsis_id] = f"nfl_{gsis_id}"
-
-        # ── Batch-query the database for all candidate player_ids ───────
-        candidate_ids = list(set(gsis_to_player_id.values()))
-        players = (
-            self.db.query(DBPlayer)
-            .filter(DBPlayer.player_id.in_(candidate_ids))
-            .all()
-        )
-        pid_to_headshot = {
-            p.player_id: p.headshot_url
-            for p in players
-            if p.headshot_url
-        }
-
         headshots: Dict[str, str] = {}
-        for gsis_id in gsis_ids:
-            db_pid = gsis_to_player_id.get(gsis_id, "")
-            url = pid_to_headshot.get(db_pid, "")
-            if url:
-                headshots[gsis_id] = url
+        for player in (
+            self.db.query(DBPlayer).filter(DBPlayer.espn_id.in_(list(ids))).all()
+        ):
+            if player.headshot_url:
+                headshots[str(player.espn_id)] = player.headshot_url
+
+        # A GSIS id from the legacy source is stored under an "nfl_<gsis>" key.
+        missing = [i for i in ids if i not in headshots]
+        if missing:
+            legacy = (
+                self.db.query(DBPlayer)
+                .filter(DBPlayer.player_id.in_(["nfl_%s" % i for i in missing]))
+                .all()
+            )
+            for player in legacy:
+                if player.headshot_url:
+                    headshots[str(player.player_id)[4:]] = player.headshot_url
 
         return headshots
-
-    # ------------------------------------------------------------------
-    # Route-path builder (adapted from PlayerGameSimulationService)
-    # ------------------------------------------------------------------
 
     def _build_route_path(
         self, play: Dict[str, Any], role: str, start_x: float, end_x: float,
@@ -275,7 +318,7 @@ class NFLGameSimulationService:
             {"depth": target_depth, "lateral": target_lat, "type": "target"},
         ]
         if is_complete and abs(yac) > 0.5:
-            yac_lat = target_lat + _deterministic_jitter(play_id + 7, 5.0)
+            yac_lat = target_lat + _deterministic_jitter(f"{play_id}:7", 5.0)
             segs.append({"depth": self._clamp(target_depth + yac, 0, 100), "lateral": yac_lat, "type": "catch_end"})
         return segs
 
@@ -294,7 +337,7 @@ class NFLGameSimulationService:
             {"depth": target_depth, "lateral": target_lat, "type": "target"},
         ]
         if is_complete and abs(yac) > 0.5:
-            yac_lat = target_lat + _deterministic_jitter(play_id + 13, 6.0)
+            yac_lat = target_lat + _deterministic_jitter(f"{play_id}:13", 6.0)
             segs.append({"depth": self._clamp(target_depth + yac, 0, 100), "lateral": yac_lat, "type": "catch_end"})
         return segs
 
@@ -312,7 +355,7 @@ class NFLGameSimulationService:
             {"depth": start_x, "lateral": los_lat, "type": "los"},
             {"depth": handoff_depth, "lateral": los_lat, "type": "run_start"},
             {"depth": hit_depth, "lateral": target_lat, "type": "run_gap"},
-            {"depth": end_x, "lateral": target_lat + _deterministic_jitter(play_id + 3, 4.0), "type": "run_end"},
+            {"depth": end_x, "lateral": target_lat + _deterministic_jitter(f"{play_id}:3", 4.0), "type": "run_end"},
         ]
 
     @staticmethod

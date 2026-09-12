@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "components/_nav.html" as nav %}
 
 {% block title %}Projection Tuner Run {{ run_id }} — Pigskin Mastermind{% endblock %}
 {% block page_title %}Projection Tuner Run Detail{% endblock %}
@@ -6,12 +7,7 @@
 {% block content %}
 <div class="max-w-[1300px] mx-auto space-y-4">
     <div>
-        <a href="/projection-tuner" class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 transition-colors">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
-            </svg>
-            Back to Projection Tuner
-        </a>
+        {{ nav.back_link(back) }}
     </div>
 
     <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">

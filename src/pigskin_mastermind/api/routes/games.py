@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Request, Query, HTTPException
 from sqlalchemy.orm import Session
 
 from pigskin_mastermind.api.database import get_db
+from pigskin_mastermind.utils.back_nav import resolve_back
 
 router = APIRouter(tags=["games"])
 
@@ -40,6 +41,7 @@ async def game_detail_page(
     game_id: str,
     year: int = Query(...),
     week: int = Query(..., ge=1, le=22),
+    back: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     """Full game simulation view for a specific NFL game."""
@@ -52,6 +54,7 @@ async def game_detail_page(
             "game_id": game_id,
             "year": year,
             "week": week,
+            "back": resolve_back(back, f"/games?year={year}&week={week}", "Scores"),
         },
     )
 

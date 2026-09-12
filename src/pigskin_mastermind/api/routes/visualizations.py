@@ -10,6 +10,8 @@ from pigskin_mastermind.services.visualization_service import SeasonVisualizatio
 from fastapi.templating import Jinja2Templates
 import os
 
+from pigskin_mastermind.utils.back_nav import resolve_back
+
 router = APIRouter(prefix="/visualizations", tags=["visualizations"])
 
 # Setup templates
@@ -22,6 +24,7 @@ templates = Jinja2Templates(directory=TEMPLATE_DIR)
 async def season_animation_page(
     request: Request,
     team_id: int,
+    back: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     """
@@ -52,7 +55,8 @@ async def season_animation_page(
         {
             "request": request,
             "team_id": team_id,
-            "summary": summary
+            "summary": summary,
+            "back": resolve_back(back, f"/teams/{team_id}", "Team"),
         }
     )
 

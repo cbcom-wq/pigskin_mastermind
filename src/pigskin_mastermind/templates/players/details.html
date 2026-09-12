@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "components/_nav.html" as nav %}
 {% from "components/_player.html" import injury_badge, position_class %}
 
 {% block title %}{{ player.name }} — Pigskin Mastermind{% endblock %}
@@ -25,11 +26,7 @@
 {% block content %}
 <div class="max-w-5xl mx-auto">
 
-    <!-- Back link -->
-    <a href="{{ back_url or '/players' }}" class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 transition-colors mb-4">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
-        {% if back_url %}Back{% else %}Back to Players{% endif %}
-    </a>
+    {{ nav.back_link(back, "mb-4") }}
 
     <!-- Player Header Card -->
     <div class="bg-gradient-to-r from-slate-800 to-slate-700 rounded-xl shadow-md border border-slate-600 p-6 mb-6 text-white">
@@ -561,7 +558,7 @@
                     </svg>
                     Load Plays
                 </button>
-                <a id="pbp-sim-link" href="/players/{{ player.id }}/simulation?year=2024&week=1{% if back_url %}&back={{ back_url | urlencode }}{% endif %}"
+                <a id="pbp-sim-link" href="/players/{{ player.id }}/simulation?year=2024&week=1&back={{ self_url | urlencode }}"
                    class="inline-flex items-center gap-2 px-5 py-2 border border-slate-200 hover:bg-slate-50 text-slate-700 text-sm font-semibold rounded-lg transition-colors">
                     Run Simulation
                 </a>
@@ -851,9 +848,10 @@ function updatePbpSimulationLink() {
     if (!yearEl || !weekEl || !link) return;
     var year = yearEl.value || '2024';
     var week = weekEl.value || '1';
-    var backParam = '{{ back_url | default("", true) }}';
     var simUrl = '/players/{{ player.id }}/simulation?year=' + encodeURIComponent(year) + '&week=' + encodeURIComponent(week);
-    if (backParam) simUrl += '&back=' + encodeURIComponent(backParam);
+    // Same chained target as the server-rendered href: Back from the
+    // simulation returns to this profile, carrying where the profile came from.
+    simUrl += '&back=' + encodeURIComponent({{ self_url | tojson }});
     link.href = simUrl;
 }
 

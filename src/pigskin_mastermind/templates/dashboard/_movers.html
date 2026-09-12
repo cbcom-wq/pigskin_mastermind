@@ -1,0 +1,29 @@
+{# Band 3 right. A strip, not the page -- /metrics/hot is the page. #}
+<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+  <div class="flex items-center justify-between mb-3">
+    <h3 class="text-base font-bold text-slate-800">Hot movers</h3>
+    <a href="/metrics/hot?back=/" class="text-xs text-pigskin-600 font-semibold">All &rarr;</a>
+  </div>
+
+  {% if not view.movers %}
+  <p class="text-sm text-slate-400 py-6 text-center">No metrics imported yet.</p>
+  {% else %}
+  <div class="divide-y divide-slate-100">
+    {% for mover in view.movers %}
+    <a href="/players/{{ mover.player_id }}?back=/"
+       class="flex items-center gap-2 py-2 hover:bg-slate-50 -mx-2 px-2 rounded">
+      <span class="text-[9px] font-extrabold px-1.5 py-0.5 rounded badge-{{ (mover.position or 'flex')|lower }}">
+        {{ mover.position or '--' }}
+      </span>
+      <span class="text-sm font-semibold text-slate-700 truncate flex-1">{{ mover.name }}</span>
+      {% if mover.rookie_rising %}
+      <span class="text-[9px] font-extrabold text-purple-700">R&middot;{{ mover.draft_label }}</span>
+      {% endif %}
+      <span class="text-xs font-bold {% if mover.verdict == 'buy' %}text-field-700{% else %}text-slate-400{% endif %}">
+        {{ mover.verdict }} {{ "%+.1f"|format(mover.divergence) }}
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>

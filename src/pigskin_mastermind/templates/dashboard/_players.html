@@ -1,0 +1,35 @@
+{# Band 4. One row, nine cells, ranked by what matters right now. #}
+<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+  <div class="flex items-center justify-between mb-3">
+    <h3 class="text-base font-bold text-slate-800">Your players &middot; week {{ view.week.week }}</h3>
+    {% if view.players_total > view.players|length %}
+    <a href="/players?back=/" class="text-xs text-pigskin-600 font-semibold">
+      {{ view.players_total - view.players|length }} more &rarr;
+    </a>
+    {% endif %}
+  </div>
+
+  {% if not view.players %}
+  <p class="text-sm text-slate-400 py-6 text-center">No starters yet — draft or sync a team.</p>
+  {% else %}
+  <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9 gap-2">
+    {% for cell in view.players %}
+    <a href="{{ cell.url }}"
+       class="rounded-lg border p-2 card-hover
+         {% if cell.state == 'playing' %}border-field-300 bg-field-50
+         {% elif cell.state == 'concern' %}border-red-200 bg-red-50
+         {% elif cell.state == 'final' %}border-slate-200 opacity-60
+         {% else %}border-slate-200{% endif %}">
+      <span class="text-[9px] font-extrabold px-1.5 py-0.5 rounded badge-{{ (cell.position or 'flex')|lower }}">
+        {{ cell.position or '--' }}
+      </span>
+      <span class="block text-xs font-bold text-slate-800 truncate mt-1">{{ cell.name }}</span>
+      <span class="block text-[10px] text-slate-500 truncate">
+        {% if cell.note %}{{ cell.note }}{% elif cell.kickoff_at %}{{ cell.kickoff_at | kickoff }}{% endif %}
+        {% if cell.projected %}&middot; {{ "%.1f"|format(cell.projected) }}{% endif %}
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>

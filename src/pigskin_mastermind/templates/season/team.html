@@ -1,17 +1,15 @@
 {% extends "base.html" %}
+{% import "components/_nav.html" as nav %}
 {% block title %}{{ team.name }} · {{ league.name }}{% endblock %}
 {% block page_title %}{{ team.name }}{% endblock %}
 {% block content %}
 <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
   <div>
-    <nav class="mb-1 flex items-center gap-2 text-sm text-slate-500">
-      <a href="/leagues" class="hover:text-slate-700 hover:underline">Leagues</a>
-      <span>&rsaquo;</span>
-      <a href="/season/{{ league.league_id }}"
-         class="hover:text-slate-700 hover:underline">{{ league.name }}</a>
-      <span>&rsaquo;</span>
-      <span class="font-medium text-slate-700">{{ team.name }}</span>
-    </nav>
+    {{ nav.breadcrumbs([
+        {"label": "Leagues", "url": "/leagues"},
+        {"label": league.name, "url": "/season/" ~ league.league_id},
+        {"label": team.name},
+    ], extra_class="mb-1") }}
     <h1 class="text-2xl font-bold text-slate-900">{{ team.name }}</h1>
     <p class="text-sm text-slate-500">
       Week {{ week }} &middot; projected {{ plan.projected_total }}

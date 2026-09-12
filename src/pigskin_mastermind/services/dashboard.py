@@ -1,0 +1,1215 @@
+"""Everything the front page knows, derived once.
+
+The dashboard reads from eight services. Doing that in the route handler is
+how the previous version stayed shallow — each new fact meant another query in
+``api/main.py``, so no new facts were ever added.
+
+The other reason this is a module and not a handler: the full page and the
+live-polling fragment must render the same numbers. One builder with two
+renderings is the only way to guarantee that; two query paths would drift the
+first time one of them was edited.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+
+from sqlalchemy import or_
+from sqlalchemy.orm import Session
+
+from pigskin_mastermind.models.database import (
+    DBLeague,
+    DBLineupSlot,
+    DBMatchup,
+    DBNFLGame,
+    DBPlayer,
+    DBTeam,
+    DBWeeklyTeamStats,
+)
+from pigskin_mastermind.services.injury_status import InjuryIndex
+from pigskin_mastermind.services.lineup_locks import LockIndex
+from pigskin_mastermind.services.lineup_manager import LineupPlan, plan_lineup
+from pigskin_mastermind.services.metric_trends import (
+    Mover,
+    hot_movers,
+    last_full_week,
+    latest_season_with_metrics,
+)
+from pigskin_mastermind.services.mock_draft import BENCH_SLOT, FLEX_ELIGIBLE
+from pigskin_mastermind.services.nfl_schedule import ScheduleIndex
+from pigskin_mastermind.services.season_league import roster_players
+from pigskin_mastermind.services.season_scheduler import in_game_window
+from pigskin_mastermind.utils.nfl_teams import normalize_team
+from pigskin_mastermind.utils.season import current_fantasy_season
+
+#: The four bands that load independently. ``week`` and ``leagues`` are always
+#: built: every band needs the scope, but only some of them need the rosters.
+ALL_SECTIONS: FrozenSet[str] = frozenset({"attention", "players", "slate", "movers"})
+
+#: League kinds that are a finished season, not a week being played. An
+#: archive league gets a card (its frozen record is the point of it) but must
+#: not reach any band that describes *this* week: its roster lives in
+#: ``DBRosterSpot`` exactly like a season league's, so a user-flagged archived
+#: team really does return players -- and would report "Nothing set for week 1"
+#: for a season it is not playing, add its old starters to
+#: ``players_yet_to_play``, and badge them onto this week's NFL slate.
+FROZEN_KINDS: FrozenSet[str] = frozenset({"archive"})
+
+
+@dataclass(frozen=True)
+class Indexes:
+    """The three shared indexes, built once for the whole page.
+
+    Each is a cache keyed by ``(year, week)`` or year, so constructing one per
+    builder threw the cache away six times per request -- and
+    ``InjuryIndex``'s legacy fallback is a full scan of ``players``, which
+    fires exactly when the week has no ``DBPlayerInjury`` rows, i.e. week 1.
+    Six of those per pulse poll, every 30 seconds all Sunday.
+
+    Threaded as a **required** parameter everywhere rather than defaulted to
+    ``None`` with a lazy rebuild: an optional index that silently reconstructs
+    itself is precisely how this regresses without any test noticing.
+    """
+
+    injuries: InjuryIndex
+    schedule: ScheduleIndex
+    locks: LockIndex
+
+
+def build_indexes(db: Session, year: int, week: int) -> Indexes:
+    """Construct the shared indexes. Call this once per request."""
+    return Indexes(
+        injuries=InjuryIndex(db, year, week),
+        schedule=ScheduleIndex(db),
+        locks=LockIndex(db),
+    )
+
+
+def live_cards(cards: List["LeagueCard"]) -> List["LeagueCard"]:
+    """The cards describing a week that is actually being played."""
+    return [c for c in cards if c.kind not in FROZEN_KINDS]
+
+
+def game_is_final(game: DBNFLGame) -> bool:
+    """One definition of a finished game, shared by the strip and the slate.
+
+    Both scores, not just the home one: two different thresholds in one module
+    let the players strip call a game done while the slate still called it
+    upcoming, about the same game.
+    """
+    return game.home_score is not None and game.away_score is not None
+
+
+def game_teams(game: DBNFLGame) -> List[str]:
+    """The game's two teams, normalized, dropping anything unrecognized.
+
+    Normalizing *both* sides is the other half of that agreement: comparing a
+    raw ``DBNFLGame.home_team`` against a normalized ``DBPlayer.nfl_team``
+    misses every franchise the two feeds spell differently (``WSH``/``WAS``).
+    """
+    return [
+        team
+        for team in (normalize_team(game.home_team), normalize_team(game.away_team))
+        if team
+    ]
+
+
+def final_teams(db: Session, year: int, week: int) -> Set[str]:
+    """Teams whose week-*week* game has a final score, normalized."""
+    played: Set[str] = set()
+    for game in db.query(DBNFLGame).filter(
+        DBNFLGame.year == year,
+        DBNFLGame.week == week,
+    ):
+        if game_is_final(game):
+            played.update(game_teams(game))
+    return played
+
+
+@dataclass(frozen=True)
+class WeekContext:
+    """What week it is, and what the NFL is doing right now."""
+
+    year: int
+    week: int
+    now: datetime
+    games_total: int = 0
+    games_in_progress: int = 0
+    games_final: int = 0
+    games_live: bool = False
+    next_kickoff: Optional[datetime] = None
+    players_yet_to_play: int = 0
+
+
+def resolve_scope(db: Session, now: datetime) -> Tuple[int, int]:
+    """One ``(year, week)`` for the whole page.
+
+    Derived from the newest league that is still being played. A per-card week
+    would let the hero say "Week 1" above a card showing week 4.
+
+    ``archive`` leagues are excluded: they are frozen past seasons, and one
+    would otherwise decide the current week for every live league beside it.
+    """
+    league = (
+        db.query(DBLeague)
+        .filter(DBLeague.kind != "archive")
+        .order_by(DBLeague.year.desc(), DBLeague.id.desc())
+        .first()
+    )
+    if league is None:
+        return current_fantasy_season(now.date()), 1
+    return league.year, league.current_week or 1
+
+
+def build_week_context(
+    db: Session,
+    year: int,
+    week: int,
+    now: datetime,
+    yet_to_play: int = 0,
+) -> WeekContext:
+    """Game counts and the live flag for one week.
+
+    *now* must be a naive US-Eastern wall clock — see ``league_now()``.
+    ``kickoff_at`` is stored in that frame, so a UTC clock would report every
+    early Sunday game as in progress from breakfast onwards.
+    """
+    games = (
+        db.query(DBNFLGame).filter(DBNFLGame.year == year, DBNFLGame.week == week).all()
+    )
+    kickoffs = [g.kickoff_at for g in games if g.kickoff_at is not None]
+
+    final = sum(
+        1 for g in games if g.home_score is not None and g.away_score is not None
+    )
+    in_progress = sum(
+        1
+        for g in games
+        if g.kickoff_at is not None
+        and g.home_score is None
+        and g.away_score is None
+        and in_game_window(now, [g.kickoff_at])
+    )
+    upcoming = [k for k in kickoffs if k > now]
+
+    return WeekContext(
+        year=year,
+        week=week,
+        now=now,
+        games_total=len(games),
+        games_in_progress=in_progress,
+        games_final=final,
+        games_live=in_game_window(now, kickoffs),
+        next_kickoff=min(upcoming) if upcoming else None,
+        players_yet_to_play=yet_to_play,
+    )
+
+
+@dataclass(frozen=True)
+class LeagueCard:
+    """One user team's week, whatever kind of league holds it."""
+
+    league_id: str
+    league_name: str
+    kind: str
+    team_id: int
+    team_name: str
+    team_url: str
+    opponent_name: Optional[str] = None
+    points: Optional[float] = None
+    opponent_points: Optional[float] = None
+    projected: Optional[float] = None
+    opponent_projected: Optional[float] = None
+    is_live: bool = False
+    yet_to_play: int = 0
+    empty_reason: Optional[str] = None
+    empty_action: Optional[Tuple[str, str]] = None
+    footnote: Optional[str] = None
+
+
+def team_url(team: DBTeam, league: Optional[DBLeague]) -> str:
+    """Where this team's own page lives.
+
+    A season league's canonical team page is under ``/season/``; the generic
+    ``/teams/{id}`` page can show that roster but cannot set its lineup.
+    ``?back=/`` so the shared back control returns to the dashboard rather than
+    to an index the user never visited.
+    """
+    if league is not None and league.kind == "season":
+        return f"/season/{league.league_id}/teams/{team.id}?back=/"
+    return f"/teams/{team.id}?back=/"
+
+
+def user_team_leagues(
+    db: Session,
+) -> List[Tuple[DBTeam, Optional[DBLeague]]]:
+    """Every flagged user team, paired with its league.
+
+    The league is fetched once per league rather than once per team, because
+    ``roster_players`` and ``plan_lineup`` both want it and a per-team lookup
+    would re-query the same handful of rows.
+    """
+    teams = db.query(DBTeam).filter(DBTeam.is_user_team.is_(True)).all()
+    keys = {t.league_id for t in teams if t.league_id}
+    leagues = (
+        {
+            lg.league_id: lg
+            for lg in db.query(DBLeague).filter(DBLeague.league_id.in_(keys))
+        }
+        if keys
+        else {}
+    )
+    return [(t, leagues.get(t.league_id)) for t in teams]
+
+
+def _finish_line(team: DBTeam, year: int) -> str:
+    """One team-season's frozen record, e.g. ``"2025 finish: 10-4, 2237.8 pts"``.
+
+    Shared by ``archive_footnote`` (a predecessor's record shown on a live
+    successor's card) and the archive league's own card (its own record,
+    same team, same format) — the format string exists in exactly one place.
+    """
+    record = f"{team.wins or 0}-{team.losses or 0}"
+    if team.ties:
+        record += f"-{team.ties}"
+    return f"{year} finish: {record}, {team.total_points or 0.0:.1f} pts"
+
+
+def archive_footnote(db: Session, league: DBLeague, team: DBTeam) -> Optional[str]:
+    """This league's own archived predecessor's final record, if there is one.
+
+    The archive convention renames the finished row to ``<league_id>-<year>``,
+    so the predecessor is one lookup away. The record belongs on the *live*
+    card because that is the league still being played — a second card for the
+    same league in a past state would be noise, not history.
+
+    The name fallback is accepted **only when it is unambiguous**. Team names
+    are not stable across seasons and are not unique within one: if the user
+    joined this year under a name a different manager used last season, an
+    exactly-one match is the only version of this lookup that cannot silently
+    present a stranger's record as theirs.
+    """
+    previous = (
+        db.query(DBLeague)
+        .filter_by(league_id=f"{league.league_id}-{league.year - 1}")
+        .first()
+    )
+    if previous is None:
+        return None
+
+    query = db.query(DBTeam).filter(DBTeam.league_id == previous.league_id)
+    old = (
+        query.filter(DBTeam.espn_team_id == team.espn_team_id).first()
+        if team.espn_team_id
+        else None
+    )
+    if old is None:
+        named = query.filter(DBTeam.name == team.name).all()
+        old = named[0] if len(named) == 1 else None
+    if old is None:
+        return None
+
+    return _finish_line(old, previous.year)
+
+
+def _starter_kickoffs(
+    plan: LineupPlan,
+    players: List[DBPlayer],
+    year: int,
+    week: int,
+    indexes: Indexes,
+) -> List[datetime]:
+    """Kickoff time for each of this team's starters, byes dropped.
+
+    The NFL team comes from the ``players`` list the card already loaded, not
+    from ``LineupDecision`` — that dataclass carries no ``nfl_team``, and
+    widening it would touch the AI manager, the season agent and three
+    templates to serve one card.
+    """
+    teams = {p.id: p.nfl_team for p in players}
+    times = [
+        indexes.locks.kickoff(teams.get(d.player_id), year, week)
+        for d in plan.starters()
+    ]
+    return [t for t in times if t is not None]
+
+
+def _starters_in_window(
+    plan: LineupPlan,
+    players: List[DBPlayer],
+    year: int,
+    week: int,
+    now: datetime,
+    indexes: Indexes,
+) -> bool:
+    """True when at least one of this team's starters is mid-game."""
+    return in_game_window(now, _starter_kickoffs(plan, players, year, week, indexes))
+
+
+def _yet_to_play(
+    db: Session,
+    team: DBTeam,
+    plan: LineupPlan,
+    players: List[DBPlayer],
+    year: int,
+    week: int,
+    now: datetime,
+    indexes: Indexes,
+) -> int:
+    """How many of this team's starters have not kicked off yet.
+
+    Rendered on every live card, so it has to be the team's real count: a
+    hardcoded 0 sitting beside a hero that reports a real number is two bands
+    contradicting each other about one fact.
+
+    Counted over ``effective_starters`` rather than re-deriving who starts, so
+    the card, the attention panel and the players strip all agree on the same
+    definition of "starter" — the saved lineup when there is one, the planner's
+    recommendation when there is not.
+    """
+    by_id = {p.id: p for p in players}
+    count = 0
+    for player_id in effective_starters(db, team, plan, year, week):
+        player = by_id.get(player_id)
+        if player is None:
+            continue
+        kickoff = indexes.locks.kickoff(player.nfl_team, year, week)
+        if kickoff is not None and kickoff > now:
+            count += 1
+    return count
+
+
+def _espn_card(
+    db: Session,
+    team: DBTeam,
+    league: DBLeague,
+    players: List[DBPlayer],
+    year: int,
+    week: int,
+    now: datetime,
+    plan: LineupPlan,
+    indexes: Indexes,
+    yet_to_play: int,
+) -> LeagueCard:
+    """An ESPN or archived league's week, read from the ESPN weekly snapshot.
+
+    The join through ``teams -> leagues`` and the filter on ``DBLeague.year``
+    are the point of this function. ``weekly_team_stats`` carries no year and
+    its parent's unique key is ``(team_id, week)``, so week 1 of an archived
+    2025 season occupies the same slot as week 1 of 2026 — and an unguarded
+    read serves it as this season's score.
+
+    An archived league has no current week at all, so it returns before any
+    of that: no ``weekly_team_stats`` read, no lineup plan consulted, just the
+    team's own frozen record from the season that finished.
+    """
+    if league.kind == "archive":
+        return LeagueCard(
+            league_id=league.league_id,
+            league_name=league.name,
+            kind=league.kind,
+            team_id=team.id,
+            team_name=team.name,
+            team_url=team_url(team, league),
+            empty_reason=f"{league.year} season complete",
+            empty_action=None,
+            footnote=_finish_line(team, league.year),
+            is_live=False,
+        )
+
+    base = dict(
+        league_id=league.league_id,
+        league_name=league.name,
+        kind=league.kind,
+        team_id=team.id,
+        team_name=team.name,
+        team_url=team_url(team, league),
+        footnote=archive_footnote(db, league, team),
+        yet_to_play=yet_to_play,
+    )
+
+    row = (
+        db.query(DBWeeklyTeamStats)
+        .join(DBTeam, DBTeam.id == DBWeeklyTeamStats.team_id)
+        .join(DBLeague, DBLeague.league_id == DBTeam.league_id)
+        .filter(
+            DBWeeklyTeamStats.team_id == team.id,
+            DBWeeklyTeamStats.week == week,
+            DBLeague.year == year,
+        )
+        .first()
+    )
+    if row is None:
+        return LeagueCard(
+            **base,
+            projected=round(plan.projected_total, 1) or None,
+            empty_reason=f"No {year} weeks synced",
+            empty_action=("Sync from ESPN", "/settings"),
+        )
+
+    # ESPN reports "U" for a week that has not been settled yet. A W/L/T is
+    # final, however recently it was synced.
+    unsettled = (row.result or "U").upper() == "U"
+    return LeagueCard(
+        **base,
+        opponent_name=row.opponent_name,
+        points=row.points_for,
+        opponent_points=row.points_against,
+        projected=row.projected_points or round(plan.projected_total, 1),
+        is_live=unsettled
+        and _starters_in_window(plan, players, year, week, now, indexes),
+    )
+
+
+def _season_card(
+    db: Session,
+    team: DBTeam,
+    league: DBLeague,
+    players: List[DBPlayer],
+    year: int,
+    week: int,
+    now: datetime,
+    plan: LineupPlan,
+    indexes: Indexes,
+    yet_to_play: int,
+) -> LeagueCard:
+    base = dict(
+        league_id=league.league_id,
+        league_name=league.name,
+        kind=league.kind,
+        team_id=team.id,
+        team_name=team.name,
+        team_url=team_url(team, league),
+        projected=round(plan.projected_total, 1),
+        yet_to_play=yet_to_play,
+    )
+
+    matchup = (
+        db.query(DBMatchup)
+        .filter(
+            DBMatchup.league_id == league.id,
+            DBMatchup.year == league.year,
+            DBMatchup.week == week,
+            or_(
+                DBMatchup.home_team_id == team.id,
+                DBMatchup.away_team_id == team.id,
+            ),
+        )
+        .first()
+    )
+    if matchup is None:
+        return LeagueCard(**base, empty_reason=f"No week {week} matchup")
+
+    at_home = matchup.home_team_id == team.id
+    opponent_id = matchup.away_team_id if at_home else matchup.home_team_id
+    opponent = (
+        db.query(DBTeam).filter_by(id=opponent_id).first() if opponent_id else None
+    )
+
+    opponent_projected = None
+    if opponent is not None:
+        opponent_plan = plan_lineup(
+            db,
+            opponent,
+            league.year,
+            week,
+            now,
+            league=league,
+            players=roster_players(db, opponent, league),
+        )
+        opponent_projected = round(opponent_plan.projected_total, 1)
+
+    # Both halves of the spec's `is_live`. The status alone is not enough:
+    # `live_scoring._recompute_matchups` is what moves a matchup off
+    # `scheduled`, and it has not necessarily run -- it never runs with
+    # PIGSKIN_DISABLE_SCHEDULER=1, nor before the first poll of a window, nor
+    # after a polling failure. Without the second disjunct the card renders
+    # projections in the same page render where the hero says LIVE.
+    live = matchup.status != "scheduled" or _starters_in_window(
+        plan, players, year, week, now, indexes
+    )
+    return LeagueCard(
+        **base,
+        opponent_name=opponent.name if opponent is not None else "TBD",
+        points=matchup.home_points if at_home else matchup.away_points,
+        opponent_points=matchup.away_points if at_home else matchup.home_points,
+        opponent_projected=opponent_projected,
+        is_live=live,
+    )
+
+
+def build_league_cards(
+    db: Session,
+    year: int,
+    week: int,
+    now: datetime,
+    indexes: Indexes,
+) -> Tuple[List[LeagueCard], Dict[int, LineupPlan], Dict[int, List[DBPlayer]]]:
+    """One card per user team, the lineup plan, and the roster each was built
+    from.
+
+    The plans and rosters are returned rather than rebuilt by later sections:
+    they are the expensive part (a roster query, a projection map, an injury
+    index and a schedule index per team), and ``build_view`` used to re-run
+    ``roster_players()`` a second time, once here and once again to assemble
+    its own ``rosters`` dict, on every request. Handing back what this loop
+    already computed removes that duplicate query entirely, along with the
+    gate it used to force on which sections were allowed to pay for it.
+    """
+    cards: List[LeagueCard] = []
+    plans: Dict[int, LineupPlan] = {}
+    rosters: Dict[int, List[DBPlayer]] = {}
+
+    for team, league in user_team_leagues(db):
+        players = roster_players(db, team, league)
+        rosters[team.id] = players
+        plan = plan_lineup(
+            db,
+            team,
+            year,
+            week,
+            now,
+            league=league,
+            players=players,
+        )
+        plans[team.id] = plan
+
+        if league is None:
+            cards.append(
+                LeagueCard(
+                    league_id=team.league_id or "",
+                    league_name="Unknown league",
+                    kind="espn",
+                    team_id=team.id,
+                    team_name=team.name,
+                    team_url=team_url(team, None),
+                    empty_reason="League row missing",
+                )
+            )
+            continue
+
+        # Not computed for an archive league: it has no current week, so
+        # "yet to play" is not a fact about it.
+        pending = (
+            0
+            if league.kind in FROZEN_KINDS
+            else _yet_to_play(db, team, plan, players, year, week, now, indexes)
+        )
+
+        if league.kind == "season":
+            cards.append(
+                _season_card(
+                    db,
+                    team,
+                    league,
+                    players,
+                    year,
+                    week,
+                    now,
+                    plan,
+                    indexes,
+                    pending,
+                )
+            )
+        else:
+            cards.append(
+                _espn_card(
+                    db,
+                    team,
+                    league,
+                    players,
+                    year,
+                    week,
+                    now,
+                    plan,
+                    indexes,
+                    pending,
+                )
+            )
+
+    return cards, plans, rosters
+
+
+@dataclass(frozen=True)
+class DashboardView:
+    """Everything the front page renders, from one pass over the database."""
+
+    week: WeekContext
+    leagues: List[LeagueCard] = field(default_factory=list)
+    attention: List["AttentionItem"] = field(default_factory=list)
+    players: List["PlayerCell"] = field(default_factory=list)
+    players_total: int = 0
+    slate: List["SlateGame"] = field(default_factory=list)
+    movers: List[Mover] = field(default_factory=list)
+
+
+def build_view(
+    db: Session,
+    now: datetime,
+    sections: FrozenSet[str] = ALL_SECTIONS,
+) -> DashboardView:
+    """The whole page, or the slice of it a fragment endpoint asked for.
+
+    ``week`` and ``leagues`` are always built: every section needs the scope.
+    ``build_league_cards`` hands back the rosters it already queried, so
+    there is no separate roster pass left to gate behind which sections were
+    requested.
+
+    The hero's ``players_yet_to_play`` count must be right on ``/`` and
+    ``/api/dashboard/pulse``, which request no sections at all -- so the full
+    (uncapped) player list is always built, regardless of ``sections``. It is
+    cheap: the rosters and lineup plans it reads are already in hand.
+    ``DashboardView.players`` is still only populated -- and only sliced to
+    ``PLAYER_STRIP_LIMIT`` -- when ``"players"`` was actually requested.
+
+    Unrequested sections come back as empty lists rather than ``None``, so a
+    template cannot accidentally distinguish "not asked for" from "nothing to
+    show" -- each fragment renders exactly one section and never inspects the
+    others.
+
+    The three shared indexes are constructed **here, once**, and threaded into
+    every builder. Each is a cache; one per builder per request meant six
+    ``InjuryIndex`` instances and, on a week with no injury report, six full
+    scans of ``players`` -- every 30 seconds for the length of a Sunday.
+    """
+    year, week = resolve_scope(db, now)
+    indexes = build_indexes(db, year, week)
+    cards, plans, rosters = build_league_cards(db, year, week, now, indexes)
+
+    attention: List[AttentionItem] = []
+    if "attention" in sections:
+        attention = build_attention(
+            db,
+            cards,
+            plans,
+            rosters,
+            year,
+            week,
+            now,
+            indexes,
+        )
+
+    all_players, players_total_all = build_players(
+        db,
+        cards,
+        plans,
+        rosters,
+        year,
+        week,
+        now,
+        indexes,
+    )
+    players = all_players[:PLAYER_STRIP_LIMIT] if "players" in sections else []
+    players_total = players_total_all if "players" in sections else 0
+
+    slate: List[SlateGame] = []
+    if "slate" in sections:
+        slate = build_slate(db, cards, rosters, year, week, now)
+
+    movers: List[Mover] = []
+    if "movers" in sections:
+        movers = build_movers(db, now)
+
+    return DashboardView(
+        week=build_week_context(
+            db,
+            year,
+            week,
+            now,
+            yet_to_play=sum(1 for c in all_players if c.state == "upcoming"),
+        ),
+        leagues=cards,
+        attention=attention,
+        players=players,
+        players_total=players_total,
+        slate=slate,
+        movers=movers,
+    )
+
+
+#: Ranked worst-first. The constant is the definition; the ordering test
+#: asserts against it rather than against a hand-written expected list.
+ATTENTION_ORDER: Tuple[str, ...] = (
+    "no_lineup",
+    "injury_excluded",
+    "on_bye",
+    "injury_haircut",
+    "bench_better",
+    "lock_soon",
+)
+
+_SEVERITY = {
+    "no_lineup": "critical",
+    "injury_excluded": "critical",
+    "on_bye": "critical",
+    "injury_haircut": "warning",
+    "bench_better": "warning",
+    "lock_soon": "info",
+}
+
+#: How close a lock has to be before it is worth saying so.
+LOCK_SOON_HOURS = 3
+
+
+@dataclass(frozen=True)
+class AttentionItem:
+    rank: int
+    kind: str
+    severity: str
+    team_name: str
+    detail: str
+    url: str
+    player_id: Optional[int] = None
+    player_name: Optional[str] = None
+    position: Optional[str] = None
+    deadline: Optional[datetime] = None
+    #: What the named player is projected for, and the within-kind tie-break.
+    #: Ordering on the team name and then the player name instead files a
+    #: 27-point QB below a 4-point kicker, purely on spelling.
+    projected_points: float = 0.0
+
+
+def saved_starters(
+    db: Session,
+    team: DBTeam,
+    year: int,
+    week: int,
+) -> Dict[int, str]:
+    """The non-bench slots this team has actually saved for *week*."""
+    return {
+        row.player_id: row.slot
+        for row in db.query(DBLineupSlot).filter_by(
+            team_id=team.id,
+            year=year,
+            week=week,
+        )
+        if row.slot != BENCH_SLOT
+    }
+
+
+def effective_starters(
+    db: Session,
+    team: DBTeam,
+    plan: LineupPlan,
+    year: int,
+    week: int,
+) -> Dict[int, str]:
+    """Who is starting, saved lineup first, planner's recommendation second.
+
+    The fallback matters: a team with no saved lineup is exactly the team the
+    ``no_lineup`` item is about, and without it that team would contribute no
+    players to the strip and nothing to ``players_yet_to_play`` — the worst
+    team on the page would look like the quietest.
+    """
+    saved = saved_starters(db, team, year, week)
+    if saved:
+        return saved
+    return {d.player_id: d.slot for d in plan.starters()}
+
+
+def build_attention(
+    db: Session,
+    cards: List[LeagueCard],
+    plans: Dict[int, LineupPlan],
+    rosters: Dict[int, List[DBPlayer]],
+    year: int,
+    week: int,
+    now: datetime,
+    indexes: Indexes,
+) -> List[AttentionItem]:
+    """Everything wrong with the user's teams this week, worst first.
+
+    Derived entirely from the ``LineupPlan`` each card was already built from,
+    so it adds no roster queries — and the three shared indexes are handed in,
+    built once for the whole page rather than once per band.
+
+    Archive leagues are skipped: an archived team's roster reads out of
+    ``DBRosterSpot`` just like a season team's, so it would otherwise report
+    "Nothing set for week 1" about a season that finished last year.
+    """
+    items: List[AttentionItem] = []
+
+    for card in live_cards(cards):
+        plan = plans.get(card.team_id)
+        players = {p.id: p for p in rosters.get(card.team_id, [])}
+        if plan is None or not players:
+            continue
+
+        # One indexed lookup, and it keeps this function's signature free of a
+        # second parallel dict of teams.
+        team = db.query(DBTeam).filter_by(id=card.team_id).first()
+        if team is None:
+            continue
+        saved = saved_starters(db, team, year, week)
+
+        if not saved:
+            items.append(
+                AttentionItem(
+                    rank=ATTENTION_ORDER.index("no_lineup"),
+                    kind="no_lineup",
+                    severity=_SEVERITY["no_lineup"],
+                    team_name=card.team_name,
+                    detail=f"Nothing set for week {week}",
+                    url=card.team_url,
+                )
+            )
+
+        starting = effective_starters(db, team, plan, year, week)
+        projections = {d.player_id: d.projected_points for d in plan.decisions}
+
+        for player_id, slot in sorted(
+            starting.items(),
+            key=lambda kv: (-projections.get(kv[0], 0.0), kv[0]),
+        ):
+            player = players.get(player_id)
+            if player is None:
+                continue
+
+            verdict = indexes.injuries.verdict(player_id)
+            on_bye = indexes.schedule.is_bye(player.nfl_team, year, week)
+            kickoff = indexes.locks.kickoff(player.nfl_team, year, week)
+
+            if on_bye:
+                kind = "on_bye"
+                detail = f"{player.nfl_team} is on bye in week {week}"
+            elif verdict.excluded:
+                kind = "injury_excluded"
+                detail = f"{verdict.reason} — still in your {slot}"
+            elif verdict.multiplier != 1.0:
+                kind = "injury_haircut"
+                detail = f"{verdict.reason} — in your {slot}"
+            else:
+                continue
+
+            items.append(
+                AttentionItem(
+                    rank=ATTENTION_ORDER.index(kind),
+                    kind=kind,
+                    severity=_SEVERITY[kind],
+                    team_name=card.team_name,
+                    detail=detail,
+                    url=card.team_url,
+                    player_id=player_id,
+                    player_name=player.name,
+                    position=player.position,
+                    deadline=kickoff,
+                    projected_points=projections.get(player_id, 0.0),
+                )
+            )
+
+        items.extend(_bench_better(card, plan, players, saved, projections))
+
+        if saved:
+            soonest = [
+                indexes.locks.kickoff(players[pid].nfl_team, year, week)
+                for pid in starting
+                if pid in players
+            ]
+            soonest = [k for k in soonest if k is not None and k > now]
+            if soonest and min(soonest) - now <= timedelta(hours=LOCK_SOON_HOURS):
+                items.append(
+                    AttentionItem(
+                        rank=ATTENTION_ORDER.index("lock_soon"),
+                        kind="lock_soon",
+                        severity=_SEVERITY["lock_soon"],
+                        team_name=card.team_name,
+                        detail="First lineup lock is close",
+                        url=card.team_url,
+                        deadline=min(soonest),
+                    )
+                )
+
+    # The spec's key: kind first, then the same stable `(-projected, id)`
+    # `plan_lineup` sorts on, so the ordering is reproducible and the biggest
+    # problem inside a kind is the one at the top. `sorted` is stable, so
+    # items that tie on all three keep the card order they were built in.
+    items.sort(key=lambda i: (i.rank, -i.projected_points, i.player_id or 0))
+    return items
+
+
+def _bench_better(
+    card: LeagueCard,
+    plan: LineupPlan,
+    players: Dict[int, DBPlayer],
+    saved: Dict[int, str],
+    projections: Dict[int, float],
+) -> List[AttentionItem]:
+    """A benched player out-projecting a saved starter at the same slot.
+
+    Compared against the *saved* lineup, never against ``plan_lineup``'s ideal.
+    Against the ideal this fires for every team that has not clicked auto-set,
+    which is not news — it is just the optimizer restating itself.
+    """
+    if not saved:
+        return []
+
+    bench = [
+        pid for pid in players if pid not in saved and projections.get(pid, 0.0) > 0
+    ]
+    out: List[AttentionItem] = []
+
+    for starter_id, slot in saved.items():
+        starter = players.get(starter_id)
+        if starter is None:
+            continue
+        eligible = [
+            pid
+            for pid in bench
+            if (
+                players[pid].position == slot
+                or (slot == "FLEX" and players[pid].position in FLEX_ELIGIBLE)
+            )
+        ]
+        if not eligible:
+            continue
+        best = max(eligible, key=lambda pid: (projections.get(pid, 0.0), -pid))
+        gain = projections.get(best, 0.0) - projections.get(starter_id, 0.0)
+        if gain <= 0:
+            continue
+        out.append(
+            AttentionItem(
+                rank=ATTENTION_ORDER.index("bench_better"),
+                kind="bench_better",
+                severity=_SEVERITY["bench_better"],
+                team_name=card.team_name,
+                detail=(
+                    f"{players[best].name} {projections[best]:.1f} on your bench "
+                    f"beats {starter.name} {projections.get(starter_id, 0.0):.1f} "
+                    f"in {slot}"
+                ),
+                url=card.team_url,
+                player_id=best,
+                player_name=players[best].name,
+                position=players[best].position,
+                projected_points=projections.get(best, 0.0),
+            )
+        )
+    return out
+
+
+#: The strip is one row. Nine is a full starting lineup, so it reads as a
+#: lineup rather than an arbitrary truncation.
+PLAYER_STRIP_LIMIT = 9
+
+_STATE_RANK = {"playing": 0, "concern": 1, "upcoming": 2, "final": 3}
+
+
+@dataclass(frozen=True)
+class PlayerCell:
+    player_id: int
+    name: str
+    url: str
+    state: str
+    position: Optional[str] = None
+    nfl_team: Optional[str] = None
+    projected: Optional[float] = None
+    kickoff_at: Optional[datetime] = None
+    note: Optional[str] = None
+    # No `live_points`. Per-player live scoring exists as
+    # `DBLineupSlot.actual_points` for a season league and only as
+    # `DBWeeklyPlayerStats.points` for an ESPN team; wiring one and not the
+    # other produces a strip where some cells show live points and the rest
+    # silently show projections, which is worse than showing projections
+    # everywhere. The `playing`/`final` sort key is `-projected` for that
+    # reason. See the spec's "Deliberately out of scope".
+
+
+def build_players(
+    db: Session,
+    cards: List[LeagueCard],
+    plans: Dict[int, LineupPlan],
+    rosters: Dict[int, List[DBPlayer]],
+    year: int,
+    week: int,
+    now: datetime,
+    indexes: Indexes,
+) -> Tuple[List[PlayerCell], int]:
+    """The user's starters across every team, deduplicated, ranked, and
+    uncapped.
+
+    League boundaries are deliberately dissolved here: one ``DBPlayer`` row is
+    routinely on an ESPN roster and a season roster at once, and showing him
+    twice is noise. Returns every cell -- the caller decides how much of it
+    to show: ``build_view`` slices ``[:PLAYER_STRIP_LIMIT]`` for the strip
+    while counting ``state == "upcoming"`` over this full list for the hero's
+    ``players_yet_to_play``, which must not be capped to what the strip
+    displays.
+
+    Archive leagues are skipped: their starters belong to a finished season
+    and would otherwise be counted as this week's players yet to play.
+    """
+    played_teams = final_teams(db, year, week)
+
+    seen: Dict[int, PlayerCell] = {}
+    for card in live_cards(cards):
+        plan = plans.get(card.team_id)
+        players = {p.id: p for p in rosters.get(card.team_id, [])}
+        if plan is None or not players:
+            continue
+        team = db.query(DBTeam).filter_by(id=card.team_id).first()
+        if team is None:
+            continue
+
+        projections = {d.player_id: d.projected_points for d in plan.decisions}
+        for player_id in effective_starters(db, team, plan, year, week):
+            if player_id in seen:
+                continue
+            player = players.get(player_id)
+            if player is None:
+                continue
+
+            verdict = indexes.injuries.verdict(player_id)
+            on_bye = indexes.schedule.is_bye(player.nfl_team, year, week)
+            kickoff = indexes.locks.kickoff(player.nfl_team, year, week)
+            normalized = normalize_team(player.nfl_team)
+
+            if on_bye:
+                state, note = "concern", "on bye"
+            elif verdict.status:
+                state, note = "concern", verdict.status.title()
+            elif normalized in played_teams:
+                # An imported score is final regardless of the clock.
+                state, note = "final", "final"
+            elif kickoff is not None and in_game_window(now, [kickoff]):
+                state, note = "playing", "in progress"
+            elif kickoff is not None and now >= kickoff:
+                # Window closed and no score was ever imported. Nothing in the
+                # app calls `import_schedules` automatically, so this is the
+                # normal Sunday-evening state, not an edge case -- and without
+                # this branch these players fell through to "upcoming" with
+                # the note "no kickoff time", which is a second untruth: there
+                # is a kickoff time, it has passed.
+                state, note = "final", "final"
+            elif kickoff is not None:
+                state, note = "upcoming", None
+            else:
+                state, note = "upcoming", "no kickoff time"
+
+            seen[player_id] = PlayerCell(
+                player_id=player_id,
+                name=player.name,
+                url=f"/players/{player_id}?back=/",
+                state=state,
+                position=player.position,
+                nfl_team=player.nfl_team,
+                projected=round(projections.get(player_id, 0.0), 1),
+                kickoff_at=kickoff,
+                note=note,
+            )
+
+    cells = sorted(
+        seen.values(),
+        key=lambda c: (
+            _STATE_RANK[c.state],
+            c.kickoff_at or datetime.max,
+            -(c.projected or 0.0),
+            c.player_id,
+        ),
+    )
+    return cells, len(cells)
+
+
+@dataclass(frozen=True)
+class SlateGame:
+    home_team: str
+    away_team: str
+    state: str
+    game_id: Optional[str] = None
+    kickoff_at: Optional[datetime] = None
+    home_score: Optional[int] = None
+    away_score: Optional[int] = None
+    spread_line: Optional[float] = None
+    total_line: Optional[float] = None
+    your_player_count: int = 0
+    your_player_names: List[str] = field(default_factory=list)
+
+
+def build_slate(
+    db: Session,
+    cards: List[LeagueCard],
+    rosters: Dict[int, List[DBPlayer]],
+    year: int,
+    week: int,
+    now: datetime,
+) -> List[SlateGame]:
+    """The week's NFL games, with the user's players badged onto each.
+
+    ``state`` comes from the schedule and the clock, never from the score. A
+    real game can sit at 0-0 well into the first quarter, and calling that
+    "upcoming" would contradict the live badge in the hero. ``in_game_window``
+    is the single definition of "a game is on" -- shared with the background
+    scheduler and the hero -- so it is used here too rather than re-inlined,
+    or this band could disagree with the hero's LIVE badge about the very
+    same game.
+
+    Games with none of the user's players still appear, dimmed. Hiding them
+    would stop this being the slate.
+
+    Rosters are reached through *cards* rather than the ``rosters`` dict
+    directly, so an archive league's players are not badged onto this week's
+    games -- they belong to a season that finished.
+    """
+    owned: Dict[int, DBPlayer] = {}
+    for card in live_cards(cards):
+        for player in rosters.get(card.team_id, []):
+            owned.setdefault(player.id, player)
+
+    by_team: Dict[str, List[str]] = {}
+    for player in owned.values():
+        canonical = normalize_team(player.nfl_team)
+        if canonical:
+            by_team.setdefault(canonical, []).append(player.name)
+
+    games = (
+        db.query(DBNFLGame).filter(DBNFLGame.year == year, DBNFLGame.week == week).all()
+    )
+
+    slate: List[SlateGame] = []
+    for game in games:
+        if game_is_final(game):
+            state = "final"
+        elif game.kickoff_at is not None and in_game_window(now, [game.kickoff_at]):
+            state = "in_progress"
+        else:
+            state = "upcoming"
+
+        names = sorted(
+            name for team in game_teams(game) for name in by_team.get(team, [])
+        )
+        slate.append(
+            SlateGame(
+                game_id=game.game_id,
+                home_team=game.home_team,
+                away_team=game.away_team,
+                kickoff_at=game.kickoff_at,
+                home_score=game.home_score,
+                away_score=game.away_score,
+                spread_line=game.spread_line,
+                total_line=game.total_line,
+                state=state,
+                your_player_count=len(names),
+                your_player_names=names,
+            )
+        )
+
+    slate.sort(key=lambda g: (g.kickoff_at or datetime.max, g.home_team))
+    return slate
+
+
+#: A strip beside the attention panel, not a page. /metrics/hot is the page.
+MOVER_LIMIT = 6
+
+
+def build_movers(db: Session, now: datetime, limit: int = MOVER_LIMIT) -> List[Mover]:
+    """The strongest buy signals, from whichever season actually has metrics.
+
+    Week 1 of a new season has no trend to compute, so this deliberately reads
+    the last season with coverage rather than rendering an empty band and
+    looking broken.
+    """
+    year = latest_season_with_metrics(db, current_fantasy_season(now.date()))
+    if year is None:
+        return []
+    return hot_movers(db, year, last_full_week(db, year), limit=limit)

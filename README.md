@@ -101,7 +101,6 @@ The app will be available at **http://127.0.0.1:8000**.
 | `http://127.0.0.1:8000/teams` | Team management |
 | `http://127.0.0.1:8000/players` | Player browser |
 | `http://127.0.0.1:8000/leagues` | League management |
-| `http://127.0.0.1:8000/lineups` | Lineup optimizer |
 | `http://127.0.0.1:8000/trades` | Trade analyzer |
 | `http://127.0.0.1:8000/draft` | Mock draft simulator |
 | `http://127.0.0.1:8000/docs` | Interactive API docs (Swagger UI) |
@@ -268,7 +267,7 @@ pigskin_mastermind/
 │   │   ├── main.py          # App entry point and dashboard route
 │   │   ├── database.py      # SQLAlchemy engine and session
 │   │   └── routes/          # API route handlers (teams, players, leagues,
-│   │                        #   lineups, trades, draft, stats, visualizations)
+│   │                        #   trades, draft, stats, visualizations)
 │   ├── models/              # Data models (Player, Team, DB models, projections)
 │   ├── services/            # Business logic
 │   │   ├── team_manager.py       # Team CRUD

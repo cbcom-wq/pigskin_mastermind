@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 from pigskin_mastermind.models.database import DBPlayer
 from pigskin_mastermind.services.nfl_data_service import NFLDataService
 
-
 # Lateral % by location string.  50 = field centre.
 _LATERAL_MAP = {
     "left": 25.0,
@@ -42,9 +41,135 @@ class PlayerGameSimulationService:
         self,
         db: Session,
         nfl_data_service: Optional[NFLDataService] = None,
+        plays_source: Optional[Any] = None,
     ):
         self.db = db
-        self.nfl_data_service = nfl_data_service or NFLDataService(db)
+        self._nfl_data_service = nfl_data_service
+        self.plays_source = plays_source
+
+    @property
+    def nfl_data_service(self) -> NFLDataService:
+        """Constructed on demand.
+
+        ``NFLDataService`` pulls in pandas, and the ESPN path never needs it --
+        building it eagerly would make this service unimportable on a runtime
+        without native wheels for no reason.
+        """
+        if self._nfl_data_service is None:
+            self._nfl_data_service = NFLDataService(self.db)
+        return self._nfl_data_service
+
+    def _team_for_week(self, player, year: int, week: int) -> Optional[str]:
+        """The club *player* actually played for in that week.
+
+        ``DBPlayer.nfl_team`` is his current club, which for a past season is
+        routinely the wrong franchise -- and asking ESPN for the wrong team's
+        game returns an empty animation for a game that certainly happened.
+
+        Game logs carry an opponent but no team.  A team plays once a week, so
+        that opponent identifies exactly one scheduled game and the player was
+        the other side of it.  Same rule the advanced-metrics backfill uses.
+        """
+        from pigskin_mastermind.models.database import DBNFLGame, DBPlayerGameLog
+        from pigskin_mastermind.utils.nfl_teams import normalize_team
+
+        stored = player.nfl_team or None
+        log = (
+            self.db.query(DBPlayerGameLog)
+            .filter_by(player_id=player.id, year=year, week=week)
+            .first()
+        )
+        opponent = normalize_team(log.opponent) if log and log.opponent else None
+        if not opponent:
+            return stored
+
+        game = (
+            self.db.query(DBNFLGame)
+            .filter(
+                DBNFLGame.year == year,
+                DBNFLGame.week == week,
+                (DBNFLGame.home_team == opponent) | (DBNFLGame.away_team == opponent),
+            )
+            .first()
+        )
+        if not game:
+            return stored
+
+        played_for = game.away_team if game.home_team == opponent else game.home_team
+        return played_for or stored
+
+    def _resolve_pbp(self, player, year: int, week: int) -> Dict[str, Any]:
+        """Play-by-play for one player's game, from whichever source applies.
+
+        Whatever source the caller injected is the one used -- reaching past
+        an explicit injection is how a test with a fixture ends up silently
+        talking to the network.  With nothing injected, this is the ESPN path.
+        """
+        if self.plays_source is not None:
+            return self._espn_pbp(player, year, week, self.plays_source)
+        if self._nfl_data_service is not None:
+            return self._nfl_data_service.get_play_by_play(
+                player_db_id=player.id, year=year, week=week
+            )
+        return self._espn_pbp(player, year, week, None)
+
+    def _espn_pbp(
+        self, player, year: int, week: int, source: Optional[Any]
+    ) -> Dict[str, Any]:
+        """A whole game from the play-by-play registry, filtered to *player*."""
+        from pigskin_mastermind.services.play_by_play.legacy import (
+            legacy_plays_for_player,
+        )
+        from pigskin_mastermind.services.play_by_play.registry import plays_for_game
+
+        empty = {"plays": [], "game_summary": {}, "player_stats": {}}
+        team = self._team_for_week(player, year, week)
+        if not team:
+            return empty
+
+        if source is not None:
+            raw = source.plays(year, week, team)
+            getter = getattr(source, "game_context", None)
+        else:
+            from pigskin_mastermind.services.play_by_play.espn_source import (
+                ESPNPlayByPlaySource,
+            )
+
+            raw = plays_for_game(year, week, team)
+            getter = ESPNPlayByPlaySource().game_context
+
+        context: Dict[str, Any] = {}
+        if getter is not None:
+            try:
+                context = getter(year, week, team) or {}
+            except Exception:
+                context = {}
+
+        plays = legacy_plays_for_player(raw, player.espn_id or "")
+        return {
+            "plays": plays,
+            "game_summary": {
+                "game_id": context.get("game_id"),
+                "home_team": context.get("home_team"),
+                "away_team": context.get("away_team"),
+                # From every play in the game, not the player's filtered
+                # slice.  A player who left early would otherwise report
+                # whatever the score was when he last touched the ball as
+                # though it were the final.
+                "home_score": max(
+                    (p.home_score for p in raw if p.home_score is not None),
+                    default=None,
+                ),
+                "away_score": max(
+                    (p.away_score for p in raw if p.away_score is not None),
+                    default=None,
+                ),
+                "player_team": team,
+            },
+            # Left empty on purpose: the running accumulator computes the real
+            # line play by play, and build_simulation falls back to it.
+            "player_stats": {},
+        }
 
     def build_simulation(
         self,
@@ -59,11 +184,7 @@ class PlayerGameSimulationService:
 
         player_headshot_url = getattr(player, "headshot_url", None) or ""
 
-        pbp = self.nfl_data_service.get_play_by_play(
-            player_db_id=player_db_id,
-            year=year,
-            week=week,
-        )
+        pbp = self._resolve_pbp(player, year, week)
         plays = pbp.get("plays", [])
 
         events: List[Dict[str, Any]] = []
@@ -80,12 +201,19 @@ class PlayerGameSimulationService:
             role = str(play.get("player_role") or "unknown")
             running = self._apply_running_stats(running, role, play)
 
-            first_down = bool(self._to_int(play.get("first_down_pass")) or self._to_int(play.get("first_down_rush")))
+            first_down = bool(
+                self._to_int(play.get("first_down_pass"))
+                or self._to_int(play.get("first_down_rush"))
+            )
             touchdown = bool(self._to_int(play.get("touchdown")))
             turnover = bool(self._to_int(play.get("interception")))
             is_complete = bool(self._to_int(play.get("complete_pass")))
             is_sack = bool(self._to_int(play.get("sack")))
-            epa = round(self._to_float(play.get("epa"), default=0.0), 2)
+            # A source that publishes no EPA leaves it absent.  Rounding a
+            # missing value into 0.0 would render "neutral play" where the
+            # truth is "no signal" -- and 0.0 is a real EPA.
+            raw_epa = play.get("epa")
+            epa = None if raw_epa is None else round(self._to_float(raw_epa, 0.0), 2)
 
             route_path = self._build_route_path(play, role, start_x, end_x)
 
@@ -136,7 +264,9 @@ class PlayerGameSimulationService:
             "week": week,
             "total_events": len(events),
             "game_summary": pbp.get("game_summary", {}),
-            "player_stats": pbp.get("player_stats", {}),
+            # A source that supplies its own stat line wins; otherwise the
+            # running accumulator already computed one play by play.
+            "player_stats": pbp.get("player_stats") or running,
             "events": events,
         }
 
@@ -182,22 +312,33 @@ class PlayerGameSimulationService:
 
         if role == "pass":
             segments = self._pass_route(
-                play_id, start_x, end_x,
-                air_yards, yac,
+                play_id,
+                start_x,
+                end_x,
+                air_yards,
+                yac,
                 pass_location,
-                is_complete, is_sack, is_scramble,
+                is_complete,
+                is_sack,
+                is_scramble,
             )
         elif role == "receive":
             segments = self._receive_route(
-                play_id, start_x, end_x,
-                air_yards, yac,
+                play_id,
+                start_x,
+                end_x,
+                air_yards,
+                yac,
                 pass_location,
                 is_complete,
             )
         elif role == "rush":
             segments = self._rush_route(
-                play_id, start_x, end_x,
-                run_location, run_gap,
+                play_id,
+                start_x,
+                end_x,
+                run_location,
+                run_gap,
             )
         else:
             # Unknown role – simple point-to-point
@@ -235,7 +376,11 @@ class PlayerGameSimulationService:
             sack_depth = self._clamp(start_x - abs(end_x - start_x), 0, 100)
             return [
                 {"depth": start_x, "lateral": los_lat, "type": "los"},
-                {"depth": self._clamp(start_x - 3, 0, 100), "lateral": los_lat, "type": "drop"},
+                {
+                    "depth": self._clamp(start_x - 3, 0, 100),
+                    "lateral": los_lat,
+                    "type": "drop",
+                },
                 {"depth": sack_depth, "lateral": los_lat + jitter, "type": "sack_end"},
             ]
 
@@ -253,11 +398,17 @@ class PlayerGameSimulationService:
         ]
 
         if is_scramble:
-            scramble_lat = target_lat + _deterministic_jitter(play_id + 99, 10.0)
+            scramble_lat = target_lat + _deterministic_jitter(f"{play_id}:99", 10.0)
             segs.append({"depth": end_x, "lateral": scramble_lat, "type": "catch_end"})
         elif is_complete and abs(yac) > 0.5:
-            yac_lat = target_lat + _deterministic_jitter(play_id + 7, 5.0)
-            segs.append({"depth": self._clamp(target_depth + yac, 0, 100), "lateral": yac_lat, "type": "catch_end"})
+            yac_lat = target_lat + _deterministic_jitter(f"{play_id}:7", 5.0)
+            segs.append(
+                {
+                    "depth": self._clamp(target_depth + yac, 0, 100),
+                    "lateral": yac_lat,
+                    "type": "catch_end",
+                }
+            )
 
         return segs
 
@@ -294,12 +445,14 @@ class PlayerGameSimulationService:
         ]
 
         if is_complete and abs(yac) > 0.5:
-            yac_lat = target_lat + _deterministic_jitter(play_id + 13, 6.0)
-            segs.append({
-                "depth": self._clamp(target_depth + yac, 0, 100),
-                "lateral": yac_lat,
-                "type": "catch_end",
-            })
+            yac_lat = target_lat + _deterministic_jitter(f"{play_id}:13", 6.0)
+            segs.append(
+                {
+                    "depth": self._clamp(target_depth + yac, 0, 100),
+                    "lateral": yac_lat,
+                    "type": "catch_end",
+                }
+            )
 
         return segs
 
@@ -333,7 +486,11 @@ class PlayerGameSimulationService:
             {"depth": start_x, "lateral": los_lat, "type": "los"},
             {"depth": handoff_depth, "lateral": los_lat, "type": "run_start"},
             {"depth": hit_depth, "lateral": target_lat, "type": "run_gap"},
-            {"depth": end_x, "lateral": target_lat + _deterministic_jitter(play_id + 3, 4.0), "type": "run_end"},
+            {
+                "depth": end_x,
+                "lateral": target_lat + _deterministic_jitter(f"{play_id}:3", 4.0),
+                "type": "run_end",
+            },
         ]
         return segs
 
@@ -355,7 +512,9 @@ class PlayerGameSimulationService:
             "rec_tds": 0,
             "first_downs": 0,
             "total_tds": 0,
-            "total_epa": 0.0,
+            # None until a play actually supplies EPA.  A running total of
+            # nothing is not zero -- 0.0 reads as a measured neutral game.
+            "total_epa": None,
         }
 
     def _apply_running_stats(
@@ -368,13 +527,20 @@ class PlayerGameSimulationService:
         stats["total_plays"] += 1
 
         yards = int(round(self._to_float(play.get("yards_gained"), default=0.0)))
-        epa = self._to_float(play.get("epa"), default=0.0)
-        stats["total_epa"] = round(stats["total_epa"] + epa, 2)
+        raw_epa = play.get("epa")
+        if raw_epa is not None:
+            running_epa = stats["total_epa"] or 0.0
+            stats["total_epa"] = round(
+                running_epa + self._to_float(raw_epa, default=0.0), 2
+            )
 
         is_complete = bool(self._to_int(play.get("complete_pass")))
         is_touchdown = bool(self._to_int(play.get("touchdown")))
         is_interception = bool(self._to_int(play.get("interception")))
-        is_first_down = bool(self._to_int(play.get("first_down_pass")) or self._to_int(play.get("first_down_rush")))
+        is_first_down = bool(
+            self._to_int(play.get("first_down_pass"))
+            or self._to_int(play.get("first_down_rush"))
+        )
 
         if role == "pass":
             stats["pass_attempts"] += 1
@@ -415,7 +581,9 @@ class PlayerGameSimulationService:
     @staticmethod
     def _format_time_label(play: Dict[str, Any]) -> str:
         qtr = PlayerGameSimulationService._to_int(play.get("qtr"))
-        qtr_seconds = PlayerGameSimulationService._nullable_int(play.get("quarter_seconds_remaining"))
+        qtr_seconds = PlayerGameSimulationService._nullable_int(
+            play.get("quarter_seconds_remaining")
+        )
         if not qtr or qtr_seconds is None:
             return "—"
         mm = qtr_seconds // 60

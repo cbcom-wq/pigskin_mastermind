@@ -21,6 +21,7 @@ from pigskin_mastermind.services.season_league import (
 from pigskin_mastermind.services.season_scheduler import league_now
 from pigskin_mastermind.services.weekly_projection_refresh import current_nfl_week
 from pigskin_mastermind.utils.season import current_fantasy_season
+from pigskin_mastermind.utils.back_nav import resolve_back
 
 
 class SlotChange(BaseModel):
@@ -99,6 +100,7 @@ async def team_detail(
     request: Request,
     team_db_id: int,
     week: int = Query(None),
+    back: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     """Team detail page with roster. Supports weekly view via ?week=N."""
@@ -179,6 +181,8 @@ async def team_detail(
         or 1
     )
 
+    back_target = resolve_back(back, "/teams", "Teams")
+
     return templates.TemplateResponse(
         "teams/detail.html",
         {
@@ -194,6 +198,14 @@ async def team_detail(
             "weekly_team": weekly_team,
             "weekly_players": weekly_players,
             "matchups": matchups,
+            "back": back_target,
+            # Views drilled into from here (simulation, season animation)
+            # carry this URL, so their Back returns to the week being read
+            # rather than to the bare team page.
+            "self_url": (
+                f"/teams/{team_db_id}?week={week}&back={back_target.url}"
+                if week else f"/teams/{team_db_id}?back={back_target.url}"
+            ),
         }
     )
 
@@ -273,7 +285,9 @@ async def team_simulation_page(
             "week": week,
             "default_year": default_year,
             "roster": active_players,
-            "back_url": back,
+            "back": resolve_back(
+                back, f"/teams/{team_db_id}", "Team"
+            ),
         },
     )
 

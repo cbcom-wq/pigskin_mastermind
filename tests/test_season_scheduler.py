@@ -13,12 +13,23 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from pigskin_mastermind.models.database import (
-    Base, DBLeague, DBLineupSlot, DBNFLGame, DBPlayer, DBPlayerProjection,
-    DBRosterSpot, DBTeam,
+    Base,
+    DBLeague,
+    DBLineupSlot,
+    DBNFLGame,
+    DBPlayer,
+    DBPlayerProjection,
+    DBRosterSpot,
+    DBTeam,
 )
 from pigskin_mastermind.services.season_scheduler import (
-    GAME_WINDOW_HOURS, IDLE_MAX_SECONDS, LIVE_POLL_SECONDS, league_now,
-    next_poll_at, tick,
+    GAME_WINDOW_HOURS,
+    IDLE_MAX_SECONDS,
+    LIVE_POLL_SECONDS,
+    league_now,
+    next_poll_at,
+    tick,
+    in_game_window,
 )
 
 NOW = datetime(2026, 10, 11, 12, 0)
@@ -123,30 +134,61 @@ def db():
 
 @pytest.fixture
 def league(db):
-    lg = DBLeague(league_id="s1", name="S", year=YEAR, kind="season",
-                  status="in_season", current_week=1, regular_season_weeks=14,
-                  roster_slots={"RB": 1, "BENCH": 1})
+    lg = DBLeague(
+        league_id="s1",
+        name="S",
+        year=YEAR,
+        kind="season",
+        status="in_season",
+        current_week=1,
+        regular_season_weeks=14,
+        roster_slots={"RB": 1, "BENCH": 1},
+    )
     db.add(lg)
-    db.add(DBNFLGame(year=YEAR, week=1, home_team="ATL", away_team="NO",
-                     kickoff_at=KICKOFF))
+    db.add(
+        DBNFLGame(
+            year=YEAR, week=1, home_team="ATL", away_team="NO", kickoff_at=KICKOFF
+        )
+    )
     db.commit()
 
     for slot, manager in ((1, "ai"), (2, "human")):
-        team = DBTeam(team_id=f"s1-{slot}", name=f"T{slot}", owner="o",
-                      league_id="s1", manager_type=manager,
-                      is_user_team=(manager == "human"))
+        team = DBTeam(
+            team_id=f"s1-{slot}",
+            name=f"T{slot}",
+            owner="o",
+            league_id="s1",
+            manager_type=manager,
+            is_user_team=(manager == "human"),
+        )
         db.add(team)
         db.commit()
         for i in range(2):
-            p = DBPlayer(player_id=f"p{slot}{i}", name=f"P{slot}{i}",
-                         position="RB", nfl_team="ATL")
+            p = DBPlayer(
+                player_id=f"p{slot}{i}",
+                name=f"P{slot}{i}",
+                position="RB",
+                nfl_team="ATL",
+            )
             db.add(p)
             db.commit()
-            db.add(DBRosterSpot(league_id=lg.id, team_id=team.id,
-                                player_id=p.id, acquired_via="draft"))
-            db.add(DBPlayerProjection(player_id=p.id, year=YEAR, week=1,
-                                      source="model",
-                                      projected_points=10.0 - i))
+            db.add(
+                DBRosterSpot(
+                    league_id=lg.id,
+                    team_id=team.id,
+                    player_id=p.id,
+                    acquired_via="draft",
+                )
+            )
+            db.add(
+                DBPlayerProjection(
+                    player_id=p.id,
+                    year=YEAR,
+                    week=1,
+                    source="model",
+                    projected_points=10.0 - i,
+                )
+            )
         db.commit()
     return lg
 
@@ -187,10 +229,15 @@ class TestTick:
         result = tick(db, KICKOFF, client=FakeClient())
         assert result["leagues"] == 0
 
-    def test_one_broken_league_does_not_stop_the_others(self, db, league,
-                                                        monkeypatch):
-        other = DBLeague(league_id="s2", name="S2", year=YEAR, kind="season",
-                         status="in_season", current_week=1)
+    def test_one_broken_league_does_not_stop_the_others(self, db, league, monkeypatch):
+        other = DBLeague(
+            league_id="s2",
+            name="S2",
+            year=YEAR,
+            kind="season",
+            status="in_season",
+            current_week=1,
+        )
         db.add(other)
         db.commit()
 
@@ -210,3 +257,50 @@ class TestTick:
         result = tick(db, KICKOFF, client=FakeClient())
         assert calls["n"] == 2
         assert result["errors"] == 1
+
+
+class TestInGameWindow:
+    """The game-window predicate shared by the scheduler and the dashboard."""
+
+    def test_true_at_kickoff(self):
+        kickoff = datetime(2026, 9, 13, 13, 0)
+        assert in_game_window(kickoff, [kickoff]) is True
+
+    def test_true_inside_the_window(self):
+        kickoff = datetime(2026, 9, 13, 13, 0)
+        assert in_game_window(kickoff + timedelta(hours=2), [kickoff]) is True
+
+    def test_false_before_kickoff(self):
+        kickoff = datetime(2026, 9, 13, 13, 0)
+        assert in_game_window(kickoff - timedelta(minutes=1), [kickoff]) is False
+
+    def test_false_at_the_window_edge(self):
+        """The window is half-open: a game is over exactly four hours in."""
+        kickoff = datetime(2026, 9, 13, 13, 0)
+        edge = kickoff + timedelta(hours=GAME_WINDOW_HOURS)
+        assert in_game_window(edge, [kickoff]) is False
+
+    def test_false_with_no_kickoffs(self):
+        kickoff = datetime(2026, 9, 13, 13, 0)
+        assert in_game_window(kickoff, []) is False
+
+    def test_any_one_game_is_enough(self):
+        kickoff = datetime(2026, 9, 13, 13, 0)
+        later = kickoff + timedelta(hours=7)
+        assert in_game_window(later + timedelta(hours=1), [kickoff, later]) is True
+
+
+class TestNextPollAtStillUsesIt:
+    """Verify next_poll_at uses the in_game_window predicate."""
+
+    def test_live_cadence_inside_a_window(self):
+        kickoff = datetime(2026, 9, 13, 13, 0)
+        now = kickoff + timedelta(hours=1)
+        assert next_poll_at(now, [kickoff]) == now + timedelta(
+            seconds=LIVE_POLL_SECONDS
+        )
+
+    def test_waits_for_the_next_kickoff_outside_a_window(self):
+        kickoff = datetime(2026, 9, 13, 13, 0)
+        now = kickoff - timedelta(minutes=30)
+        assert next_poll_at(now, [kickoff]) == kickoff
